@@ -1,0 +1,845 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta content="width=device-width, initial-scale=1.0" name="viewport"><meta content="web_dashboard" name="shell-type"><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin=""><link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet"><style>@layer base{html,body{margin:0;padding:0;}body{overscroll-behavior:none;}main>:first-child{margin-top:0!important;}main>:last-child{margin-bottom:0!important;}}::-webkit-scrollbar{display:none;}</style><script src="https://cdn.tailwindcss.com"></script><script id="tailwind-config">tailwind.config = {
+  darkMode: "class",
+  theme: {
+    extend: {
+      "colors": {
+        "tertiary": "#415d4d",
+        "surface-tint": "#006d30",
+        "surface-variant": "#e0e3e5",
+        "surface-container-highest": "#e0e3e5",
+        "on-error": "#ffffff",
+        "on-secondary-container": "#586377",
+        "primary-container": "#15803d",
+        "inverse-on-surface": "#eff1f3",
+        "on-surface": "#191c1e",
+        "on-tertiary": "#ffffff",
+        "surface": "#f7f9fb",
+        "on-primary": "#ffffff",
+        "primary-fixed": "#95f8a7",
+        "on-secondary-fixed-variant": "#3c475a",
+        "secondary-fixed": "#d8e3fb",
+        "on-tertiary-fixed-variant": "#314d3e",
+        "tertiary-container": "#597665",
+        "on-tertiary-container": "#dcfce7",
+        "on-secondary-fixed": "#111c2d",
+        "inverse-surface": "#2d3133",
+        "on-primary-fixed": "#00210a",
+        "on-primary-container": "#d3ffd5",
+        "on-surface-variant": "#3f493f",
+        "inverse-primary": "#79db8d",
+        "tertiary-fixed": "#caead6",
+        "outline": "#6f7a6e",
+        "secondary-fixed-dim": "#bcc7de",
+        "error": "#ba1a1a",
+        "on-error-container": "#93000a",
+        "on-background": "#191c1e",
+        "surface-bright": "#f7f9fb",
+        "error-container": "#ffdad6",
+        "surface-container-high": "#e6e8ea",
+        "surface-container-lowest": "#ffffff",
+        "outline-variant": "#becabc",
+        "background": "#f7f9fb",
+        "surface-container-low": "#f2f4f6",
+        "on-primary-fixed-variant": "#005323",
+        "surface-dim": "#d8dadc",
+        "on-tertiary-fixed": "#042014",
+        "primary": "#00652c",
+        "on-secondary": "#ffffff",
+        "tertiary-fixed-dim": "#afceba",
+        "secondary-container": "#d5e0f8",
+        "primary-fixed-dim": "#79db8d",
+        "secondary": "#545f73",
+        "surface-container": "#eceef0"
+      },
+      "borderRadius": {
+        "DEFAULT": "0.125rem",
+        "lg": "0.25rem",
+        "xl": "0.5rem",
+        "full": "0.75rem"
+      },
+      "spacing": {
+        "space-sm": "0.5rem",
+        "margin": "2rem",
+        "gutter": "1.5rem",
+        "space-lg": "1.5rem",
+        "space-xl": "2.5rem",
+        "space-md": "1rem",
+        "margin-mobile": "1rem",
+        "gutter-mobile": "1rem",
+        "space-xs": "0.25rem"
+      },
+      "fontFamily": {
+        "display-lg": [
+          "Inter"
+        ],
+        "headline-md": [
+          "Inter"
+        ],
+        "body-sm": [
+          "Inter"
+        ],
+        "display-lg-mobile": [
+          "Inter"
+        ],
+        "headline-sm": [
+          "Inter"
+        ],
+        "headline-lg": [
+          "Inter"
+        ],
+        "label-sm": [
+          "Inter"
+        ],
+        "label-md": [
+          "Inter"
+        ],
+        "body-lg": [
+          "Inter"
+        ],
+        "body-md": [
+          "Inter"
+        ],
+        "label-xs": [
+          "Inter"
+        ]
+      },
+      "fontSize": {
+        "display-lg": [
+          "32px",
+          {
+            "lineHeight": "40px",
+            "letterSpacing": "-0.02em",
+            "fontWeight": "600"
+          }
+        ],
+        "headline-md": [
+          "20px",
+          {
+            "lineHeight": "28px",
+            "letterSpacing": "-0.01em",
+            "fontWeight": "600"
+          }
+        ],
+        "body-sm": [
+          "13px",
+          {
+            "lineHeight": "18px",
+            "letterSpacing": "0em",
+            "fontWeight": "400"
+          }
+        ],
+        "display-lg-mobile": [
+          "26px",
+          {
+            "lineHeight": "34px",
+            "letterSpacing": "-0.015em",
+            "fontWeight": "600"
+          }
+        ],
+        "headline-sm": [
+          "16px",
+          {
+            "lineHeight": "24px",
+            "letterSpacing": "-0.005em",
+            "fontWeight": "600"
+          }
+        ],
+        "headline-lg": [
+          "24px",
+          {
+            "lineHeight": "32px",
+            "letterSpacing": "-0.015em",
+            "fontWeight": "600"
+          }
+        ],
+        "label-sm": [
+          "12px",
+          {
+            "lineHeight": "16px",
+            "letterSpacing": "0.01em",
+            "fontWeight": "500"
+          }
+        ],
+        "label-md": [
+          "14px",
+          {
+            "lineHeight": "20px",
+            "letterSpacing": "-0.005em",
+            "fontWeight": "500"
+          }
+        ],
+        "body-lg": [
+          "16px",
+          {
+            "lineHeight": "26px",
+            "letterSpacing": "-0.005em",
+            "fontWeight": "400"
+          }
+        ],
+        "body-md": [
+          "14px",
+          {
+            "lineHeight": "22px",
+            "letterSpacing": "0em",
+            "fontWeight": "400"
+          }
+        ],
+        "label-xs": [
+          "11px",
+          {
+            "lineHeight": "14px",
+            "letterSpacing": "0.03em",
+            "fontWeight": "600"
+          }
+        ]
+      }
+    }
+  }
+}</script></head><body class="bg-surface font-body-md text-body-md text-on-surface" style="font-family: &quot;Plus Jakarta Sans&quot;, system-ui, -apple-system, sans-serif;"><aside class="fixed left-0 top-0 h-full w-64 bg-surface-container-lowest shadow-[0_1px_8px_rgba(0,0,0,0.04)] z-50 flex flex-col"><div class="h-16 flex items-center px-gutter gap-space-sm"><img alt="ACI Career EDGE Logo" class="h-8 w-auto object-contain" src="https://lh3.googleusercontent.com/aida/AEtjO1WoneBy-OBalyMRJ-gJG9yzWiVlwNqZc3eODDaWgTSBU-nVaZ5R1Qs_FeQXdoLYFMsVmCuiN3VhX0g1wXsJx7fsa9T_uIO8UslPbn_cDuqCRRIR860-at1nZLWxWyfLMZ1BlcKHXLLT_hKe1xshvFsKaHWwnd1IdVzM89A-FdEbTjIIjtyUTKUWZulnyqIpS8HtvE8CR-A7HPY0Shlvws72AFyyVXVnjlnag7Y-Y832rWsm7yyIv3WHjuk"><div class="flex flex-col"><span class="font-headline-sm text-headline-sm text-on-surface leading-none">Assess</span><span class="font-label-xs text-label-xs text-secondary leading-tight mt-0.5">Admin Suite</span></div></div><div class="px-gutter py-space-sm"><div class="px-space-sm py-1 bg-surface-container-low rounded text-on-secondary-container font-label-xs text-label-xs flex items-center justify-between"><span class="truncate">CLP 2025</span><span class="w-1.5 h-1.5 rounded-full bg-primary"></span></div></div><nav class="flex-1 px-space-sm py-space-xs flex flex-col gap-1 overflow-y-auto" data-active-classes="bg-primary-container text-on-primary font-label-md text-label-md rounded"><a class="flex items-center gap-space-sm px-space-sm py-2 rounded text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface font-label-md text-label-md transition-colors" data-path="overview" href="#"><span class="material-symbols-outlined text-[20px]">grid_view</span><span class="">Overview</span></a><a aria-current="page" class="flex items-center gap-space-sm px-space-sm py-2 transition-colors bg-primary-container text-on-primary font-label-md text-label-md rounded" data-path="contests" href="#"><span class="material-symbols-outlined text-[20px]">award_star</span><span class="">Contests</span></a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface font-label-md text-label-md transition-colors" data-path="participants" href="#"><span class="material-symbols-outlined text-[20px]">group</span><span class="">Participants</span></a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface font-label-md text-label-md transition-colors" data-path="submissions" href="#"><span class="material-symbols-outlined text-[20px]">rule</span><span class="">Submissions</span></a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface font-label-md text-label-md transition-colors" data-path="leaderboard" href="#"><span class="material-symbols-outlined text-[20px]">leaderboard</span><span class="">Leaderboard</span></a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface font-label-md text-label-md transition-colors" data-path="monitoring" href="#"><span class="material-symbols-outlined text-[20px]">visibility</span><span class="">Monitoring</span></a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface font-label-md text-label-md transition-colors" data-path="results" href="#"><span class="material-symbols-outlined text-[20px]">analytics</span><span class="">Results</span></a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface font-label-md text-label-md transition-colors" data-path="settings" href="#"><span class="material-symbols-outlined text-[20px]">tune</span><span class="">Settings</span></a></nav><div class="p-space-md bg-surface-container-low mx-space-sm mb-space-sm rounded"><div class="flex items-center gap-space-xs text-tertiary font-label-xs text-label-xs uppercase tracking-wider mb-1"><span class="material-symbols-outlined text-[16px]">shield</span>Enterprise Diagnostic</div><p class="font-body-sm text-body-sm text-secondary">Secure Proctoring V4.2 active</p></div></aside><div class="pl-64"><header class="fixed top-0 left-64 right-0 h-16 bg-surface-container-lowest/90 backdrop-blur-xl shadow-[0_1px_8px_rgba(0,0,0,0.04)] z-40 px-gutter flex items-center justify-between"><div class="flex items-center gap-space-md"><span class="inline-flex items-center px-space-sm py-0.5 rounded font-label-xs text-label-xs bg-tertiary-fixed text-on-tertiary-fixed font-medium">Campus Leadership Programme</span><div class="hidden md:flex items-center gap-space-xs px-space-sm py-1.5 rounded bg-surface-container-low text-secondary font-label-sm text-label-sm"><span class="material-symbols-outlined text-[18px]">search</span><span class="">Search candidate, contest, tag...</span><kbd class="ml-space-md px-1.5 py-0.5 bg-surface-container-lowest text-secondary rounded font-label-xs text-label-xs shadow-sm">⌘K</kbd></div></div><div class="flex items-center gap-gutter"><div class="inline-flex items-center p-0.5 rounded bg-surface-container-high text-on-surface-variant font-label-xs text-label-xs"><button class="px-space-sm py-1 rounded bg-primary-container text-on-primary font-medium shadow-sm">Admin View</button><a class="px-space-sm py-1 rounded text-secondary hover:text-on-surface hover:bg-surface-container transition-colors" data-path="my-contests" href="#">Participant View</a></div><button aria-label="Notifications" class="relative p-1.5 text-secondary hover:text-on-surface rounded hover:bg-surface-container transition-colors"><span class="material-symbols-outlined text-[22px]">notifications</span><span class="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-primary ring-2 ring-surface-container-lowest"></span></button><div class="flex items-center gap-space-sm pl-space-sm"><img alt="Profile" class="w-8 h-8 rounded-full object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuCs2ajvv6fhNCzOVq-ULpcMT67cFTuDjrNJnGXcoWYi5LmkfsAKlsaEz9jDk-arGyJDW8dAN7U4UNw8FOhIgfpN3LciY68F4s25bo5iscNRbP9plWbA0vB4sBc3KNh3392cHQpC9rHLbTUZVeAjzu67MMZZjh6YnVsJt2wAZsWGLGWhovcA9FjOk6k9xnk6oyjrH0-EEZZw95so9vxGBM8sOivoJBOk8M_zmxrP3sCkoOQHQ1UYee_0gQ"><div class="hidden lg:flex flex-col text-left"><span class="font-label-md text-label-md text-on-surface leading-tight font-medium">Eleanor Vance</span><span class="font-label-xs text-label-xs text-secondary leading-tight">Chief Evaluator</span></div></div></div></header><main class="relative pt-16 w-full px-gutter bg-surface min-h-screen"><div class="flex flex-col w-full pb-space-xl">
+<!-- Top Breadcrumb & Live Health Telemetry Bar -->
+<div class="flex flex-wrap items-center justify-between gap-space-sm pt-space-md pb-space-sm">
+<div class="flex items-center gap-space-xs font-label-xs text-label-xs text-secondary">
+<span class="">WORKSPACE</span>
+<span class="material-symbols-outlined text-[14px]">chevron_right</span>
+<span class="">COHORT CLP-2025</span>
+<span class="material-symbols-outlined text-[14px]">chevron_right</span>
+<span class="text-primary font-medium">ASSESSMENT ENGINE</span>
+</div>
+<div class="flex items-center gap-space-md">
+<div class="flex items-center gap-space-xs font-label-xs text-label-xs text-on-surface-variant">
+<span class="w-2 h-2 rounded-full bg-primary animate-pulse"></span>
+<span class="font-medium text-on-surface">Telemetry Active:</span>
+<span class="text-secondary">Sync latency 42ms • 4 assessment tracks tracked</span>
+</div>
+</div>
+</div>
+<!-- Header Section with Linear-grade typographic rhythm -->
+<div class="flex flex-col lg:flex-row lg:items-end justify-between gap-space-md mt-space-sm mb-space-lg">
+<div class="flex flex-col">
+<div class="flex items-center gap-space-sm">
+<h1 class="font-display-lg text-display-lg text-on-surface tracking-tight">Contests</h1>
+<span class="px-space-sm py-0.5 rounded-full bg-surface-container-high text-on-secondary-container font-label-xs text-label-xs font-medium">
+          4 Records
+        </span>
+</div>
+<p class="font-body-md text-body-md text-secondary mt-1 max-w-2xl">
+        Manage leadership challenges, phases, diagnostic evaluation rubrics, and automated candidate grading pipelines.
+      </p>
+</div>
+<!-- Actions Group -->
+<div class="flex items-center gap-space-sm flex-wrap">
+<button class="h-10 px-space-md bg-surface-container-lowest hover:bg-surface-container text-on-surface rounded shadow-sm flex items-center gap-space-xs font-label-md text-label-md transition-colors" onclick="toggleDrawer(null)">
+<span class="material-symbols-outlined text-[18px] text-secondary">file_download</span>
+<span class="">Export CSV</span>
+</button>
+<button class="h-10 px-space-md bg-surface-container-lowest hover:bg-surface-container text-on-surface rounded shadow-sm flex items-center gap-space-xs font-label-md text-label-md transition-colors">
+<span class="material-symbols-outlined text-[18px] text-secondary">upload_file</span>
+<span class="">Import Contests</span>
+</button>
+<button class="h-10 px-space-md bg-primary-container hover:bg-primary text-on-primary rounded shadow-sm flex items-center gap-space-xs font-label-md text-label-md font-medium transition-all transform active:scale-95">
+<span class="material-symbols-outlined text-[18px]">add</span>
+<span class="">Create Contest</span>
+</button>
+</div>
+</div>
+<!-- Search & Linear-like Filter Bar -->
+<div class="bg-surface-container-lowest rounded-xl shadow-sm p-space-sm mb-space-md flex flex-col md:flex-row items-stretch md:items-center justify-between gap-space-sm">
+<div class="flex-1 flex items-center gap-space-sm px-space-sm">
+<span class="material-symbols-outlined text-[20px] text-secondary">search</span>
+<input class="w-full bg-transparent text-on-surface placeholder:text-secondary font-body-md text-body-md focus:outline-none" id="contestSearch" onkeyup="filterContests()" placeholder="Filter by challenge name, phase, rubric tags (e.g. 'ESG', 'Ideation')..." type="text">
+<span class="hidden md:inline-flex text-[10px] font-label-xs px-1.5 py-0.5 rounded bg-surface-container text-secondary">/</span>
+</div>
+<!-- Dropdown Filters & Segment Controls -->
+<div class="flex items-center gap-space-xs flex-wrap">
+<div class="flex items-center bg-surface-container-low p-0.5 rounded">
+<button class="filter-tab px-space-sm py-1 rounded font-label-xs text-label-xs bg-surface-container-lowest text-on-surface shadow-xs transition-colors" data-filter="All" onclick="setStatusFilter('All')">All</button>
+<button class="filter-tab px-space-sm py-1 rounded font-label-xs text-label-xs text-secondary hover:text-on-surface transition-colors" data-filter="Live" onclick="setStatusFilter('Live')">Live (2)</button>
+<button class="filter-tab px-space-sm py-1 rounded font-label-xs text-label-xs text-secondary hover:text-on-surface transition-colors" data-filter="Completed" onclick="setStatusFilter('Completed')">Completed (1)</button>
+<button class="filter-tab px-space-sm py-1 rounded font-label-xs text-label-xs text-secondary hover:text-on-surface transition-colors" data-filter="Draft" onclick="setStatusFilter('Draft')">Draft (1)</button>
+</div>
+<div class="relative">
+<button class="h-8 px-space-sm bg-surface-container-low hover:bg-surface-container text-on-surface rounded flex items-center gap-space-xs font-label-xs text-label-xs">
+<span class="material-symbols-outlined text-[16px] text-secondary">groups</span>
+<span class="">Campus Leaders 2025</span>
+<span class="material-symbols-outlined text-[14px] text-secondary">expand_more</span>
+</button>
+</div>
+<button class="h-8 w-8 rounded flex items-center justify-center text-secondary hover:text-on-surface hover:bg-surface-container transition-colors" title="Toggle Density">
+<span class="material-symbols-outlined text-[18px]">density_medium</span>
+</button>
+</div>
+</div>
+<!-- Primary Structured Data Table Card -->
+<div class="bg-surface-container-lowest rounded-xl shadow-sm overflow-hidden flex flex-col">
+<div class="overflow-x-auto w-full">
+<table class="w-full text-left border-collapse" id="contestTable">
+<thead>
+<tr class="bg-surface-container-low h-10 text-secondary font-label-xs text-label-xs tracking-wider uppercase">
+<th class="py-2 px-space-md font-medium w-8">
+<input aria-label="Select all" class="w-4 h-4 rounded bg-surface-container-lowest accent-primary cursor-pointer" type="checkbox">
+</th>
+<th class="py-2 px-space-md font-medium">Contest Name &amp; Phase</th>
+<th class="py-2 px-space-md font-medium">Status</th>
+<th class="py-2 px-space-md font-medium">Enrolled Cohort</th>
+<th class="py-2 px-space-md font-medium min-w-[220px]">Submission Progress</th>
+<th class="py-2 px-space-md font-medium">Window / Dates</th>
+<th class="py-2 px-space-md font-medium text-right pr-space-lg">Actions</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-surface-container text-on-surface font-body-md text-body-md">
+<!-- Row 1: National Campus Innovation Challenge -->
+<tr class="contest-row group hover:bg-surface-container-low/50 transition-colors cursor-pointer" data-status="Live" onclick="openRowDetail('row1', event)">
+<td class="py-4 px-space-md" onclick="event.stopPropagation()">
+<input aria-label="Select Row" class="w-4 h-4 rounded accent-primary cursor-pointer" type="checkbox">
+</td>
+<td class="py-4 px-space-md">
+<div class="flex items-start gap-space-sm">
+<div class="w-8 h-8 rounded bg-primary-fixed/40 flex items-center justify-center text-primary mt-0.5 flex-shrink-0">
+<span class="material-symbols-outlined text-[18px]">military_tech</span>
+</div>
+<div class="flex flex-col min-w-0">
+<div class="flex items-center gap-space-xs">
+<span class="font-headline-sm text-headline-sm text-on-surface group-hover:text-primary transition-colors truncate">
+                      National Campus Innovation Challenge 2025
+                    </span>
+<span class="material-symbols-outlined text-[14px] text-secondary opacity-0 group-hover:opacity-100 transition-opacity">open_in_new</span>
+</div>
+<span class="font-label-sm text-label-sm text-secondary truncate mt-0.5">
+                    Stage 2: ESG Transformation
+                  </span>
+</div>
+</div>
+</td>
+<td class="py-4 px-space-md whitespace-nowrap">
+<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-on-tertiary-container text-on-primary-fixed-variant font-label-xs text-label-xs font-semibold">
+<span class="w-1.5 h-1.5 rounded-full bg-primary-container animate-pulse"></span>
+                Live
+              </span>
+</td>
+<td class="py-4 px-space-md whitespace-nowrap">
+<div class="flex flex-col">
+<span class="font-label-md text-label-md text-on-surface font-medium">75 Leaders</span>
+<span class="font-label-xs text-label-xs text-primary font-medium">100% active</span>
+</div>
+</td>
+<td class="py-4 px-space-md">
+<div class="flex flex-col gap-1.5">
+<div class="flex justify-between items-center font-label-xs text-label-xs">
+<span class="font-medium text-on-surface">61 / 75 Submitted</span>
+<span class="font-semibold text-primary">81%</span>
+</div>
+<div class="w-full h-1.5 rounded-full bg-surface-container overflow-hidden">
+<div class="h-full bg-primary-container rounded-full transition-all duration-500" style="width: 81%"></div>
+</div>
+</div>
+</td>
+<td class="py-4 px-space-md whitespace-nowrap">
+<div class="flex items-center gap-1.5 font-label-sm text-label-sm text-on-surface">
+<span class="material-symbols-outlined text-[16px] text-secondary">date_range</span>
+<span class="">Jan 15 – Feb 28, 2025</span>
+</div>
+</td>
+<td class="py-4 px-space-md text-right pr-space-lg whitespace-nowrap" onclick="event.stopPropagation()">
+<div class="flex items-center justify-end gap-space-xs">
+<a class="px-space-sm py-1.5 rounded bg-primary text-on-primary hover:bg-primary-container font-label-xs text-label-xs font-medium transition-colors" data-path="monitoring" href="#">
+                  Manage
+                </a>
+<div class="relative inline-block text-left">
+<button class="p-1.5 text-secondary hover:text-on-surface rounded hover:bg-surface-container transition-colors" onclick="toggleActionMenu('menu-row-1')">
+<span class="material-symbols-outlined text-[18px]">more_vert</span>
+</button>
+<div class="hidden absolute right-0 mt-1 w-36 bg-surface-container-lowest rounded shadow-md z-30 py-1" id="menu-row-1">
+<button class="w-full text-left px-space-sm py-1.5 font-label-xs text-label-xs text-on-surface hover:bg-surface-container flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[16px]">edit</span>Edit
+                    </button>
+<button class="w-full text-left px-space-sm py-1.5 font-label-xs text-label-xs text-on-surface hover:bg-surface-container flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[16px]">content_copy</span>Duplicate
+                    </button>
+<button class="w-full text-left px-space-sm py-1.5 font-label-xs text-label-xs text-error hover:bg-error-container/20 flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[16px]">archive</span>Archive
+                    </button>
+</div>
+</div>
+</div>
+</td>
+</tr>
+<!-- Row 2: Sustainable Enterprise Ideation Hackathon -->
+<tr class="contest-row group hover:bg-surface-container-low/50 transition-colors cursor-pointer" data-status="Live" onclick="openRowDetail('row2', event)">
+<td class="py-4 px-space-md" onclick="event.stopPropagation()">
+<input aria-label="Select Row" class="w-4 h-4 rounded accent-primary cursor-pointer" type="checkbox">
+</td>
+<td class="py-4 px-space-md">
+<div class="flex items-start gap-space-sm">
+<div class="w-8 h-8 rounded bg-secondary-fixed/40 flex items-center justify-center text-secondary mt-0.5 flex-shrink-0">
+<span class="material-symbols-outlined text-[18px]">lightbulb</span>
+</div>
+<div class="flex flex-col min-w-0">
+<div class="flex items-center gap-space-xs">
+<span class="font-headline-sm text-headline-sm text-on-surface group-hover:text-primary transition-colors truncate">
+                      Sustainable Enterprise Ideation Hackathon
+                    </span>
+<span class="material-symbols-outlined text-[14px] text-secondary opacity-0 group-hover:opacity-100 transition-opacity">open_in_new</span>
+</div>
+<span class="font-label-sm text-label-sm text-secondary truncate mt-0.5">
+                    Phase 1: Idea Pitch &amp; Problem Discovery
+                  </span>
+</div>
+</div>
+</td>
+<td class="py-4 px-space-md whitespace-nowrap">
+<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-on-tertiary-container text-on-primary-fixed-variant font-label-xs text-label-xs font-semibold">
+<span class="w-1.5 h-1.5 rounded-full bg-primary-container"></span>
+                Live
+              </span>
+</td>
+<td class="py-4 px-space-md whitespace-nowrap">
+<div class="flex flex-col">
+<span class="font-label-md text-label-md text-on-surface font-medium">75 Leaders</span>
+<span class="font-label-xs text-label-xs text-secondary">Cohort A &amp; B</span>
+</div>
+</td>
+<td class="py-4 px-space-md">
+<div class="flex flex-col gap-1.5">
+<div class="flex justify-between items-center font-label-xs text-label-xs">
+<span class="font-medium text-on-surface">44 / 75 Submitted</span>
+<span class="font-semibold text-secondary">58%</span>
+</div>
+<div class="w-full h-1.5 rounded-full bg-surface-container overflow-hidden">
+<div class="h-full bg-tertiary-container rounded-full transition-all duration-500" style="width: 58%"></div>
+</div>
+</div>
+</td>
+<td class="py-4 px-space-md whitespace-nowrap">
+<div class="flex items-center gap-1.5 font-label-sm text-label-sm text-on-surface">
+<span class="material-symbols-outlined text-[16px] text-secondary">date_range</span>
+<span class="">Feb 01 – Mar 10, 2025</span>
+</div>
+</td>
+<td class="py-4 px-space-md text-right pr-space-lg whitespace-nowrap" onclick="event.stopPropagation()">
+<div class="flex items-center justify-end gap-space-xs">
+<a class="px-space-sm py-1.5 rounded bg-primary text-on-primary hover:bg-primary-container font-label-xs text-label-xs font-medium transition-colors" data-path="monitoring" href="#">
+                  Manage
+                </a>
+<div class="relative inline-block text-left">
+<button class="p-1.5 text-secondary hover:text-on-surface rounded hover:bg-surface-container transition-colors" onclick="toggleActionMenu('menu-row-2')">
+<span class="material-symbols-outlined text-[18px]">more_vert</span>
+</button>
+<div class="hidden absolute right-0 mt-1 w-36 bg-surface-container-lowest rounded shadow-md z-30 py-1" id="menu-row-2">
+<button class="w-full text-left px-space-sm py-1.5 font-label-xs text-label-xs text-on-surface hover:bg-surface-container flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[16px]">edit</span>Edit
+                    </button>
+<button class="w-full text-left px-space-sm py-1.5 font-label-xs text-label-xs text-on-surface hover:bg-surface-container flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[16px]">content_copy</span>Duplicate
+                    </button>
+<button class="w-full text-left px-space-sm py-1.5 font-label-xs text-label-xs text-error hover:bg-error-container/20 flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[16px]">archive</span>Archive
+                    </button>
+</div>
+</div>
+</div>
+</td>
+</tr>
+<!-- Row 3: Ethical Leadership & Crisis Case Study -->
+<tr class="contest-row group hover:bg-surface-container-low/50 transition-colors cursor-pointer" data-status="Completed" onclick="openRowDetail('row3', event)">
+<td class="py-4 px-space-md" onclick="event.stopPropagation()">
+<input aria-label="Select Row" class="w-4 h-4 rounded accent-primary cursor-pointer" type="checkbox">
+</td>
+<td class="py-4 px-space-md">
+<div class="flex items-start gap-space-sm">
+<div class="w-8 h-8 rounded bg-surface-container-high flex items-center justify-center text-secondary mt-0.5 flex-shrink-0">
+<span class="material-symbols-outlined text-[18px]">verified_user</span>
+</div>
+<div class="flex flex-col min-w-0">
+<div class="flex items-center gap-space-xs">
+<span class="font-headline-sm text-headline-sm text-on-surface group-hover:text-primary transition-colors truncate">
+                      Ethical Leadership &amp; Crisis Case Study
+                    </span>
+<span class="material-symbols-outlined text-[14px] text-secondary opacity-0 group-hover:opacity-100 transition-opacity">open_in_new</span>
+</div>
+<span class="font-label-sm text-label-sm text-secondary truncate mt-0.5">
+                    Evaluation Finalisation
+                  </span>
+</div>
+</div>
+</td>
+<td class="py-4 px-space-md whitespace-nowrap">
+<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-secondary-fixed text-on-secondary-fixed font-label-xs text-label-xs font-medium">
+<span class="w-1.5 h-1.5 rounded-full bg-secondary"></span>
+                Completed
+              </span>
+</td>
+<td class="py-4 px-space-md whitespace-nowrap">
+<div class="flex flex-col">
+<span class="font-label-md text-label-md text-on-surface font-medium">75 Leaders</span>
+<span class="font-label-xs text-label-xs text-secondary">Evaluated</span>
+</div>
+</td>
+<td class="py-4 px-space-md">
+<div class="flex flex-col gap-1.5">
+<div class="flex justify-between items-center font-label-xs text-label-xs">
+<span class="font-medium text-on-surface">75 / 75 Finalised</span>
+<span class="font-semibold text-primary">100%</span>
+</div>
+<div class="w-full h-1.5 rounded-full bg-surface-container overflow-hidden">
+<div class="h-full bg-primary rounded-full transition-all duration-500" style="width: 100%"></div>
+</div>
+</div>
+</td>
+<td class="py-4 px-space-md whitespace-nowrap">
+<div class="flex items-center gap-1.5 font-label-sm text-label-sm text-on-surface">
+<span class="material-symbols-outlined text-[16px] text-secondary">date_range</span>
+<span class="">Dec 01 – Jan 10, 2025</span>
+</div>
+</td>
+<td class="py-4 px-space-md text-right pr-space-lg whitespace-nowrap" onclick="event.stopPropagation()">
+<div class="flex items-center justify-end gap-space-xs">
+<a class="px-space-sm py-1.5 rounded bg-surface-container-high hover:bg-surface-container-highest text-on-surface font-label-xs text-label-xs font-medium transition-colors" data-path="results" href="#">
+                  View Results
+                </a>
+<div class="relative inline-block text-left">
+<button class="p-1.5 text-secondary hover:text-on-surface rounded hover:bg-surface-container transition-colors" onclick="toggleActionMenu('menu-row-3')">
+<span class="material-symbols-outlined text-[18px]">more_vert</span>
+</button>
+<div class="hidden absolute right-0 mt-1 w-36 bg-surface-container-lowest rounded shadow-md z-30 py-1" id="menu-row-3">
+<button class="w-full text-left px-space-sm py-1.5 font-label-xs text-label-xs text-on-surface hover:bg-surface-container flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[16px]">file_download</span>Export Score
+                    </button>
+<button class="w-full text-left px-space-sm py-1.5 font-label-xs text-label-xs text-on-surface hover:bg-surface-container flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[16px]">content_copy</span>Duplicate
+                    </button>
+<button class="w-full text-left px-space-sm py-1.5 font-label-xs text-label-xs text-error hover:bg-error-container/20 flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[16px]">archive</span>Archive
+                    </button>
+</div>
+</div>
+</div>
+</td>
+</tr>
+<!-- Row 4: Q2 Executive Policy Simulation -->
+<tr class="contest-row group hover:bg-surface-container-low/50 transition-colors cursor-pointer" data-status="Draft" onclick="openRowDetail('row4', event)">
+<td class="py-4 px-space-md" onclick="event.stopPropagation()">
+<input aria-label="Select Row" class="w-4 h-4 rounded accent-primary cursor-pointer" type="checkbox">
+</td>
+<td class="py-4 px-space-md">
+<div class="flex items-start gap-space-sm">
+<div class="w-8 h-8 rounded bg-surface-container flex items-center justify-center text-secondary mt-0.5 flex-shrink-0">
+<span class="material-symbols-outlined text-[18px]">policy</span>
+</div>
+<div class="flex flex-col min-w-0">
+<div class="flex items-center gap-space-xs">
+<span class="font-headline-sm text-headline-sm text-on-surface group-hover:text-primary transition-colors truncate">
+                      Q2 Executive Policy Simulation
+                    </span>
+<span class="material-symbols-outlined text-[14px] text-secondary opacity-0 group-hover:opacity-100 transition-opacity">open_in_new</span>
+</div>
+<span class="font-label-sm text-label-sm text-secondary truncate mt-0.5">
+                    Configuration Draft
+                  </span>
+</div>
+</div>
+</td>
+<td class="py-4 px-space-md whitespace-nowrap">
+<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-surface-container-high text-secondary font-label-xs text-label-xs font-medium">
+                Draft
+              </span>
+</td>
+<td class="py-4 px-space-md whitespace-nowrap">
+<div class="flex flex-col">
+<span class="font-label-md text-label-md text-secondary italic">Unassigned</span>
+<span class="font-label-xs text-label-xs text-secondary">Awaiting cohort sync</span>
+</div>
+</td>
+<td class="py-4 px-space-md">
+<div class="flex items-center gap-space-xs font-label-sm text-label-sm text-secondary">
+<span class="material-symbols-outlined text-[16px]">edit_note</span>
+<span class="">Drafting Rubric (Step 2 of 4)</span>
+</div>
+</td>
+<td class="py-4 px-space-md whitespace-nowrap">
+<div class="flex items-center gap-1.5 font-label-sm text-label-sm text-secondary">
+<span class="material-symbols-outlined text-[16px]">event_upcoming</span>
+<span class="">Opens Apr 2025</span>
+</div>
+</td>
+<td class="py-4 px-space-md text-right pr-space-lg whitespace-nowrap" onclick="event.stopPropagation()">
+<div class="flex items-center justify-end gap-space-xs">
+<button class="px-space-sm py-1.5 rounded bg-surface-container-high hover:bg-surface-container-highest text-on-surface font-label-xs text-label-xs font-medium transition-colors">
+                  Resume Setup
+                </button>
+<div class="relative inline-block text-left">
+<button class="p-1.5 text-secondary hover:text-on-surface rounded hover:bg-surface-container transition-colors" onclick="toggleActionMenu('menu-row-4')">
+<span class="material-symbols-outlined text-[18px]">more_vert</span>
+</button>
+<div class="hidden absolute right-0 mt-1 w-36 bg-surface-container-lowest rounded shadow-md z-30 py-1" id="menu-row-4">
+<button class="w-full text-left px-space-sm py-1.5 font-label-xs text-label-xs text-on-surface hover:bg-surface-container flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[16px]">edit</span>Edit Setup
+                    </button>
+<button class="w-full text-left px-space-sm py-1.5 font-label-xs text-label-xs text-error hover:bg-error-container/20 flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[16px]">delete</span>Delete
+                    </button>
+</div>
+</div>
+</div>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- Table Footer / Pagination Navigation -->
+<div class="p-space-sm px-space-md bg-surface-container-low flex flex-col sm:flex-row items-center justify-between gap-space-sm font-label-sm text-label-sm text-secondary">
+<div class="flex items-center gap-space-sm">
+<span class="">Showing <strong class="text-on-surface">1–4</strong> of <strong class="text-on-surface">4</strong> contests</span>
+<span class="text-secondary/40">•</span>
+<span class="hidden sm:inline">Select row for diagnostic telemetry preview</span>
+</div>
+<div class="flex items-center gap-space-xs">
+<button class="h-8 px-2.5 rounded bg-surface-container-lowest text-secondary opacity-50 cursor-not-allowed flex items-center gap-1" disabled="">
+<span class="material-symbols-outlined text-[16px]">chevron_left</span>
+<span class="">Previous</span>
+</button>
+<span class="px-space-sm py-1 rounded bg-surface-container text-on-surface font-medium">1</span>
+<button class="h-8 px-2.5 rounded bg-surface-container-lowest text-secondary opacity-50 cursor-not-allowed flex items-center gap-1" disabled="">
+<span class="">Next</span>
+<span class="material-symbols-outlined text-[16px]">chevron_right</span>
+</button>
+</div>
+</div>
+</div>
+<!-- Operational Overview Metric Bento Cards -->
+<div class="grid grid-cols-1 md:grid-cols-3 gap-space-md mt-space-lg">
+<!-- Card 1 -->
+<div class="p-space-md bg-surface-container-lowest rounded-xl shadow-sm flex flex-col justify-between">
+<div class="flex items-center justify-between text-secondary mb-space-sm">
+<span class="font-label-xs text-label-xs uppercase tracking-wider">Active Evaluation Velocity</span>
+<span class="material-symbols-outlined text-[18px] text-primary">speed</span>
+</div>
+<div class="flex items-baseline gap-space-xs">
+<span class="font-display-lg text-display-lg text-on-surface">92.4%</span>
+<span class="font-label-xs text-label-xs text-primary font-medium flex items-center">
+<span class="material-symbols-outlined text-[14px]">arrow_upward</span>+4.1%
+        </span>
+</div>
+<p class="font-body-sm text-body-sm text-secondary mt-1">Rubrics auto-scored within 12m SLA window across all active tracks.</p>
+</div>
+<!-- Card 2 -->
+<div class="p-space-md bg-surface-container-lowest rounded-xl shadow-sm flex flex-col justify-between">
+<div class="flex items-center justify-between text-secondary mb-space-sm">
+<span class="font-label-xs text-label-xs uppercase tracking-wider">Cohort Integrity Index</span>
+<span class="material-symbols-outlined text-[18px] text-tertiary">security</span>
+</div>
+<div class="flex items-baseline gap-space-xs">
+<span class="font-display-lg text-display-lg text-on-surface">99.8%</span>
+<span class="font-label-xs text-label-xs text-secondary font-medium">0 Flagged Anomalies</span>
+</div>
+<p class="font-body-sm text-body-sm text-secondary mt-1">Biometric proctoring telemetry validated with zero critical breaches.</p>
+</div>
+<!-- Card 3 -->
+<div class="p-space-md bg-surface-container-lowest rounded-xl shadow-sm flex flex-col justify-between">
+<div class="flex items-center justify-between text-secondary mb-space-sm">
+<span class="font-label-xs text-label-xs uppercase tracking-wider">Next Benchmark Milestone</span>
+<span class="material-symbols-outlined text-[18px] text-secondary">calendar_clock</span>
+</div>
+<div class="flex items-baseline gap-space-xs">
+<span class="font-display-lg text-display-lg text-on-surface">4 Days</span>
+<span class="font-label-xs text-label-xs text-secondary font-medium">Stage 2 Freeze</span>
+</div>
+<p class="font-body-sm text-body-sm text-secondary mt-1">National Innovation Challenge submission cut-off at 23:59 GMT.</p>
+</div>
+</div>
+<!-- Linear-Style Slide-over Drawer for Contest Quick Inspection -->
+<div class="fixed inset-0 bg-inverse-surface/30 backdrop-blur-xs z-50 hidden transition-opacity" id="drawerOverlay" onclick="closeDrawer()">
+<div class="fixed inset-y-0 right-0 max-w-xl w-full bg-surface-container-lowest shadow-2xl p-space-lg flex flex-col justify-between transform translate-x-full transition-transform duration-300 ease-out" id="drawerPanel" onclick="event.stopPropagation()">
+<div class="flex flex-col overflow-y-auto">
+<!-- Drawer Header -->
+<div class="flex items-center justify-between pb-space-md">
+<div class="flex items-center gap-space-xs">
+<span class="px-2 py-0.5 rounded bg-on-tertiary-container text-on-primary-fixed-variant font-label-xs text-label-xs font-semibold">Live Track</span>
+<span class="font-label-xs text-label-xs text-secondary">ID: CLP-EV-2025-01</span>
+</div>
+<button class="p-1 rounded text-secondary hover:text-on-surface hover:bg-surface-container transition-colors" onclick="closeDrawer()">
+<span class="material-symbols-outlined text-[20px]">close</span>
+</button>
+</div>
+<!-- Detail Title -->
+<h2 class="font-headline-lg text-headline-lg text-on-surface tracking-tight mt-1" id="drawerTitle">
+          National Campus Innovation Challenge 2025
+        </h2>
+<p class="font-body-md text-body-md text-secondary mt-1" id="drawerSubtitle">
+          Stage 2: ESG Transformation &amp; Policy Modeling
+        </p>
+<!-- Metric strip inside drawer -->
+<div class="grid grid-cols-2 gap-space-sm my-space-md">
+<div class="p-space-sm bg-surface-container-low rounded">
+<span class="font-label-xs text-label-xs text-secondary block">Participation Rate</span>
+<span class="font-headline-md text-headline-md text-primary font-bold">81.3%</span>
+<span class="font-label-xs text-label-xs text-secondary">61 of 75 enrolled leaders</span>
+</div>
+<div class="p-space-sm bg-surface-container-low rounded">
+<span class="font-label-xs text-label-xs text-secondary block">Avg Assessment Score</span>
+<span class="font-headline-md text-headline-md text-on-surface font-bold">88.2 / 100</span>
+<span class="font-label-xs text-label-xs text-primary font-medium">+3.4 above median</span>
+</div>
+</div>
+<!-- Rubric Distribution Breakdown -->
+<div class="flex flex-col gap-space-sm mt-space-sm">
+<span class="font-label-xs text-label-xs uppercase tracking-wider text-secondary font-medium">Evaluation Rubric Matrix</span>
+<div class="space-y-space-sm">
+<div>
+<div class="flex justify-between font-label-xs text-label-xs mb-1">
+<span class="text-on-surface font-medium">Analytical Depth &amp; Quantitative Proof</span>
+<span class="text-secondary">40% weight • 92% pass</span>
+</div>
+<div class="h-1.5 w-full bg-surface-container rounded-full overflow-hidden">
+<div class="h-full bg-primary-container rounded-full" style="width: 92%"></div>
+</div>
+</div>
+<div>
+<div class="flex justify-between font-label-xs text-label-xs mb-1">
+<span class="text-on-surface font-medium">ESG Alignment &amp; Global Compliance</span>
+<span class="text-secondary">35% weight • 84% pass</span>
+</div>
+<div class="h-1.5 w-full bg-surface-container rounded-full overflow-hidden">
+<div class="h-full bg-tertiary-container rounded-full" style="width: 84%"></div>
+</div>
+</div>
+<div>
+<div class="flex justify-between font-label-xs text-label-xs mb-1">
+<span class="text-on-surface font-medium">Executive Communication &amp; Defense</span>
+<span class="text-secondary">25% weight • 68% pass</span>
+</div>
+<div class="h-1.5 w-full bg-surface-container rounded-full overflow-hidden">
+<div class="h-full bg-secondary rounded-full" style="width: 68%"></div>
+</div>
+</div>
+</div>
+</div>
+<!-- Cohort Activity Timeline -->
+<div class="mt-space-lg flex flex-col gap-space-xs">
+<span class="font-label-xs text-label-xs uppercase tracking-wider text-secondary font-medium">Recent Submissions</span>
+<div class="divide-y divide-surface-container text-body-sm font-body-sm">
+<div class="py-2.5 flex items-center justify-between">
+<div class="flex items-center gap-space-xs">
+<div class="w-6 h-6 rounded-full bg-primary-fixed flex items-center justify-center font-label-xs font-bold text-on-primary-fixed">MK</div>
+<span class="text-on-surface font-medium">Marcus Kane</span>
+</div>
+<span class="font-label-xs text-label-xs text-secondary">Uploaded 14m ago</span>
+</div>
+<div class="py-2.5 flex items-center justify-between">
+<div class="flex items-center gap-space-xs">
+<div class="w-6 h-6 rounded-full bg-secondary-fixed flex items-center justify-center font-label-xs font-bold text-on-secondary-fixed">ST</div>
+<span class="text-on-surface font-medium">Sophia Thorne</span>
+</div>
+<span class="font-label-xs text-label-xs text-secondary">Graded 94/100 • 1h ago</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Drawer Actions footer -->
+<div class="pt-space-md flex items-center justify-end gap-space-sm">
+<button class="px-space-md py-2 rounded bg-surface-container-high hover:bg-surface-container-highest text-on-surface font-label-md text-label-md transition-colors" onclick="closeDrawer()">
+          Dismiss
+        </button>
+<a class="px-space-md py-2 rounded bg-primary-container hover:bg-primary text-on-primary font-label-md text-label-md font-medium transition-colors" data-path="submissions" href="#">
+          Inspect Submissions
+        </a>
+</div>
+</div>
+</div>
+</div>
+<script>
+  // Filter Functionality by Status Tab
+  function setStatusFilter(status) {
+    document.querySelectorAll('.filter-tab').forEach(tab => {
+      if (tab.dataset.filter === status) {
+        tab.className = 'filter-tab px-space-sm py-1 rounded font-label-xs text-label-xs bg-surface-container-lowest text-on-surface shadow-xs transition-colors';
+      } else {
+        tab.className = 'filter-tab px-space-sm py-1 rounded font-label-xs text-label-xs text-secondary hover:text-on-surface transition-colors';
+      }
+    });
+
+    const rows = document.querySelectorAll('.contest-row');
+    rows.forEach(row => {
+      if (status === 'All' || row.dataset.status === status) {
+        row.style.display = '';
+      } else {
+        row.style.display = 'none';
+      }
+    });
+  }
+
+  // Live Inline Search Filtering
+  function filterContests() {
+    const term = document.getElementById('contestSearch').value.toLowerCase();
+    const rows = document.querySelectorAll('.contest-row');
+    rows.forEach(row => {
+      const text = row.innerText.toLowerCase();
+      row.style.display = text.includes(term) ? '' : 'none';
+    });
+  }
+
+  // Row Quick Actions Menu Toggle
+  function toggleActionMenu(menuId) {
+    // Close other open menus
+    document.querySelectorAll('[id^="menu-row-"]').forEach(menu => {
+      if (menu.id !== menuId) menu.classList.add('hidden');
+    });
+    const target = document.getElementById(menuId);
+    if (target) {
+      target.classList.toggle('hidden');
+    }
+  }
+
+  // Close menus when clicking outside
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('[onclick^="toggleActionMenu"]')) {
+      document.querySelectorAll('[id^="menu-row-"]').forEach(m => m.classList.add('hidden'));
+    }
+  });
+
+  // Slide-over Drawer for Linear-grade Inspector Panel
+  const drawerData = {
+    row1: {
+      title: "National Campus Innovation Challenge 2025",
+      subtitle: "Stage 2: ESG Transformation & Policy Modeling"
+    },
+    row2: {
+      title: "Sustainable Enterprise Ideation Hackathon",
+      subtitle: "Phase 1: Idea Pitch & Problem Discovery"
+    },
+    row3: {
+      title: "Ethical Leadership & Crisis Case Study",
+      subtitle: "Evaluation Finalisation & Verification"
+    },
+    row4: {
+      title: "Q2 Executive Policy Simulation",
+      subtitle: "Configuration Draft - Rubrics in Progress"
+    }
+  };
+
+  function openRowDetail(rowKey, event) {
+    if (event) event.stopPropagation();
+    const overlay = document.getElementById('drawerOverlay');
+    const panel = document.getElementById('drawerPanel');
+    const data = drawerData[rowKey] || drawerData.row1;
+
+    document.getElementById('drawerTitle').innerText = data.title;
+    document.getElementById('drawerSubtitle').innerText = data.subtitle;
+
+    overlay.classList.remove('hidden');
+    setTimeout(() => {
+      panel.classList.remove('translate-x-full');
+    }, 10);
+  }
+
+  function closeDrawer() {
+    const overlay = document.getElementById('drawerOverlay');
+    const panel = document.getElementById('drawerPanel');
+    panel.classList.add('translate-x-full');
+    setTimeout(() => {
+      overlay.classList.add('hidden');
+    }, 300);
+  }
+</script></main></div>
+
+</body></html>
