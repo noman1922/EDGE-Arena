@@ -2,6 +2,7 @@
 
 import React from "react";
 import Link from "next/link";
+import { DEMO_EVALUATOR } from "@/lib/demo-data";
 
 interface AdminHeaderProps {
   onToggleMobileNav?: () => void;
@@ -22,13 +23,18 @@ export function AdminHeader({ onToggleMobileNav }: AdminHeaderProps) {
           </button>
         )}
 
-        <span className="hidden sm:inline-flex items-center px-space-sm py-0.5 rounded font-label-xs bg-tertiary-fixed text-on-tertiary-fixed font-semibold tracking-wide">
-          Campus Leadership Programme
+        <span className="hidden sm:inline-flex items-center px-space-sm py-0.5 rounded font-label-xs bg-tertiary-fixed text-on-tertiary-fixed font-semibold tracking-wide border border-[#e2e8f0]">
+          {DEMO_EVALUATOR.cohort}
+        </span>
+
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded font-label-xs bg-amber-50 text-amber-800 border border-amber-200">
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-600"></span>
+          Demo Environment
         </span>
 
         <div className="hidden md:flex items-center gap-space-xs px-space-sm py-1.5 rounded bg-surface-container-low text-secondary font-label-sm border border-[#e2e8f0]">
           <span className="material-symbols-outlined text-[18px]">search</span>
-          <span className="text-secondary/80">Search candidate, contest, tag...</span>
+          <span className="text-secondary/80">Search demo benchmarks, tags...</span>
           <kbd className="ml-space-md px-1.5 py-0.5 bg-surface-container-lowest text-secondary rounded font-label-xs border border-[#e2e8f0] shadow-2xs">
             ⌘K
           </kbd>
@@ -62,14 +68,14 @@ export function AdminHeader({ onToggleMobileNav }: AdminHeaderProps) {
         {/* Profile Lockup */}
         <div className="flex items-center gap-space-sm pl-space-xs sm:pl-space-sm border-l border-[#e2e8f0]">
           <div className="w-8 h-8 rounded-full bg-secondary-fixed text-on-secondary-fixed flex items-center justify-center font-label-sm font-semibold overflow-hidden shrink-0">
-            EV
+            {DEMO_EVALUATOR.avatarInitials}
           </div>
           <div className="hidden lg:flex flex-col text-left">
             <span className="font-label-md text-on-surface leading-tight font-medium">
-              Eleanor Vance
+              {DEMO_EVALUATOR.name}
             </span>
             <span className="font-label-xs text-secondary leading-tight">
-              Chief Evaluator
+              {DEMO_EVALUATOR.title}
             </span>
           </div>
         </div>

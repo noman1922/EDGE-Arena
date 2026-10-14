@@ -19,10 +19,10 @@ export default function AssessmentInterfacePage() {
     time: string;
     hash: string;
   } | null>({
-    name: "Campus_ESG_TeamAlpha_vFinal.pdf",
+    name: "Sample_Campus_ESG_PitchDeck_vFinal.pdf",
     size: "4.8 MB",
     time: "14:18:22",
-    hash: "SHA-256 Verified",
+    hash: "SHA-256 Verified (Mock)",
   });
   const [isSubmitModalOpen, setIsSubmitModalOpen] = useState(false);
   const [submitted, setSubmitted] = useState(false);
@@ -54,7 +54,7 @@ export default function AssessmentInterfacePage() {
     const now = new Date();
     const timeStr = now.toTimeString().split(" ")[0];
     setLastSaved(timeStr);
-    alert(`Draft saved successfully at ${timeStr}`);
+    alert(`[Demo Mode] Draft saved locally at ${timeStr}. (Database persistence will connect in Stage 2).`);
   };
 
   const handleFinalSubmit = () => {
@@ -73,7 +73,7 @@ export default function AssessmentInterfacePage() {
             <div className="flex flex-col">
               <span className="font-label-xs uppercase tracking-wider text-secondary flex items-center gap-1.5">
                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary-container"></span>
-                National Campus Innovation Challenge 2025 · Stage 2 Evaluation
+                [Sample Benchmark] Campus Innovation Challenge 2025 · Stage 2
               </span>
               <h1 className="font-headline-sm text-on-surface mt-0.5 font-semibold">
                 Task 2.1: Campus ESG Transformation Strategy
@@ -112,11 +112,11 @@ export default function AssessmentInterfacePage() {
               <span className="material-symbols-outlined text-[24px]">verified</span>
               <div>
                 <h3 className="font-headline-sm font-semibold">
-                  Task 2.1 Successfully Submitted for Review
+                  Task 2.1 Mock Submission Completed
                 </h3>
                 <p className="font-body-sm text-on-surface-variant mt-0.5">
-                  Your diagnostic responses and pitch deck were timestamped at {lastSaved} and
-                  locked. The academic evaluation panel has queued your assessment for rubric scoring.
+                  Your simulated diagnostic responses and pitch deck were timestamped at {lastSaved} and
+                  locked. Server-side verification and database storage will be connected in Stage 2.
                 </p>
                 <Link
                   href="/dashboard"
@@ -137,15 +137,15 @@ export default function AssessmentInterfacePage() {
               <div>
                 <div className="flex items-center gap-2">
                   <span className="font-label-xs px-2 py-0.5 rounded-full bg-on-tertiary-container text-primary-container uppercase font-semibold tracking-wider">
-                    Secure Assessment Protocol
+                    Secure Assessment Protocol (Mock)
                   </span>
-                  <span className="font-label-xs text-secondary">• Session #NCI-9942</span>
+                  <span className="font-label-xs text-secondary">• Session #DEMO-9942</span>
                 </div>
                 <p className="font-headline-sm text-on-surface mt-1">
-                  Institutional Energy Decarbonization Module
+                  Institutional Energy Decarbonization Module (Sample Task)
                 </p>
                 <p className="font-body-sm text-secondary mt-0.5">
-                  Responses are timestamped, encrypted, and evaluated against standardized enterprise sustainability criteria.
+                  Demonstration of diagnostic benchmark question flow conforming to standardized enterprise sustainability criteria.
                 </p>
               </div>
             </div>
@@ -337,7 +337,7 @@ export default function AssessmentInterfacePage() {
                 Supporting Reference Document
               </h2>
               <p className="font-body-sm text-secondary mt-1">
-                Review the institutional energy audit baseline to substantiate your technical proposals and emission reduction models.
+                Review the sample institutional energy audit baseline to substantiate your technical proposals and emission reduction models.
               </p>
             </div>
 
@@ -349,10 +349,10 @@ export default function AssessmentInterfacePage() {
                 </div>
                 <div className="flex flex-col min-w-0">
                   <span className="font-label-md text-on-surface font-semibold truncate">
-                    Case_Brief_Campus_ESG_2025.pdf
+                    Sample_Case_Brief_Campus_ESG.pdf
                   </span>
                   <span className="font-label-xs text-secondary mt-0.5">
-                    2.4 MB · Verified Academic Archive · Rev 3
+                    2.4 MB · Sample Academic Archive · Rev 3
                   </span>
                 </div>
               </div>
@@ -368,7 +368,7 @@ export default function AssessmentInterfacePage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => alert("Downloading verified Case_Brief_Campus_ESG_2025.pdf")}
+                  onClick={() => alert("[Demo Action] Sample reference PDF download initiated.")}
                   className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded bg-surface-container-lowest hover:bg-surface-container text-on-surface font-label-sm border border-[#e2e8f0] shadow-2xs transition-colors"
                 >
                   <span className="material-symbols-outlined text-[16px]">download</span>
@@ -416,7 +416,7 @@ export default function AssessmentInterfacePage() {
                       name: file.name,
                       size: `${(file.size / (1024 * 1024)).toFixed(1)} MB`,
                       time: new Date().toTimeString().split(" ")[0],
-                      hash: "SHA-256 Verified",
+                      hash: "SHA-256 Verified (Mock)",
                     });
                   }
                 };
@@ -489,7 +489,7 @@ export default function AssessmentInterfacePage() {
             {/* Center: Auto-save status */}
             <div className="flex items-center gap-2 font-label-sm text-secondary">
               <span className="w-2 h-2 rounded-full bg-primary-container animate-pulse"></span>
-              <span className="tabular-nums">Draft saved automatically ({lastSaved})</span>
+              <span className="tabular-nums">Draft saved locally ({lastSaved})</span>
             </div>
 
             {/* Right: Commitments */}
@@ -525,7 +525,7 @@ export default function AssessmentInterfacePage() {
                   Finalize and Submit Assessment?
                 </h3>
                 <p className="font-body-md text-secondary mt-1">
-                  Once submitted, your answers will be permanently locked and submitted for formal panel evaluation. You cannot modify your written responses or uploaded pitch deck.
+                  Once submitted, your answers will be permanently locked and queued for formal panel evaluation. (Mock submission in Stage 1).
                 </p>
               </div>
 
@@ -562,7 +562,7 @@ export default function AssessmentInterfacePage() {
                 <div className="flex items-center gap-2">
                   <span className="material-symbols-outlined text-error">picture_as_pdf</span>
                   <span className="font-headline-sm font-semibold text-on-surface">
-                    Case_Brief_Campus_ESG_2025.pdf
+                    Sample_Case_Brief_Campus_ESG.pdf
                   </span>
                 </div>
                 <button
@@ -576,10 +576,10 @@ export default function AssessmentInterfacePage() {
               <div className="flex-1 p-6 overflow-y-auto bg-surface-container-low/40 flex flex-col gap-4 font-body-md text-on-surface leading-relaxed">
                 <div className="p-4 bg-surface-container-lowest rounded border border-[#e2e8f0] shadow-2xs">
                   <span className="font-label-xs text-secondary uppercase tracking-wider font-semibold">
-                    Executive Summary · Reference Section 1.2
+                    Sample Case Brief · Section 1.2
                   </span>
                   <h4 className="font-headline-sm font-semibold mt-1 mb-2">
-                    Institutional Carbon Footprint & Thermal Utility Baseline
+                    Institutional Carbon Footprint & Thermal Utility Baseline (Sample Data)
                   </h4>
                   <p className="text-secondary text-sm">
                     The participating university cluster comprises 142 primary academic and administrative facilities across 220 hectares. Central thermal heating is currently driven by 42 direct-fired natural gas boilers installed between 2008 and 2016. Annual Scope 1 emissions generated directly from heating and fleet fuels total 34,200 metric tonnes CO2e.
@@ -591,7 +591,7 @@ export default function AssessmentInterfacePage() {
               </div>
 
               <div className="p-4 border-t border-[#e2e8f0] flex items-center justify-between bg-surface-container-low">
-                <span className="font-label-xs text-secondary">Document Verified · 2.4 MB</span>
+                <span className="font-label-xs text-secondary">Sample Document Verified · 2.4 MB</span>
                 <button
                   onClick={() => setReaderModalOpen(false)}
                   className="px-4 py-1.5 rounded bg-surface-container hover:bg-surface-container-high text-on-surface font-label-sm border border-[#e2e8f0]"

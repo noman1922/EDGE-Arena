@@ -4,6 +4,7 @@ import React from "react";
 import Link from "next/link";
 import { ParticipantHeader } from "@/components/layout/participant-header";
 import { ParticipantFooter } from "@/components/layout/participant-footer";
+import { DEMO_CANDIDATE } from "@/lib/demo-data";
 
 export default function ParticipantDashboardPage() {
   return (
@@ -12,19 +13,28 @@ export default function ParticipantDashboardPage() {
 
       <main className="w-full pt-16 bg-surface min-h-[calc(100vh-80px)]">
         <div className="w-full max-w-4xl mx-auto px-4 sm:px-6 py-space-lg sm:py-space-xl flex flex-col gap-space-xl">
+          {/* Demo Disclaimer */}
+          <div className="px-4 py-2 bg-amber-50 rounded border border-amber-200 text-amber-900 font-label-xs flex items-center justify-between">
+            <span className="flex items-center gap-1.5">
+              <span className="material-symbols-outlined text-[16px] text-amber-700">info</span>
+              <strong>Candidate Demo View:</strong> Fictional candidate profile and sample benchmark tracks for UI/UX evaluation.
+            </span>
+            <span className="text-amber-700 font-mono">Stage 1 Verified</span>
+          </div>
+
           {/* Welcome Header Section */}
           <header className="flex flex-col md:flex-row md:items-end justify-between gap-space-md bg-surface-container-lowest p-space-lg sm:p-space-xl rounded-lg border border-[#e2e8f0] shadow-2xs relative overflow-hidden">
             <div className="flex flex-col gap-space-xs z-10">
               <div className="inline-flex items-center gap-space-xs font-label-xs uppercase tracking-wider text-secondary">
-                <span>Candidate ID: ACI-8942-EL</span>
+                <span>Candidate ID: {DEMO_CANDIDATE.id}</span>
                 <span>·</span>
-                <span>Cohort Delta</span>
+                <span>{DEMO_CANDIDATE.cohort}</span>
               </div>
               <h1 className="font-display-lg text-on-surface tracking-tight">
-                Welcome back, Eleanor
+                Welcome back, {DEMO_CANDIDATE.name}
               </h1>
               <p className="font-body-md text-secondary">
-                ACI Career EDGE Academy · Campus Leadership Programme 2025
+                {DEMO_CANDIDATE.program}
               </p>
             </div>
 
@@ -35,7 +45,7 @@ export default function ParticipantDashboardPage() {
                   Stage 2 Evaluation in Progress
                 </span>
                 <span className="font-label-xs text-secondary">
-                  Top 75 Campus Leaders Cohort
+                  Sample 75-Leader Benchmark Cohort
                 </span>
               </div>
             </div>
@@ -46,14 +56,14 @@ export default function ParticipantDashboardPage() {
             <div className="flex items-center justify-between pb-space-xs">
               <div className="flex items-baseline gap-space-sm">
                 <h2 className="font-headline-lg text-on-surface tracking-tight">
-                  Assigned Contests
+                  Assigned Benchmark Contests
                 </h2>
                 <span className="font-label-sm text-secondary bg-surface-container-high px-space-sm py-0.5 rounded-full border border-[#e2e8f0]">
                   2 Active
                 </span>
               </div>
               <span className="font-label-sm text-secondary hidden sm:inline-block">
-                Timezone: UTC+08:00 (Singapore / Standard)
+                Timezone: UTC+08:00 (Standard)
               </span>
             </div>
 
@@ -76,7 +86,7 @@ export default function ParticipantDashboardPage() {
                       </span>
                     </div>
                     <h3 className="font-headline-lg text-on-surface tracking-tight pt-1">
-                      National Campus Innovation Challenge 2025
+                      [Sample Benchmark] Campus ESG Transformation Strategy 2025
                     </h3>
                     <p className="font-body-md text-secondary">
                       Task 2.1: Campus ESG Transformation Strategy & Execution Blueprint
@@ -125,7 +135,7 @@ export default function ParticipantDashboardPage() {
                 {/* Actions Row */}
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-space-md pt-space-xs ml-1">
                   <button
-                    onClick={() => alert("Guidelines and PDF case brief viewer ready.")}
+                    onClick={() => alert("[Demo Action] Sample guidelines viewer opened.")}
                     className="inline-flex items-center gap-space-xs font-label-md text-secondary hover:text-on-surface transition-colors text-left"
                   >
                     <span className="material-symbols-outlined text-[18px]">article</span>
@@ -157,7 +167,7 @@ export default function ParticipantDashboardPage() {
                       </span>
                     </div>
                     <h3 className="font-headline-lg text-on-surface tracking-tight pt-1">
-                      Sustainable Enterprise Ideation Hackathon
+                      [Sample Challenge] Sustainable Enterprise Ideation
                     </h3>
                     <p className="font-body-md text-secondary">
                       Task 1: Team Formation, Stakeholder Mapping & Problem Statement
@@ -187,14 +197,14 @@ export default function ParticipantDashboardPage() {
 
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-space-md pt-space-xs">
                   <button
-                    onClick={() => alert("Team Member Management roster dialog.")}
+                    onClick={() => alert("[Demo Action] Team roster management modal.")}
                     className="inline-flex items-center gap-space-xs font-label-md text-secondary hover:text-on-surface transition-colors"
                   >
                     <span className="material-symbols-outlined text-[18px]">group_add</span>
                     <span>Manage Team Members (3/4 Assigned)</span>
                   </button>
                   <button
-                    onClick={() => alert("Reference materials preparation package.")}
+                    onClick={() => alert("[Demo Action] Sample preparation guidelines.")}
                     className="inline-flex items-center justify-center gap-space-xs px-space-lg py-2 rounded bg-surface-container-high hover:bg-surface-variant text-on-surface font-label-md transition-colors text-center border border-[#e2e8f0]"
                   >
                     <span>Prepare Materials</span>
@@ -209,7 +219,7 @@ export default function ParticipantDashboardPage() {
           <section className="flex flex-col gap-space-md pt-space-md">
             <div className="flex items-center justify-between">
               <h2 className="font-headline-sm text-on-surface tracking-tight">
-                Completed Evaluations
+                Completed Sample Evaluations
               </h2>
               <span className="font-label-xs text-secondary">1 Archive Record</span>
             </div>
@@ -222,21 +232,21 @@ export default function ParticipantDashboardPage() {
                 <div className="flex flex-col gap-0.5">
                   <div className="flex items-center gap-space-sm">
                     <span className="font-label-xs font-semibold px-2 py-0.5 rounded-full bg-on-tertiary-container text-primary-container">
-                      Final Passed
+                      Final Passed (Sample)
                     </span>
                     <span className="font-label-xs text-secondary">Jan 10, 2025</span>
                   </div>
                   <span className="font-label-md text-on-surface font-semibold">
-                    Q1 Ethical Leadership Case Study
+                    [Sample Archive] Q1 Ethical Leadership Case Study
                   </span>
                   <span className="font-body-sm text-secondary">
-                    Final Score: <strong className="text-on-surface font-semibold tabular-nums">92/100</strong> (Top 5th Percentile)
+                    Final Score: <strong className="text-on-surface font-semibold tabular-nums">92/100</strong> (Sample 5th Percentile)
                   </span>
                 </div>
               </div>
 
               <button
-                onClick={() => alert("Viewing verified evaluation score sheet and rubric feedback.")}
+                onClick={() => alert("[Demo Action] Viewing verified sample score sheet and rubric feedback.")}
                 className="inline-flex items-center gap-space-xs px-space-md py-2 rounded bg-surface-container-low hover:bg-surface-container text-on-surface font-label-sm transition-colors border border-[#e2e8f0] self-start md:self-center shrink-0"
               >
                 <span>View Evaluation & Feedback</span>

@@ -4,6 +4,7 @@ import React, { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { BrandLogo } from "@/components/ui/brand-logo";
+import { DEMO_CANDIDATE } from "@/lib/demo-data";
 
 export function ParticipantHeader() {
   const pathname = usePathname();
@@ -24,6 +25,11 @@ export function ParticipantHeader() {
           <Link href="/dashboard" className="flex items-center">
             <BrandLogo subtitleText="Candidate Portal" />
           </Link>
+
+          <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded font-label-xs bg-amber-50 text-amber-800 border border-amber-200">
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-600"></span>
+            Demo Mode
+          </span>
 
           <nav className="hidden md:flex items-center gap-space-xs">
             {navLinks.map((link) => {
@@ -73,10 +79,10 @@ export function ParticipantHeader() {
 
           <div className="flex items-center gap-space-sm pl-space-xs border-l border-[#e2e8f0]">
             <div className="w-8 h-8 rounded-full bg-primary-fixed text-on-primary-fixed flex items-center justify-center font-label-sm font-semibold shrink-0">
-              EV
+              {DEMO_CANDIDATE.avatarInitials}
             </div>
             <span className="hidden sm:inline-block font-label-md text-on-surface font-medium">
-              Eleanor Vance
+              {DEMO_CANDIDATE.name}
             </span>
           </div>
 
