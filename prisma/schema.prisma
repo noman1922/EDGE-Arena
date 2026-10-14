@@ -1,0 +1,361 @@
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum UserRole {
+  ADMIN
+  EVALUATOR
+  PARTICIPANT
+}
+
+enum ParticipantStatus {
+  ENROLLED
+  ACTIVE
+  DISQUALIFIED
+  WITHDRAWN
+}
+
+enum ContestStatus {
+  DRAFT
+  LIVE
+  COMPLETED
+  ARCHIVED
+}
+
+enum PhaseStatus {
+  UPCOMING
+  OPEN
+  EVALUATING
+  CLOSED
+}
+
+enum QuestionType {
+  MCQ
+  WRITTEN
+  FILE_UPLOAD
+  REFERENCE
+}
+
+enum SubmissionStatus {
+  DRAFT
+  SUBMITTED
+  GRADING_IN_PROGRESS
+  GRADED
+  PUBLISHED
+}
+
+model User {
+  id          String   @id @default(uuid())
+  email       String   @unique
+  role        UserRole @default(PARTICIPANT)
+  name        String
+  candidateId String?  @unique
+  institution String?
+  avatarUrl   String?
+  cohortId    String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  cohort       Cohort?              @relation(fields: [cohortId], references: [id], onDelete: SetNull)
+  participants ContestParticipant[]
+  submissions  Submission[]
+  evaluations  EvaluationScore[]
+  results      CohortResult[]
+
+  @@index([role])
+  @@index([cohortId])
+}
+
+model Cohort {
+  id               String    @id @default(uuid())
+  code             String    @unique
+  name             String
+  institutionCount Int       @default(1)
+  startDate        DateTime
+  endDate          DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  users    User[]
+  contests Contest[]
+
+  @@index([code])
+}
+
+model Contest {
+  id          String        @id @default(uuid())
+  slug        String        @unique
+  title       String
+  track       String
+  description String?       @db.Text
+  status      ContestStatus @default(DRAFT)
+  cohortId    String?
+  startDate   DateTime
+  endDate     DateTime
+  isPublished Boolean       @default(false)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  cohort       Cohort?              @relation(fields: [cohortId], references: [id], onDelete: SetNull)
+  phases       Phase[]
+  participants ContestParticipant[]
+  submissions  Submission[]
+  results      CohortResult[]
+
+  @@index([status, startDate, endDate])
+  @@index([cohortId])
+}
+
+model ContestParticipant {
+  id         String            @id @default(uuid())
+  contestId  String
+  userId     String
+  status     ParticipantStatus @default(ENROLLED)
+  enrolledAt DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+
+  contest Contest @relation(fields: [contestId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([contestId, userId])
+  @@index([contestId, status])
+  @@index([userId])
+}
+
+model Phase {
+  id               String      @id @default(uuid())
+  contestId        String
+  phaseNumber      Int
+  title            String
+  description      String?     @db.Text
+  weightPercentage Decimal     @db.Decimal(5, 2)
+  deadline         DateTime
+  status           PhaseStatus @default(UPCOMING)
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  contest     Contest      @relation(fields: [contestId], references: [id], onDelete: Cascade)
+  tasks       Task[]
+  submissions Submission[]
+
+  @@unique([contestId, phaseNumber])
+  @@index([contestId, status, deadline])
+}
+
+model Task {
+  id           String   @id @default(uuid())
+  phaseId      String
+  taskNumber   Int
+  title        String
+  instructions String?  @db.Text
+  totalPoints  Int      @default(100)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  phase       Phase               @relation(fields: [phaseId], references: [id], onDelete: Cascade)
+  questions   Question[]
+  rubrics     RubricCriterion[]
+  submissions Submission[]
+  references  ReferenceMaterial[]
+
+  @@unique([phaseId, taskNumber])
+  @@index([phaseId])
+}
+
+model Question {
+  id               String       @id @default(uuid())
+  taskId           String
+  questionNumber   Int
+  type             QuestionType
+  prompt           String       @db.Text
+  instructions     String?      @db.Text
+  points           Int
+  isMandatory      Boolean      @default(true)
+  minWords         Int?
+  maxWords         Int?
+  allowedFileTypes String?
+  maxFileSizeBytes BigInt?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  task              Task               @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  options           McqOption[]
+  answerKey         QuestionAnswerKey?
+  submissionAnswers SubmissionAnswer[]
+
+  @@unique([taskId, questionNumber])
+  @@index([taskId, type])
+}
+
+model McqOption {
+  id         String   @id @default(uuid())
+  questionId String
+  optionKey  String
+  text       String   @db.Text
+  scopeTag   String?
+  createdAt  DateTime @default(now())
+
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([questionId, optionKey])
+  @@index([questionId])
+}
+
+model QuestionAnswerKey {
+  id               String   @id @default(uuid())
+  questionId       String   @unique
+  correctOptionKey String?
+  explanation      String?  @db.Text
+  scoringGuide     String?  @db.Text
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+}
+
+model ReferenceMaterial {
+  id             String   @id @default(uuid())
+  taskId         String?
+  title          String
+  fileKey        String
+  fileUrl        String?
+  fileSizeBytes  BigInt
+  mimeType       String
+  version        String?  @default("Rev 1")
+  checksumSha256 String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  task Task? @relation(fields: [taskId], references: [id], onDelete: SetNull)
+
+  @@index([taskId])
+}
+
+model Submission {
+  id               String           @id @default(uuid())
+  contestId        String
+  phaseId          String
+  taskId           String
+  userId           String
+  status           SubmissionStatus @default(DRAFT)
+  submittedAt      DateTime?
+  autoSavedAt      DateTime         @default(now())
+  autoGradeScore   Decimal?         @db.Decimal(6, 2)
+  manualGradeScore Decimal?         @db.Decimal(6, 2)
+  finalScore       Decimal?         @db.Decimal(6, 2)
+  isLate           Boolean          @default(false)
+  feedbackSummary  String?          @db.Text
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  contest     Contest            @relation(fields: [contestId], references: [id], onDelete: Cascade)
+  phase       Phase              @relation(fields: [phaseId], references: [id], onDelete: Cascade)
+  task        Task               @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  answers     SubmissionAnswer[]
+  evaluations EvaluationScore[]
+
+  @@unique([taskId, userId])
+  @@index([taskId, status])
+  @@index([userId, status])
+  @@index([contestId, phaseId, finalScore(sort: Desc)])
+}
+
+model SubmissionAnswer {
+  id             String   @id @default(uuid())
+  submissionId   String
+  questionId     String
+  selectedOption String?
+  writtenText    String?  @db.Text
+  wordCount      Int?
+  fileKey        String?
+  fileName       String?
+  fileSizeBytes  BigInt?
+  fileSha256     String?
+  score          Decimal? @db.Decimal(6, 2)
+  isCorrect      Boolean?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  question   Question   @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([submissionId, questionId])
+  @@index([submissionId])
+  @@index([questionId])
+}
+
+model RubricCriterion {
+  id               String   @id @default(uuid())
+  taskId           String
+  name             String
+  description      String?  @db.Text
+  weightPercentage Decimal  @db.Decimal(5, 2)
+  maxPoints        Decimal  @db.Decimal(6, 2)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  task        Task              @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  evaluations EvaluationScore[]
+
+  @@unique([taskId, name])
+  @@index([taskId])
+}
+
+model EvaluationScore {
+  id           String   @id @default(uuid())
+  submissionId String
+  rubricId     String
+  evaluatorId  String
+  scoreAwarded Decimal  @db.Decimal(6, 2)
+  comments     String?  @db.Text
+  evaluatedAt  DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  submission Submission      @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  rubric     RubricCriterion @relation(fields: [rubricId], references: [id], onDelete: Cascade)
+  evaluator  User            @relation(fields: [evaluatorId], references: [id], onDelete: Cascade)
+
+  @@unique([submissionId, rubricId, evaluatorId])
+  @@index([submissionId])
+  @@index([evaluatorId])
+}
+
+model CohortResult {
+  id          String    @id @default(uuid())
+  contestId   String
+  userId      String
+  totalScore  Decimal   @db.Decimal(6, 2)
+  rank        Int
+  percentile  Decimal   @db.Decimal(5, 2)
+  isCertified Boolean   @default(false)
+  publishedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  contest Contest @relation(fields: [contestId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([contestId, userId])
+  @@index([contestId, rank])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?
+  action     String
+  targetType String
+  targetId   String
+  metadata   Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  @@index([targetType, targetId])
+  @@index([action, createdAt])
+}
