@@ -1,6 +1,7 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { prisma } from "../lib/prisma";
+import { setTestSession, SessionPayload } from "../lib/auth";
 import {
   createContestAction,
   assignParticipantAction,
@@ -18,7 +19,27 @@ describe("Stage 3 End-to-End Database Feature Integration", () => {
   let createdContestId = "";
   let createdSlug = "";
 
+  const adminSession: SessionPayload = {
+    userId: "admin-e2e-id",
+    email: "admin.demo@example.com",
+    role: "ADMIN",
+    name: "Admin E2E",
+    issuedAt: Date.now(),
+    expiresAt: Date.now() + 3600000,
+  };
+
+  const participantSession: SessionPayload = {
+    userId: "candidate-e2e-id",
+    email: testCandidateEmail,
+    role: "PARTICIPANT",
+    name: "Test E2E Candidate",
+    issuedAt: Date.now(),
+    expiresAt: Date.now() + 3600000,
+  };
+
   after(async () => {
+    // Reset test session
+    setTestSession(undefined);
     // Clean up test data safely
     try {
       if (createdContestId) {
@@ -31,6 +52,8 @@ describe("Stage 3 End-to-End Database Feature Integration", () => {
   });
 
   it("1. Admin creates and saves a new contest in the database", async () => {
+    setTestSession(adminSession);
+
     const result = await createContestAction({
       title: "E2E Automated Benchmark Challenge",
       track: "Track E2E · Operations",
@@ -59,6 +82,8 @@ describe("Stage 3 End-to-End Database Feature Integration", () => {
   });
 
   it("2. Admin assigns a participant to the contest", async () => {
+    setTestSession(adminSession);
+
     const assignResult = await assignParticipantAction(
       createdContestId,
       testCandidateEmail,
@@ -67,6 +92,8 @@ describe("Stage 3 End-to-End Database Feature Integration", () => {
 
     assert.equal(assignResult.success, true, `Assignment failed: ${assignResult.error}`);
     assert.ok(assignResult.participantId);
+    // Update participant session userId with actual DB user id
+    participantSession.userId = assignResult.user!.id;
 
     // Verify enrollment in database
     const enrollment = await prisma.contestParticipant.findFirst({
@@ -81,7 +108,9 @@ describe("Stage 3 End-to-End Database Feature Integration", () => {
   });
 
   it("3. Participant sees only their assigned contest on the dashboard", async () => {
-    const dashboard = await getParticipantDashboard(testCandidateEmail);
+    setTestSession(participantSession);
+
+    const dashboard = await getParticipantDashboard();
 
     assert.equal(dashboard.candidate.email, testCandidateEmail);
     assert.ok(dashboard.contests.length >= 1);
@@ -93,9 +122,8 @@ describe("Stage 3 End-to-End Database Feature Integration", () => {
     assert.equal(assigned.canContinue, true);
 
     // Candidate should NOT see unassigned contests
-    // Verify an unassigned user gets zero contests
     const otherCandidateEmail = "unassigned.e2e@example.com";
-    await prisma.user.upsert({
+    const otherUser = await prisma.user.upsert({
       where: { email: otherCandidateEmail },
       update: {},
       create: {
@@ -106,7 +134,16 @@ describe("Stage 3 End-to-End Database Feature Integration", () => {
       },
     });
 
-    const otherDashboard = await getParticipantDashboard(otherCandidateEmail);
+    setTestSession({
+      userId: otherUser.id,
+      email: otherCandidateEmail,
+      role: "PARTICIPANT",
+      name: "Unassigned User",
+      issuedAt: Date.now(),
+      expiresAt: Date.now() + 3600000,
+    });
+
+    const otherDashboard = await getParticipantDashboard();
     const unassignedContest = otherDashboard.contests.find((c) => c.contestId === createdContestId);
     assert.equal(unassignedContest, undefined, "Unassigned participant must not see this contest");
 
@@ -115,7 +152,9 @@ describe("Stage 3 End-to-End Database Feature Integration", () => {
   });
 
   it("4. Participant opens task: private answer key is strictly protected", async () => {
-    const assessmentData = await getTaskAssessmentData(testCandidateEmail);
+    setTestSession(participantSession);
+
+    const assessmentData = await getTaskAssessmentData();
 
     assert.ok(assessmentData.task.id);
     assert.ok(assessmentData.questions.length >= 2);
@@ -132,7 +171,9 @@ describe("Stage 3 End-to-End Database Feature Integration", () => {
   });
 
   it("5. Participant saves draft answers and then finalizes submission", async () => {
-    const assessmentData = await getTaskAssessmentData(testCandidateEmail);
+    setTestSession(participantSession);
+
+    const assessmentData = await getTaskAssessmentData();
     const submissionId = assessmentData.submission.id;
     const mcqQuestion = assessmentData.questions.find((q) => q.type === "MCQ")!;
     const writtenQuestion = assessmentData.questions.find((q) => q.type === "WRITTEN")!;
@@ -141,8 +182,7 @@ describe("Stage 3 End-to-End Database Feature Integration", () => {
     const mcqSave = await saveAnswerDraftAction(
       submissionId,
       mcqQuestion.id,
-      { selectedOption: "A" },
-      testCandidateEmail
+      { selectedOption: "A" }
     );
     assert.equal(mcqSave.success, true);
 
@@ -150,13 +190,12 @@ describe("Stage 3 End-to-End Database Feature Integration", () => {
     const writtenSave = await saveAnswerDraftAction(
       submissionId,
       writtenQuestion.id,
-      { writtenText: "Our executive transformation strategy deploys energy telemetry across all campuses." },
-      testCandidateEmail
+      { writtenText: "Our executive transformation strategy deploys energy telemetry across all campuses." }
     );
     assert.equal(writtenSave.success, true);
 
     // Finalize submission
-    const submitResult = await submitAssessmentAction(submissionId, testCandidateEmail);
+    const submitResult = await submitAssessmentAction(submissionId);
     assert.equal(submitResult.success, true);
     assert.equal(submitResult.status, "SUBMITTED");
     assert.ok(submitResult.submittedAt);
@@ -174,6 +213,8 @@ describe("Stage 3 End-to-End Database Feature Integration", () => {
   });
 
   it("6. Admin contests list reflects live database counts", async () => {
+    setTestSession(adminSession);
+
     const adminContests = await getAdminContests();
     const found = adminContests.find((c) => c.id === createdContestId);
 

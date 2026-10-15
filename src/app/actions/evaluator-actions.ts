@@ -7,6 +7,7 @@ import {
   type RubricScoreInput,
 } from "@/lib/scoring";
 import { revalidatePath } from "next/cache";
+import { requireRole } from "@/lib/auth";
 
 function safeRevalidatePath(path: string) {
   try {
@@ -64,6 +65,8 @@ export async function getSubmissionsForGrading(
   contestId?: string
 ): Promise<SubmissionToGrade[]> {
   try {
+    await requireRole(["EVALUATOR", "ADMIN"]);
+
     const submissions = await prisma.submission.findMany({
       where: {
         ...(contestId ? { contestId } : {}),
@@ -163,7 +166,8 @@ export interface SaveRubricScoreInput {
 
 export async function saveRubricScoreAction(input: SaveRubricScoreInput) {
   try {
-    const evaluatorEmail = input.evaluatorEmail?.trim() || "evaluator.demo@example.com";
+    const session = await requireRole(["EVALUATOR", "ADMIN"]);
+    const evaluatorEmail = session.email;
 
     // 1. Resolve evaluator
     let evaluator = await prisma.user.findUnique({
@@ -286,10 +290,12 @@ export async function saveRubricScoreAction(input: SaveRubricScoreInput) {
 }
 
 export async function publishContestResultsAction(
-  contestId: string,
-  requesterEmail: string = "admin.demo@example.com"
+  contestId: string
 ) {
   try {
+    const session = await requireRole(["ADMIN"]);
+    const requesterEmail = session.email;
+
     // 1. Resolve requester and check ADMIN permission
     const requester = await prisma.user.findUnique({
       where: { email: requesterEmail },

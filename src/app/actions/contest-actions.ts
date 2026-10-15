@@ -3,6 +3,7 @@
 import { prisma } from "@/lib/prisma";
 import { ContestStatus, ParticipantStatus, PhaseStatus, UserRole } from "@prisma/client";
 import { revalidatePath } from "next/cache";
+import { requireRole } from "@/lib/auth";
 
 export interface AdminContestListItem {
   id: string;
@@ -28,6 +29,8 @@ export interface AdminContestListItem {
 
 export async function getAdminContests(): Promise<AdminContestListItem[]> {
   try {
+    await requireRole(["ADMIN"]);
+
     const contests = await prisma.contest.findMany({
       include: {
         cohort: true,
@@ -160,6 +163,8 @@ function safeRevalidatePath(path: string) {
 
 export async function createContestAction(input: CreateContestInput) {
   try {
+    await requireRole(["ADMIN"]);
+
     if (!input.title || !input.track || !input.startDate || !input.endDate) {
       return { success: false, error: "Title, track, start date, and end date are required." };
     }
@@ -278,6 +283,8 @@ export async function createContestAction(input: CreateContestInput) {
 
 export async function assignParticipantAction(contestId: string, email: string, name?: string) {
   try {
+    await requireRole(["ADMIN"]);
+
     if (!contestId || !email) {
       return { success: false, error: "Contest ID and participant email are required." };
     }

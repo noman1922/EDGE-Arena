@@ -103,8 +103,8 @@ export default function AdminOverviewPage() {
       setIsPublishing(true);
       setPublishMessage(null);
 
-      // We use the admin account configured in the database
-      const res = await publishContestResultsAction(contestId, "admin.demo@example.com");
+      // Uses verified admin session from HTTP-only cookie
+      const res = await publishContestResultsAction(contestId);
       if (res.success) {
         setPublishMessage(`Successfully certified and published results for ${res.publishedCount} candidate(s).`);
         await loadData();

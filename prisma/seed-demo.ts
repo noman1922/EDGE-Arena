@@ -26,7 +26,22 @@ async function main() {
     },
   });
 
-  // 2. Create Demo Evaluator
+  // 2. Create Demo Administrator
+  const DEMO_ADMIN_ID = "00000000-0000-4000-8000-000000000000";
+  const admin = await prisma.user.upsert({
+    where: { email: "admin.demo@example.com" },
+    update: { role: UserRole.ADMIN },
+    create: {
+      id: DEMO_ADMIN_ID,
+      email: "admin.demo@example.com",
+      name: "Demo Administrator",
+      role: UserRole.ADMIN,
+      institution: "ACI Career EDGE Academy Central",
+      cohortId: cohort.id,
+    },
+  });
+
+  // 3. Create Demo Evaluator
   const DEMO_EVALUATOR_ID = "00000000-0000-4000-8000-000000000001";
   const evaluator = await prisma.user.upsert({
     where: { email: "evaluator.demo@example.com" },
@@ -41,7 +56,7 @@ async function main() {
     },
   });
 
-  // 3. Create Demo Candidate
+  // 4. Create Demo Candidate
   const DEMO_CANDIDATE_ID = "00000000-0000-4000-8000-000000000002";
   const candidate = await prisma.user.upsert({
     where: { email: "candidate.demo@example.com" },

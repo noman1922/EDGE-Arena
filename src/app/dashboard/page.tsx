@@ -25,7 +25,7 @@ export default function ParticipantDashboardPage() {
   const loadDashboard = async () => {
     try {
       setIsLoading(true);
-      const data = await getParticipantDashboard("candidate.demo@example.com");
+      const data = await getParticipantDashboard();
       setCandidate(data.candidate);
       setContests(data.contests);
     } catch (err) {

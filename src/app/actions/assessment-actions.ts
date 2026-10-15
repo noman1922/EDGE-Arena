@@ -10,6 +10,7 @@ import {
   type ParticipantMcqAnswer,
 } from "@/lib/scoring";
 import { revalidatePath } from "next/cache";
+import { requireRole } from "@/lib/auth";
 
 export interface ParticipantDashboardContest {
   contestId: string;
@@ -30,7 +31,7 @@ export interface ParticipantDashboardContest {
 }
 
 export async function getParticipantDashboard(
-  userEmail: string = "candidate.demo@example.com"
+  _userEmail?: string
 ): Promise<{
   candidate: {
     id: string;
@@ -43,14 +44,17 @@ export async function getParticipantDashboard(
   contests: ParticipantDashboardContest[];
 }> {
   try {
+    const session = await requireRole(["PARTICIPANT"]);
+    const candidateEmail = session.email;
+
     // 1. Resolve candidate user
     const user = await prisma.user.findUnique({
-      where: { email: userEmail },
+      where: { email: candidateEmail },
       include: { cohort: true },
     });
 
     if (!user) {
-      throw new Error(`Participant user not found for email: ${userEmail}`);
+      throw new Error(`Participant user not found for email: ${candidateEmail}`);
     }
 
     // 2. Fetch only enrolled contests for this specific candidate
@@ -224,16 +228,19 @@ export interface TaskAssessmentData {
 }
 
 export async function getTaskAssessmentData(
-  userEmail: string = "candidate.demo@example.com"
+  _userEmail?: string
 ): Promise<TaskAssessmentData> {
   try {
+    const session = await requireRole(["PARTICIPANT"]);
+    const candidateEmail = session.email;
+
     // 1. Resolve participant user
     const user = await prisma.user.findUnique({
-      where: { email: userEmail },
+      where: { email: candidateEmail },
     });
 
     if (!user) {
-      throw new Error(`Participant user not found: ${userEmail}`);
+      throw new Error(`Participant user not found: ${candidateEmail}`);
     }
 
     // 2. Find participant's active enrolled contest and open task
@@ -391,9 +398,11 @@ export async function saveAnswerDraftAction(
     fileName?: string;
     fileKey?: string;
   },
-  userEmail: string = "candidate.demo@example.com"
+  _userEmail?: string
 ) {
   try {
+    const session = await requireRole(["PARTICIPANT"]);
+
     // 1. Verify submission exists and belongs to participant
     const submission = await prisma.submission.findUnique({
       where: { id: submissionId },
@@ -407,8 +416,8 @@ export async function saveAnswerDraftAction(
       return { success: false, error: "Submission session not found." };
     }
 
-    if (submission.user.email !== userEmail) {
-      return { success: false, error: "Unauthorized access to submission." };
+    if (submission.userId !== session.userId && submission.user.email !== session.email) {
+      return { success: false, error: "Unauthorized access: Cross-user submission modification is blocked." };
     }
 
     if (submission.status === "SUBMITTED") {
@@ -475,9 +484,11 @@ export async function saveAnswerDraftAction(
 
 export async function submitAssessmentAction(
   submissionId: string,
-  userEmail: string = "candidate.demo@example.com"
+  _userEmail?: string
 ) {
   try {
+    const session = await requireRole(["PARTICIPANT"]);
+
     // 1. Fetch submission with task, phase, and answers
     const submission = await prisma.submission.findUnique({
       where: { id: submissionId },
@@ -501,8 +512,8 @@ export async function submitAssessmentAction(
       return { success: false, error: "Submission not found." };
     }
 
-    if (submission.user.email !== userEmail) {
-      return { success: false, error: "Unauthorized access to submission." };
+    if (submission.userId !== session.userId && submission.user.email !== session.email) {
+      return { success: false, error: "Unauthorized access: Cross-user submission finalization is blocked." };
     }
 
     if (submission.status === "SUBMITTED") {

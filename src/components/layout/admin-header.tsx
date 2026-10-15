@@ -1,14 +1,29 @@
 "use client";
 
-import React from "react";
-import Link from "next/link";
+import React, { useState } from "react";
 import { DEMO_EVALUATOR } from "@/lib/demo-data";
+import { logoutAction } from "@/app/actions/auth-actions";
 
 interface AdminHeaderProps {
   onToggleMobileNav?: () => void;
 }
 
 export function AdminHeader({ onToggleMobileNav }: AdminHeaderProps) {
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+
+  const handleLogout = async () => {
+    try {
+      setIsLoggingOut(true);
+      await logoutAction();
+      window.location.href = "/login";
+    } catch (err) {
+      console.error("Logout failed:", err);
+      window.location.href = "/login";
+    } finally {
+      setIsLoggingOut(false);
+    }
+  };
+
   return (
     <header className="fixed top-0 left-0 lg:left-64 right-0 h-16 bg-surface-container-lowest/95 backdrop-blur-xl border-b border-[#e2e8f0] z-40 px-4 sm:px-gutter flex items-center justify-between">
       {/* Left: Mobile trigger & Search */}
@@ -27,35 +42,22 @@ export function AdminHeader({ onToggleMobileNav }: AdminHeaderProps) {
           {DEMO_EVALUATOR.cohort}
         </span>
 
-        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded font-label-xs bg-amber-50 text-amber-800 border border-amber-200">
-          <span className="w-1.5 h-1.5 rounded-full bg-amber-600"></span>
-          Demo Environment
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded font-label-xs bg-purple-50 text-purple-800 border border-purple-200">
+          <span className="w-1.5 h-1.5 rounded-full bg-purple-600"></span>
+          Admin Authorized
         </span>
 
         <div className="hidden md:flex items-center gap-space-xs px-space-sm py-1.5 rounded bg-surface-container-low text-secondary font-label-sm border border-[#e2e8f0]">
           <span className="material-symbols-outlined text-[18px]">search</span>
-          <span className="text-secondary/80">Search demo benchmarks, tags...</span>
+          <span className="text-secondary/80">Search contests, rubrics, cohorts...</span>
           <kbd className="ml-space-md px-1.5 py-0.5 bg-surface-container-lowest text-secondary rounded font-label-xs border border-[#e2e8f0] shadow-2xs">
             ⌘K
           </kbd>
         </div>
       </div>
 
-      {/* Right: Role Switcher & Profile */}
+      {/* Right: Notifications & Profile & Logout */}
       <div className="flex items-center gap-3 sm:gap-gutter">
-        {/* Role Switcher Pill */}
-        <div className="inline-flex items-center p-0.5 rounded bg-surface-container-high border border-[#e2e8f0] text-on-surface-variant font-label-xs">
-          <span className="px-space-sm py-1 rounded bg-primary-container text-on-primary font-medium shadow-xs">
-            Admin View
-          </span>
-          <Link
-            href="/dashboard"
-            className="px-space-sm py-1 rounded text-secondary hover:text-on-surface hover:bg-surface-container transition-colors"
-          >
-            Participant View
-          </Link>
-        </div>
-
         {/* Notifications */}
         <button
           aria-label="Notifications"
@@ -72,13 +74,24 @@ export function AdminHeader({ onToggleMobileNav }: AdminHeaderProps) {
           </div>
           <div className="hidden lg:flex flex-col text-left">
             <span className="font-label-md text-on-surface leading-tight font-medium">
-              {DEMO_EVALUATOR.name}
+              Administrator
             </span>
             <span className="font-label-xs text-secondary leading-tight">
-              {DEMO_EVALUATOR.title}
+              admin.demo@example.com
             </span>
           </div>
         </div>
+
+        {/* Sign Out Button */}
+        <button
+          onClick={handleLogout}
+          disabled={isLoggingOut}
+          title="Sign Out of Administrator Panel"
+          className="px-2.5 py-1.5 rounded bg-surface-container-low hover:bg-surface-container-high text-secondary hover:text-error font-label-xs border border-[#e2e8f0] flex items-center gap-1 transition-colors cursor-pointer"
+        >
+          <span className="material-symbols-outlined text-[16px]">logout</span>
+          <span className="hidden sm:inline">Sign Out</span>
+        </button>
       </div>
     </header>
   );

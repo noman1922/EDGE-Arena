@@ -5,17 +5,31 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { BrandLogo } from "@/components/ui/brand-logo";
 import { DEMO_CANDIDATE } from "@/lib/demo-data";
+import { logoutAction } from "@/app/actions/auth-actions";
 
 export function ParticipantHeader() {
   const pathname = usePathname();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   const navLinks = [
     { label: "My Contests", href: "/dashboard" },
     { label: "Assessment", href: "/assessment" },
-    { label: "Leaderboard", href: "/admin/contests" },
     { label: "My Profile", href: "/dashboard" },
   ];
+
+  const handleLogout = async () => {
+    try {
+      setIsLoggingOut(true);
+      await logoutAction();
+      window.location.href = "/login";
+    } catch (err) {
+      console.error("Logout failed:", err);
+      window.location.href = "/login";
+    } finally {
+      setIsLoggingOut(false);
+    }
+  };
 
   return (
     <header className="fixed top-0 w-full z-50 bg-surface-container-lowest/95 backdrop-blur-xl border-b border-[#e2e8f0]">
@@ -26,9 +40,9 @@ export function ParticipantHeader() {
             <BrandLogo subtitleText="Candidate Portal" />
           </Link>
 
-          <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded font-label-xs bg-amber-50 text-amber-800 border border-amber-200">
-            <span className="w-1.5 h-1.5 rounded-full bg-amber-600"></span>
-            Demo Mode
+          <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded font-label-xs bg-emerald-50 text-emerald-800 border border-emerald-200">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-600"></span>
+            Participant Workspace
           </span>
 
           <nav className="hidden md:flex items-center gap-space-xs">
@@ -56,20 +70,8 @@ export function ParticipantHeader() {
         </div>
 
         {/* Right Controls */}
-        <div className="flex items-center gap-space-sm sm:gap-space-lg">
-          {/* Role Switcher Pill */}
-          <div className="inline-flex items-center p-0.5 rounded bg-surface-container-high border border-[#e2e8f0] text-on-surface-variant font-label-xs">
-            <Link
-              href="/admin"
-              className="px-space-sm py-1 rounded text-secondary hover:text-on-surface hover:bg-surface-container transition-colors"
-            >
-              Admin View
-            </Link>
-            <span className="px-space-sm py-1 rounded bg-primary-container text-on-primary font-medium shadow-xs">
-              Participant View
-            </span>
-          </div>
-
+        <div className="flex items-center gap-space-sm sm:gap-space-md">
+          {/* Notifications */}
           <button
             aria-label="Notifications"
             className="p-1.5 text-secondary hover:text-on-surface rounded hover:bg-surface-container transition-colors"
@@ -77,14 +79,31 @@ export function ParticipantHeader() {
             <span className="material-symbols-outlined text-[22px]">notifications</span>
           </button>
 
+          {/* Profile Lockup */}
           <div className="flex items-center gap-space-sm pl-space-xs border-l border-[#e2e8f0]">
             <div className="w-8 h-8 rounded-full bg-primary-fixed text-on-primary-fixed flex items-center justify-center font-label-sm font-semibold shrink-0">
               {DEMO_CANDIDATE.avatarInitials}
             </div>
-            <span className="hidden sm:inline-block font-label-md text-on-surface font-medium">
-              {DEMO_CANDIDATE.name}
-            </span>
+            <div className="hidden sm:flex flex-col text-left">
+              <span className="font-label-sm text-on-surface font-medium leading-tight">
+                {DEMO_CANDIDATE.name}
+              </span>
+              <span className="font-label-xs text-secondary leading-tight">
+                Candidate
+              </span>
+            </div>
           </div>
+
+          {/* Sign Out Button */}
+          <button
+            onClick={handleLogout}
+            disabled={isLoggingOut}
+            title="Sign Out of Candidate Workspace"
+            className="ml-1 px-2.5 py-1.5 rounded bg-surface-container-low hover:bg-surface-container-high text-secondary hover:text-error font-label-xs border border-[#e2e8f0] flex items-center gap-1 transition-colors cursor-pointer"
+          >
+            <span className="material-symbols-outlined text-[16px]">logout</span>
+            <span className="hidden sm:inline">Sign Out</span>
+          </button>
 
           {/* Mobile Menu Button */}
           <button
@@ -116,6 +135,13 @@ export function ParticipantHeader() {
               {link.label}
             </Link>
           ))}
+          <button
+            onClick={handleLogout}
+            className="mt-2 text-left px-3 py-2 rounded font-label-md text-error hover:bg-surface-container flex items-center gap-1.5"
+          >
+            <span className="material-symbols-outlined text-[18px]">logout</span>
+            <span>Sign Out</span>
+          </button>
         </div>
       )}
     </header>

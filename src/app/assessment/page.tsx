@@ -41,7 +41,7 @@ export default function AssessmentInterfacePage() {
     async function loadData() {
       try {
         setIsLoading(true);
-        const res = await getTaskAssessmentData("candidate.demo@example.com");
+        const res = await getTaskAssessmentData();
         setData(res);
         setSecondsLeft(res.task.secondsLeft);
 
@@ -167,7 +167,7 @@ export default function AssessmentInterfacePage() {
       }
 
       // Then submit and auto-grade
-      const res = await submitAssessmentAction(data.submission.id, "candidate.demo@example.com");
+      const res = await submitAssessmentAction(data.submission.id);
       if (res.success) {
         setSubmitted(true);
         setLastSaved(new Date().toLocaleTimeString("en-US", { hour12: false }));

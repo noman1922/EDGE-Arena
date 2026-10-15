@@ -1,6 +1,7 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { prisma } from "../lib/prisma";
+import { setTestSession, SessionPayload } from "../lib/auth";
 import {
   createContestAction,
   assignParticipantAction,
@@ -23,9 +24,13 @@ describe("Evaluator Rubric Scoring & Admin Publishing Tests", () => {
   let contestId = "";
   let submissionId = "";
 
+  let adminSession: SessionPayload;
+  let evaluatorSession: SessionPayload;
+  let candidateSession: SessionPayload;
+
   before(async () => {
-    // 1. Setup Admin & Evaluator accounts
-    await prisma.user.upsert({
+    // 1. Setup Admin & Evaluator accounts in DB
+    const adminUser = await prisma.user.upsert({
       where: { email: testAdminEmail },
       update: {},
       create: {
@@ -36,7 +41,7 @@ describe("Evaluator Rubric Scoring & Admin Publishing Tests", () => {
       },
     });
 
-    await prisma.user.upsert({
+    const evaluatorUser = await prisma.user.upsert({
       where: { email: testEvaluatorEmail },
       update: {},
       create: {
@@ -47,7 +52,26 @@ describe("Evaluator Rubric Scoring & Admin Publishing Tests", () => {
       },
     });
 
-    // 2. Create contest and assign candidate
+    adminSession = {
+      userId: adminUser.id,
+      email: adminUser.email,
+      role: "ADMIN",
+      name: adminUser.name,
+      issuedAt: Date.now(),
+      expiresAt: Date.now() + 3600000,
+    };
+
+    evaluatorSession = {
+      userId: evaluatorUser.id,
+      email: evaluatorUser.email,
+      role: "EVALUATOR",
+      name: evaluatorUser.name,
+      issuedAt: Date.now(),
+      expiresAt: Date.now() + 3600000,
+    };
+
+    // 2. Admin creates contest and assigns candidate
+    setTestSession(adminSession);
     const contestRes = await createContestAction({
       title: "Evaluator Rubric Verification Contest",
       track: "Track E · Evaluation & Rubrics",
@@ -58,26 +82,36 @@ describe("Evaluator Rubric Scoring & Admin Publishing Tests", () => {
 
     contestId = contestRes.contestId!;
 
-    await assignParticipantAction(contestId, testCandidateEmail, "Rubric Test Candidate");
+    const assignRes = await assignParticipantAction(contestId, testCandidateEmail, "Rubric Test Candidate");
+
+    candidateSession = {
+      userId: assignRes.user!.id,
+      email: testCandidateEmail,
+      role: "PARTICIPANT",
+      name: "Rubric Test Candidate",
+      issuedAt: Date.now(),
+      expiresAt: Date.now() + 3600000,
+    };
 
     // 3. Candidate creates and submits answers
-    const assessment = await getTaskAssessmentData(testCandidateEmail);
+    setTestSession(candidateSession);
+    const assessment = await getTaskAssessmentData();
     submissionId = assessment.submission.id;
     const mcq = assessment.questions.find((q) => q.type === "MCQ")!;
     const written = assessment.questions.find((q) => q.type === "WRITTEN")!;
 
-    await saveAnswerDraftAction(submissionId, mcq.id, { selectedOption: "A" }, testCandidateEmail);
+    await saveAnswerDraftAction(submissionId, mcq.id, { selectedOption: "A" });
     await saveAnswerDraftAction(
       submissionId,
       written.id,
-      { writtenText: "Detailed sustainability proposal with quantitative analysis and risk assessment." },
-      testCandidateEmail
+      { writtenText: "Detailed sustainability proposal with quantitative analysis and risk assessment." }
     );
 
-    await submitAssessmentAction(submissionId, testCandidateEmail);
+    await submitAssessmentAction(submissionId);
   });
 
   after(async () => {
+    setTestSession(undefined);
     try {
       if (contestId) {
         await prisma.contest.deleteMany({ where: { id: contestId } });
@@ -93,6 +127,7 @@ describe("Evaluator Rubric Scoring & Admin Publishing Tests", () => {
   });
 
   it("1. Evaluator fetches real submissions: answer key is never exposed", async () => {
+    setTestSession(evaluatorSession);
     const list = await getSubmissionsForGrading(contestId);
     assert.equal(list.length, 1);
     const sub = list[0];
@@ -109,22 +144,23 @@ describe("Evaluator Rubric Scoring & Admin Publishing Tests", () => {
   });
 
   it("2. Non-evaluator / participant is forbidden from grading", async () => {
+    // Attempt with PARTICIPANT session
+    setTestSession(candidateSession);
     const participantAttempt = await saveRubricScoreAction({
       submissionId,
-      evaluatorEmail: testCandidateEmail, // Participant role
       scores: [],
     });
 
     assert.equal(participantAttempt.success, false);
-    assert.match(participantAttempt.error!, /Unauthorized/);
+    assert.match(participantAttempt.error!, /Forbidden|Unauthorized/);
   });
 
   it("3. Evaluator scores rubrics: computes weighted manual score and final score", async () => {
+    setTestSession(evaluatorSession);
     const list = await getSubmissionsForGrading(contestId);
     const sub = list[0];
 
     // Award rubric scores
-    // Create rubrics input
     const scores = sub.rubrics.map((r) => ({
       rubricId: r.id,
       scoreAwarded: Math.round(r.maxPoints * 0.9), // 90% score
@@ -133,7 +169,6 @@ describe("Evaluator Rubric Scoring & Admin Publishing Tests", () => {
 
     const result = await saveRubricScoreAction({
       submissionId,
-      evaluatorEmail: testEvaluatorEmail,
       scores,
     });
 
@@ -153,14 +188,15 @@ describe("Evaluator Rubric Scoring & Admin Publishing Tests", () => {
   });
 
   it("4. Evaluator is forbidden from publishing contest results", async () => {
-    // Evaluators cannot publish results
-    const publishAttempt = await publishContestResultsAction(contestId, testEvaluatorEmail);
+    setTestSession(evaluatorSession);
+    const publishAttempt = await publishContestResultsAction(contestId);
     assert.equal(publishAttempt.success, false);
-    assert.match(publishAttempt.error!, /Unauthorized/);
+    assert.match(publishAttempt.error!, /Forbidden|Unauthorized/);
   });
 
   it("5. Admin publishes contest results: ranks cohort and certifies results", async () => {
-    const publishResult = await publishContestResultsAction(contestId, testAdminEmail);
+    setTestSession(adminSession);
+    const publishResult = await publishContestResultsAction(contestId);
     assert.equal(publishResult.success, true);
     assert.equal(publishResult.isPublished, true);
     assert.equal(publishResult.publishedCount, 1);
