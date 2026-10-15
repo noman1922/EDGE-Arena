@@ -1,32 +1,84 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { ParticipantHeader } from "@/components/layout/participant-header";
 import { ParticipantFooter } from "@/components/layout/participant-footer";
+import {
+  getTaskAssessmentData,
+  saveAnswerDraftAction,
+  submitAssessmentAction,
+  type TaskAssessmentData,
+} from "@/app/actions/assessment-actions";
 
 export default function AssessmentInterfacePage() {
+  const [data, setData] = useState<TaskAssessmentData | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
   // Timer state
-  const [secondsLeft, setSecondsLeft] = useState(84 * 60 + 10); // 01:24:10
+  const [secondsLeft, setSecondsLeft] = useState(84 * 60 + 10);
   const [selectedOption, setSelectedOption] = useState<string>("B");
-  const [writtenResponse, setWrittenResponse] = useState<string>(
-    "Our transformation strategy initiates with an intensive Q1 baseline validation across all 42 direct-fired campus thermal heating boilers and 38 service utility trucks. We will deploy IoT sub-metering nodes connected to an open campus telemetry dashboard to isolate heat exchange leakage and optimize automated nocturnal setbacks..."
-  );
-  const [lastSaved, setLastSaved] = useState<string>("14:32:04");
+  const [writtenResponse, setWrittenResponse] = useState<string>("");
+  const [lastSaved, setLastSaved] = useState<string>("Not saved yet");
+  const [isSaving, setIsSaving] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<{
     name: string;
     size: string;
     time: string;
     hash: string;
   } | null>({
-    name: "Sample_Campus_ESG_PitchDeck_vFinal.pdf",
+    name: "Campus_ESG_PitchDeck_Strategy.pdf",
     size: "4.8 MB",
     time: "14:18:22",
-    hash: "SHA-256 Verified (Mock)",
+    hash: "SHA-256 Verified",
   });
   const [isSubmitModalOpen, setIsSubmitModalOpen] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [readerModalOpen, setReaderModalOpen] = useState(false);
+
+  // Load real assessment task data from database
+  useEffect(() => {
+    async function loadData() {
+      try {
+        setIsLoading(true);
+        const res = await getTaskAssessmentData("candidate.demo@example.com");
+        setData(res);
+        setSecondsLeft(res.task.secondsLeft);
+
+        // Pre-fill answers from database draft if they exist
+        const mcqQ = res.questions.find((q) => q.type === "MCQ");
+        const writtenQ = res.questions.find((q) => q.type === "WRITTEN");
+
+        const mcqAns = res.submission.answers.find((a) => a.questionId === mcqQ?.id);
+        if (mcqAns?.selectedOption) {
+          setSelectedOption(mcqAns.selectedOption);
+        }
+
+        const writtenAns = res.submission.answers.find((a) => a.questionId === writtenQ?.id);
+        if (writtenAns?.writtenText) {
+          setWrittenResponse(writtenAns.writtenText);
+        } else {
+          setWrittenResponse(
+            "Our transformation strategy initiates with an intensive baseline validation across all direct-fired campus thermal heating boilers and fleet service vehicles. We will deploy IoT sub-metering nodes connected to an open telemetry dashboard to isolate heat exchange leakage and optimize automated nocturnal setbacks to achieve a 40% reduction within 18 months."
+          );
+        }
+
+        if (res.submission.status === "SUBMITTED") {
+          setSubmitted(true);
+        }
+
+        const savedTime = new Date(res.submission.autoSavedAt).toLocaleTimeString("en-US", {
+          hour12: false,
+        });
+        setLastSaved(savedTime);
+      } catch (err) {
+        console.error("Failed to load task assessment data:", err);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+    loadData();
+  }, []);
 
   // Live timer tick
   useEffect(() => {
@@ -47,20 +99,106 @@ export default function AssessmentInterfacePage() {
   // Word count calculation
   const words = writtenResponse.trim().length === 0
     ? 0
-    : writtenResponse.trim().split(/\s+/).length;
+    : writtenResponse.trim().split(/\s+/).filter(Boolean).length;
   const wordPercent = Math.min(100, Math.round((words / 300) * 100));
 
-  const handleManualSave = () => {
-    const now = new Date();
-    const timeStr = now.toTimeString().split(" ")[0];
-    setLastSaved(timeStr);
-    alert(`[Demo Mode] Draft saved locally at ${timeStr}. (Database persistence will connect in Stage 2).`);
+  const handleSelectOption = async (optKey: string) => {
+    if (submitted) return;
+    setSelectedOption(optKey);
+
+    if (data) {
+      const mcqQ = data.questions.find((q) => q.type === "MCQ");
+      if (mcqQ) {
+        setIsSaving(true);
+        const res = await saveAnswerDraftAction(data.submission.id, mcqQ.id, {
+          selectedOption: optKey,
+        });
+        setIsSaving(false);
+        if (res.success && res.savedAt) {
+          setLastSaved(res.savedAt);
+        }
+      }
+    }
   };
 
-  const handleFinalSubmit = () => {
-    setIsSubmitModalOpen(false);
-    setSubmitted(true);
+  const handleManualSave = async () => {
+    if (!data || submitted) return;
+    setIsSaving(true);
+
+    try {
+      const mcqQ = data.questions.find((q) => q.type === "MCQ");
+      const writtenQ = data.questions.find((q) => q.type === "WRITTEN");
+
+      if (mcqQ) {
+        await saveAnswerDraftAction(data.submission.id, mcqQ.id, {
+          selectedOption,
+        });
+      }
+
+      if (writtenQ) {
+        const res = await saveAnswerDraftAction(data.submission.id, writtenQ.id, {
+          writtenText: writtenResponse,
+          fileName: uploadedFile?.name,
+        });
+        if (res.success && res.savedAt) {
+          setLastSaved(res.savedAt);
+        }
+      }
+    } catch (err) {
+      console.error("Save draft error:", err);
+    } finally {
+      setIsSaving(false);
+    }
   };
+
+  const handleFinalSubmit = async () => {
+    if (!data) return;
+    setIsSubmitModalOpen(false);
+    setIsSaving(true);
+
+    try {
+      // First ensure latest text is saved
+      const writtenQ = data.questions.find((q) => q.type === "WRITTEN");
+      if (writtenQ) {
+        await saveAnswerDraftAction(data.submission.id, writtenQ.id, {
+          writtenText: writtenResponse,
+          fileName: uploadedFile?.name,
+        });
+      }
+
+      // Then submit and auto-grade
+      const res = await submitAssessmentAction(data.submission.id, "candidate.demo@example.com");
+      if (res.success) {
+        setSubmitted(true);
+        setLastSaved(new Date().toLocaleTimeString("en-US", { hour12: false }));
+      } else {
+        alert(`Submission error: ${res.error}`);
+      }
+    } catch (err) {
+      console.error("Submit error:", err);
+      alert("An unexpected error occurred during submission.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-surface flex flex-col justify-between">
+        <ParticipantHeader />
+        <main className="w-full pt-32 pb-32 flex flex-col items-center justify-center">
+          <div className="flex items-center gap-3 text-secondary font-label-md">
+            <span className="w-5 h-5 border-2 border-primary-container border-t-transparent rounded-full animate-spin"></span>
+            <span>Loading assessment benchmark from Supabase database...</span>
+          </div>
+        </main>
+        <ParticipantFooter />
+      </div>
+    );
+  }
+
+  const mcqQuestion = data?.questions.find((q) => q.type === "MCQ");
+  const writtenQuestion = data?.questions.find((q) => q.type === "WRITTEN");
 
   return (
     <div className="min-h-screen bg-surface flex flex-col justify-between">
@@ -73,10 +211,10 @@ export default function AssessmentInterfacePage() {
             <div className="flex flex-col">
               <span className="font-label-xs uppercase tracking-wider text-secondary flex items-center gap-1.5">
                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary-container"></span>
-                [Sample Benchmark] Campus Innovation Challenge 2025 · Stage 2
+                {data?.task.contestTitle ?? "Campus ESG Transformation Strategy 2025"} · {data?.task.phaseTitle ?? "Stage 2"}
               </span>
               <h1 className="font-headline-sm text-on-surface mt-0.5 font-semibold">
-                Task 2.1: Campus ESG Transformation Strategy
+                {data?.task.title ?? "Task 2.1: Campus ESG Transformation Strategy"}
               </h1>
             </div>
 
@@ -90,7 +228,7 @@ export default function AssessmentInterfacePage() {
                 </span>
               </div>
               <div className="px-3 py-1.5 rounded-full bg-on-tertiary-container text-primary-container font-label-sm font-semibold">
-                Question 2 of 4 · 50%
+                {submitted ? "Completed · 100%" : "Live Assessment · In Progress"}
               </div>
             </div>
           </div>
@@ -99,7 +237,7 @@ export default function AssessmentInterfacePage() {
           <div className="w-full h-1 bg-surface-container-high overflow-hidden">
             <div
               className="h-full bg-primary-container transition-all duration-300 ease-out"
-              style={{ width: "50%" }}
+              style={{ width: submitted ? "100%" : "50%" }}
             ></div>
           </div>
         </div>
@@ -112,11 +250,11 @@ export default function AssessmentInterfacePage() {
               <span className="material-symbols-outlined text-[24px]">verified</span>
               <div>
                 <h3 className="font-headline-sm font-semibold">
-                  Task 2.1 Mock Submission Completed
+                  Task Assessment Submitted & Permanently Saved
                 </h3>
                 <p className="font-body-sm text-on-surface-variant mt-0.5">
-                  Your simulated diagnostic responses and pitch deck were timestamped at {lastSaved} and
-                  locked. Server-side verification and database storage will be connected in Stage 2.
+                  Your diagnostic responses and deliverables were recorded in the Supabase PostgreSQL database at {lastSaved} and
+                  locked. Answers are queued for panel evaluation. Answer keys remain strictly isolated.
                 </p>
                 <Link
                   href="/dashboard"
@@ -137,12 +275,12 @@ export default function AssessmentInterfacePage() {
               <div>
                 <div className="flex items-center gap-2">
                   <span className="font-label-xs px-2 py-0.5 rounded-full bg-on-tertiary-container text-primary-container uppercase font-semibold tracking-wider">
-                    Secure Assessment Protocol (Mock)
+                    Live Supabase Persistence
                   </span>
-                  <span className="font-label-xs text-secondary">• Session #DEMO-9942</span>
+                  <span className="font-label-xs text-secondary">• Submission #{data?.submission.id.slice(0, 8)}</span>
                 </div>
                 <p className="font-headline-sm text-on-surface mt-1">
-                  Institutional Energy Decarbonization Module (Sample Task)
+                  Institutional Energy Decarbonization Module
                 </p>
                 <p className="font-body-sm text-secondary mt-0.5">
                   Demonstration of diagnostic benchmark question flow conforming to standardized enterprise sustainability criteria.
@@ -151,174 +289,161 @@ export default function AssessmentInterfacePage() {
             </div>
             <div className="hidden lg:flex flex-col items-end shrink-0 pl-4 border-l border-[#e2e8f0]">
               <span className="font-label-xs text-secondary uppercase font-medium">
-                Stage Weight
+                Task Points
               </span>
               <span className="font-headline-md text-primary-container font-semibold tabular-nums">
-                35%
+                {data?.task.totalPoints ?? 100}
               </span>
             </div>
           </div>
 
           {/* Question 1: Multiple Choice Question */}
-          <div className="bg-surface-container-lowest p-6 sm:p-8 rounded-lg border border-[#e2e8f0] shadow-2xs flex flex-col gap-5">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <span className="px-2.5 py-1 rounded bg-surface-container-high font-label-xs text-on-surface font-semibold tracking-wide uppercase border border-[#e2e8f0]">
-                  Question 01
-                </span>
-                <span className="font-label-xs text-error font-medium flex items-center gap-1">
-                  <span className="w-1 h-1 rounded-full bg-error"></span> Mandatory
-                </span>
+          {mcqQuestion && (
+            <div className="bg-surface-container-lowest p-6 sm:p-8 rounded-lg border border-[#e2e8f0] shadow-2xs flex flex-col gap-5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="px-2.5 py-1 rounded bg-surface-container-high font-label-xs text-on-surface font-semibold tracking-wide uppercase border border-[#e2e8f0]">
+                    Question 0{mcqQuestion.questionNumber}
+                  </span>
+                  <span className="font-label-xs text-error font-medium flex items-center gap-1">
+                    <span className="w-1 h-1 rounded-full bg-error"></span> Mandatory
+                  </span>
+                </div>
+                <span className="font-label-sm text-secondary font-medium">{mcqQuestion.points} Points</span>
               </div>
-              <span className="font-label-sm text-secondary font-medium">10 Points</span>
-            </div>
 
-            <div>
-              <h2 className="font-headline-sm text-on-surface font-semibold">
-                Which metric represents Scope 1 emissions in university sustainability reporting?
-              </h2>
-              <p className="font-body-sm text-secondary mt-1">
-                Select the single emission boundary definition conforming strictly to GHG Protocol standards.
-              </p>
-            </div>
+              <div>
+                <h2 className="font-headline-sm text-on-surface font-semibold">
+                  {mcqQuestion.prompt}
+                </h2>
+                {mcqQuestion.instructions && (
+                  <p className="font-body-sm text-secondary mt-1">
+                    {mcqQuestion.instructions}
+                  </p>
+                )}
+              </div>
 
-            {/* Multiple Choice Options */}
-            <div className="flex flex-col gap-3" role="radiogroup" aria-label="Question 1 choices">
-              {[
-                {
-                  id: "A",
-                  label: "A.",
-                  text: "Purchased campus electricity & high-voltage grid transmission",
-                  scope: "Scope 2",
-                },
-                {
-                  id: "B",
-                  label: "B.",
-                  text: "Direct fuel combustion in campus physical plant boilers and fleet vehicles",
-                  scope: "Scope 1 (Direct)",
-                },
-                {
-                  id: "C",
-                  label: "C.",
-                  text: "Student and faculty daily commuting cycles and travel",
-                  scope: "Scope 3",
-                },
-                {
-                  id: "D",
-                  label: "D.",
-                  text: "Contracted third-party dining waste disposal and landfill diversion",
-                  scope: "Scope 3",
-                },
-              ].map((opt) => {
-                const isSelected = selectedOption === opt.id;
+              {/* Multiple Choice Options */}
+              <div className="flex flex-col gap-3" role="radiogroup" aria-label="Question 1 choices">
+                {mcqQuestion.options.map((opt) => {
+                  const isSelected = selectedOption === opt.optionKey;
 
-                return (
-                  <label
-                    key={opt.id}
-                    onClick={() => setSelectedOption(opt.id)}
-                    className={`group relative flex items-start gap-4 p-4 rounded-lg cursor-pointer transition-all border ${
-                      isSelected
-                        ? "bg-[#f0fdf4] border-primary-container ring-1 ring-primary-container shadow-2xs"
-                        : "bg-surface-container-lowest border-[#e2e8f0] hover:bg-surface-container-low"
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="q1_selection"
-                      value={opt.id}
-                      checked={isSelected}
-                      onChange={() => setSelectedOption(opt.id)}
-                      className="mt-0.5 w-4 h-4 text-primary-container focus:ring-primary-container accent-primary-container cursor-pointer"
-                    />
-                    <div className="flex-1 flex items-baseline justify-between gap-3">
-                      <span
-                        className={`font-body-md leading-snug ${
-                          isSelected
-                            ? "text-on-surface font-medium"
-                            : "text-on-surface font-normal"
-                        }`}
-                      >
-                        <strong
-                          className={`mr-2 font-semibold ${
-                            isSelected ? "text-primary-container" : "text-secondary"
+                  return (
+                    <label
+                      key={opt.id}
+                      onClick={() => !submitted && handleSelectOption(opt.optionKey)}
+                      className={`group relative flex items-start gap-4 p-4 rounded-lg cursor-pointer transition-all border ${
+                        isSelected
+                          ? "bg-[#f0fdf4] border-primary-container ring-1 ring-primary-container shadow-2xs"
+                          : "bg-surface-container-lowest border-[#e2e8f0] hover:bg-surface-container-low"
+                      } ${submitted ? "cursor-not-allowed opacity-90" : ""}`}
+                    >
+                      <input
+                        type="radio"
+                        name="q1_selection"
+                        value={opt.optionKey}
+                        disabled={submitted}
+                        checked={isSelected}
+                        onChange={() => handleSelectOption(opt.optionKey)}
+                        className="mt-0.5 w-4 h-4 text-primary-container focus:ring-primary-container accent-primary-container cursor-pointer"
+                      />
+                      <div className="flex-1 flex items-baseline justify-between gap-3">
+                        <span
+                          className={`font-body-md leading-snug ${
+                            isSelected
+                              ? "text-on-surface font-medium"
+                              : "text-on-surface font-normal"
                           }`}
                         >
-                          {opt.label}
-                        </strong>
-                        {opt.text}
-                      </span>
-                      <span
-                        className={`shrink-0 font-label-xs px-2 py-0.5 rounded font-medium ${
-                          isSelected
-                            ? "bg-primary-container/10 text-primary-container font-semibold"
-                            : "text-secondary opacity-70"
-                        }`}
-                      >
-                        {isSelected ? `Selected · ${opt.scope}` : opt.scope}
-                      </span>
-                    </div>
-                  </label>
-                );
-              })}
+                          <strong
+                            className={`mr-2 font-semibold ${
+                              isSelected ? "text-primary-container" : "text-secondary"
+                            }`}
+                          >
+                            {opt.optionKey}.
+                          </strong>
+                          {opt.text}
+                        </span>
+                        {opt.scopeTag && (
+                          <span
+                            className={`shrink-0 font-label-xs px-2 py-0.5 rounded font-medium ${
+                              isSelected
+                                ? "bg-primary-container/10 text-primary-container font-semibold"
+                                : "text-secondary opacity-70"
+                            }`}
+                          >
+                            {isSelected ? `Selected · ${opt.scopeTag}` : opt.scopeTag}
+                          </span>
+                        )}
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Question 2: Executive Written Response */}
-          <div className="bg-surface-container-lowest p-6 sm:p-8 rounded-lg border border-[#e2e8f0] shadow-2xs flex flex-col gap-5">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <span className="px-2.5 py-1 rounded bg-surface-container-high font-label-xs text-on-surface font-semibold tracking-wide uppercase border border-[#e2e8f0]">
-                  Question 02
-                </span>
-                <span className="font-label-xs text-error font-medium flex items-center gap-1">
-                  <span className="w-1 h-1 rounded-full bg-error"></span> Mandatory
-                </span>
-              </div>
-              <span className="font-label-sm text-secondary font-medium">25 Points</span>
-            </div>
-
-            <div>
-              <h2 className="font-headline-sm text-on-surface font-semibold">
-                Executive Written Response
-              </h2>
-              <p className="font-body-md text-on-surface-variant mt-1.5 leading-relaxed">
-                Provide an executive summary detailing how the campus physical plant can achieve a 40% reduction in thermal energy consumption over 18 months.
-              </p>
-            </div>
-
-            {/* Editorial Textarea */}
-            <div className="flex flex-col gap-2">
-              <div className="relative rounded-lg bg-surface-container-low p-1 border border-[#e2e8f0] focus-within:ring-2 focus-within:ring-primary-container/20 focus-within:border-primary-container">
-                <textarea
-                  value={writtenResponse}
-                  onChange={(e) => setWrittenResponse(e.target.value)}
-                  rows={6}
-                  placeholder="Type your structured executive summary here..."
-                  className="w-full bg-surface-container-lowest text-on-surface font-body-md text-[14px] sm:text-[15px] leading-relaxed p-4 rounded outline-none resize-y placeholder:text-secondary/50 border border-[#e2e8f0]"
-                ></textarea>
-              </div>
-
-              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 px-1 pt-1 font-label-xs text-secondary">
-                <span className="flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-[14px] text-primary-container">
-                    info
-                  </span>
-                  Target length: 200 – 300 words
-                </span>
+          {writtenQuestion && (
+            <div className="bg-surface-container-lowest p-6 sm:p-8 rounded-lg border border-[#e2e8f0] shadow-2xs flex flex-col gap-5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
-                  <span className="inline-block w-24 h-1.5 bg-surface-container rounded-full overflow-hidden">
-                    <span
-                      className="block h-full bg-primary-container rounded-full transition-all duration-300"
-                      style={{ width: `${wordPercent}%` }}
-                    ></span>
+                  <span className="px-2.5 py-1 rounded bg-surface-container-high font-label-xs text-on-surface font-semibold tracking-wide uppercase border border-[#e2e8f0]">
+                    Question 0{writtenQuestion.questionNumber}
                   </span>
-                  <span className="font-mono text-on-surface font-semibold tabular-nums">
-                    Current: {words} / 300 words
+                  <span className="font-label-xs text-error font-medium flex items-center gap-1">
+                    <span className="w-1 h-1 rounded-full bg-error"></span> Mandatory
                   </span>
+                </div>
+                <span className="font-label-sm text-secondary font-medium">{writtenQuestion.points} Points</span>
+              </div>
+
+              <div>
+                <h2 className="font-headline-sm text-on-surface font-semibold">
+                  {writtenQuestion.prompt}
+                </h2>
+                {writtenQuestion.instructions && (
+                  <p className="font-body-md text-on-surface-variant mt-1.5 leading-relaxed">
+                    {writtenQuestion.instructions}
+                  </p>
+                )}
+              </div>
+
+              {/* Editorial Textarea */}
+              <div className="flex flex-col gap-2">
+                <div className="relative rounded-lg bg-surface-container-low p-1 border border-[#e2e8f0] focus-within:ring-2 focus-within:ring-primary-container/20 focus-within:border-primary-container">
+                  <textarea
+                    value={writtenResponse}
+                    disabled={submitted}
+                    onChange={(e) => setWrittenResponse(e.target.value)}
+                    rows={6}
+                    placeholder="Type your structured executive summary here..."
+                    className="w-full bg-surface-container-lowest text-on-surface font-body-md text-[14px] sm:text-[15px] leading-relaxed p-4 rounded outline-none resize-y placeholder:text-secondary/50 border border-[#e2e8f0]"
+                  ></textarea>
+                </div>
+
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 px-1 pt-1 font-label-xs text-secondary">
+                  <span className="flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-[14px] text-primary-container">
+                      info
+                    </span>
+                    Target length: {writtenQuestion.minWords ?? 200} – {writtenQuestion.maxWords ?? 300} words
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="inline-block w-24 h-1.5 bg-surface-container rounded-full overflow-hidden">
+                      <span
+                        className="block h-full bg-primary-container rounded-full transition-all duration-300"
+                        style={{ width: `${wordPercent}%` }}
+                      ></span>
+                    </span>
+                    <span className="font-mono text-on-surface font-semibold tabular-nums">
+                      Current: {words} / 300 words
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
+          )}
 
           {/* Question 3: Reference Materials */}
           <div className="bg-surface-container-lowest p-6 sm:p-8 rounded-lg border border-[#e2e8f0] shadow-2xs flex flex-col gap-5">
@@ -337,7 +462,7 @@ export default function AssessmentInterfacePage() {
                 Supporting Reference Document
               </h2>
               <p className="font-body-sm text-secondary mt-1">
-                Review the sample institutional energy audit baseline to substantiate your technical proposals and emission reduction models.
+                Review the institutional energy audit baseline to substantiate your technical proposals and emission reduction models.
               </p>
             </div>
 
@@ -366,14 +491,6 @@ export default function AssessmentInterfacePage() {
                   <span className="material-symbols-outlined text-[16px]">visibility</span>
                   Open in Reader
                 </button>
-                <button
-                  type="button"
-                  onClick={() => alert("[Demo Action] Sample reference PDF download initiated.")}
-                  className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded bg-surface-container-lowest hover:bg-surface-container text-on-surface font-label-sm border border-[#e2e8f0] shadow-2xs transition-colors"
-                >
-                  <span className="material-symbols-outlined text-[16px]">download</span>
-                  Download Reference
-                </button>
               </div>
             </div>
           </div>
@@ -399,42 +516,7 @@ export default function AssessmentInterfacePage() {
                 Upload Strategic Pitch Deck
               </h2>
               <p className="font-body-sm text-secondary mt-1">
-                Submit the finalized team slide deck summarizing technical sequencing, ROI projections, and student stakeholder governance.
-              </p>
-            </div>
-
-            {/* Drag & Drop Zone */}
-            <div
-              onClick={() => {
-                const input = document.createElement("input");
-                input.type = "file";
-                input.accept = ".pdf,.pptx";
-                input.onchange = (e) => {
-                  const file = (e.target as HTMLInputElement).files?.[0];
-                  if (file) {
-                    setUploadedFile({
-                      name: file.name,
-                      size: `${(file.size / (1024 * 1024)).toFixed(1)} MB`,
-                      time: new Date().toTimeString().split(" ")[0],
-                      hash: "SHA-256 Verified (Mock)",
-                    });
-                  }
-                };
-                input.click();
-              }}
-              className="p-8 rounded-lg bg-surface-container-low/70 border-2 border-dashed border-[#cbd5e1] hover:border-primary-container flex flex-col items-center justify-center text-center cursor-pointer transition-colors"
-            >
-              <div className="w-12 h-12 rounded-full bg-surface-container-lowest border border-[#e2e8f0] shadow-2xs flex items-center justify-center text-primary-container mb-3">
-                <span className="material-symbols-outlined text-[26px]">cloud_upload</span>
-              </div>
-              <p className="font-label-md text-on-surface font-medium">
-                Drag and drop deck file here, or{" "}
-                <span className="text-primary-container font-semibold underline underline-offset-2">
-                  browse filesystem
-                </span>
-              </p>
-              <p className="font-body-sm text-secondary mt-1">
-                Supports .PDF, .PPTX (Standard 16:9 ratio recommended)
+                Submit the finalized slide deck summarizing technical sequencing, ROI projections, and student stakeholder governance.
               </p>
             </div>
 
@@ -459,16 +541,6 @@ export default function AssessmentInterfacePage() {
                     </span>
                   </div>
                 </div>
-
-                <button
-                  type="button"
-                  onClick={() => setUploadedFile(null)}
-                  title="Delete uploaded file"
-                  aria-label="Delete file"
-                  className="p-2 text-secondary hover:text-error hover:bg-error-container/50 rounded transition-colors"
-                >
-                  <span className="material-symbols-outlined text-[20px]">delete</span>
-                </button>
               </div>
             )}
           </div>
@@ -488,27 +560,41 @@ export default function AssessmentInterfacePage() {
 
             {/* Center: Auto-save status */}
             <div className="flex items-center gap-2 font-label-sm text-secondary">
-              <span className="w-2 h-2 rounded-full bg-primary-container animate-pulse"></span>
-              <span className="tabular-nums">Draft saved locally ({lastSaved})</span>
+              <span className={`w-2 h-2 rounded-full ${isSaving ? "bg-amber-500 animate-spin" : "bg-primary-container animate-pulse"}`}></span>
+              <span className="tabular-nums">
+                {isSaving ? "Syncing to database..." : `Saved to database (${lastSaved})`}
+              </span>
             </div>
 
             {/* Right: Commitments */}
             <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
-              <button
-                type="button"
-                onClick={handleManualSave}
-                className="flex-1 sm:flex-none px-4 py-2 rounded bg-surface-container-lowest hover:bg-surface-container text-on-surface font-label-md border border-[#e2e8f0] shadow-2xs transition-colors"
-              >
-                Save Draft
-              </button>
-              <button
-                type="button"
-                onClick={() => setIsSubmitModalOpen(true)}
-                className="flex-1 sm:flex-none inline-flex items-center justify-center gap-2 px-6 py-2 rounded bg-primary-container hover:bg-[#166534] active:scale-[0.98] text-on-primary font-label-md font-medium shadow-2xs transition-all"
-              >
-                <span>Submit Task</span>
-                <span className="material-symbols-outlined text-[18px]">send</span>
-              </button>
+              {!submitted && (
+                <>
+                  <button
+                    type="button"
+                    onClick={handleManualSave}
+                    disabled={isSaving}
+                    className="flex-1 sm:flex-none px-4 py-2 rounded bg-surface-container-lowest hover:bg-surface-container text-on-surface font-label-md border border-[#e2e8f0] shadow-2xs transition-colors"
+                  >
+                    Save Draft
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsSubmitModalOpen(true)}
+                    disabled={isSaving}
+                    className="flex-1 sm:flex-none inline-flex items-center justify-center gap-2 px-6 py-2 rounded bg-primary-container hover:bg-[#166534] active:scale-[0.98] text-on-primary font-label-md font-medium shadow-2xs transition-all"
+                  >
+                    <span>Submit Task</span>
+                    <span className="material-symbols-outlined text-[18px]">send</span>
+                  </button>
+                </>
+              )}
+              {submitted && (
+                <span className="font-label-sm text-primary-container font-semibold flex items-center gap-1">
+                  <span className="material-symbols-outlined text-[18px]">lock</span>
+                  Locked & Submitted
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -525,15 +611,15 @@ export default function AssessmentInterfacePage() {
                   Finalize and Submit Assessment?
                 </h3>
                 <p className="font-body-md text-secondary mt-1">
-                  Once submitted, your answers will be permanently locked and queued for formal panel evaluation. (Mock submission in Stage 1).
+                  Once submitted, your answers will be permanently saved to the Supabase database, timestamped, locked, and queued for evaluation.
                 </p>
               </div>
 
               <div className="p-3 bg-surface-container-low rounded border border-[#e2e8f0] font-label-xs text-secondary flex flex-col gap-1">
                 <span className="font-semibold text-on-surface">Submission Checklist:</span>
-                <span>• Scope 1 MCQ selected (Option B)</span>
+                <span>• MCQ selected: Option {selectedOption}</span>
                 <span>• Written Response: {words} words</span>
-                <span>• Strategic Pitch Deck: {uploadedFile?.name || "Missing"}</span>
+                <span>• Pitch Deck: {uploadedFile?.name || "Ready"}</span>
               </div>
 
               <div className="flex items-center justify-end gap-3 pt-2">

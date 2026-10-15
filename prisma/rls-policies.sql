@@ -74,7 +74,7 @@ CREATE TRIGGER trg_prevent_role_escalation
 CREATE OR REPLACE FUNCTION public.check_submission_scoring_immutable()
 RETURNS TRIGGER AS $$
 BEGIN
-  IF (public.get_user_role() IS NULL OR public.get_user_role() = 'PARTICIPANT') THEN
+  IF (current_user IN ('anon', 'authenticated') AND (public.get_user_role() IS NULL OR public.get_user_role() = 'PARTICIPANT')) THEN
     IF NEW."autoGradeScore" IS DISTINCT FROM OLD."autoGradeScore" OR
        NEW."manualGradeScore" IS DISTINCT FROM OLD."manualGradeScore" OR
        NEW."finalScore" IS DISTINCT FROM OLD."finalScore" OR
@@ -96,7 +96,7 @@ CREATE TRIGGER trg_protect_submission_scoring
 CREATE OR REPLACE FUNCTION public.check_submission_answer_scoring_immutable()
 RETURNS TRIGGER AS $$
 BEGIN
-  IF (public.get_user_role() IS NULL OR public.get_user_role() = 'PARTICIPANT') THEN
+  IF (current_user IN ('anon', 'authenticated') AND (public.get_user_role() IS NULL OR public.get_user_role() = 'PARTICIPANT')) THEN
     IF NEW.score IS DISTINCT FROM OLD.score OR
        NEW."isCorrect" IS DISTINCT FROM OLD."isCorrect" THEN
       RAISE EXCEPTION 'Participants are not permitted to alter answer score or correctness indicators.';

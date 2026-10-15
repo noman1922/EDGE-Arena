@@ -1,40 +1,72 @@
 "use client";
 
-import React from "react";
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { ParticipantHeader } from "@/components/layout/participant-header";
 import { ParticipantFooter } from "@/components/layout/participant-footer";
-import { DEMO_CANDIDATE } from "@/lib/demo-data";
+import {
+  getParticipantDashboard,
+  type ParticipantDashboardContest,
+} from "@/app/actions/assessment-actions";
 
 export default function ParticipantDashboardPage() {
+  const [candidate, setCandidate] = useState<{
+    id: string;
+    candidateId: string;
+    name: string;
+    email: string;
+    cohort: string;
+    institution: string;
+  } | null>(null);
+
+  const [contests, setContests] = useState<ParticipantDashboardContest[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  const loadDashboard = async () => {
+    try {
+      setIsLoading(true);
+      const data = await getParticipantDashboard("candidate.demo@example.com");
+      setCandidate(data.candidate);
+      setContests(data.contests);
+    } catch (err) {
+      console.error("Failed to load participant dashboard:", err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadDashboard();
+  }, []);
+
   return (
     <div className="min-h-screen bg-surface flex flex-col justify-between">
       <ParticipantHeader />
 
       <main className="w-full pt-16 bg-surface min-h-[calc(100vh-80px)]">
         <div className="w-full max-w-4xl mx-auto px-4 sm:px-6 py-space-lg sm:py-space-xl flex flex-col gap-space-xl">
-          {/* Demo Disclaimer */}
-          <div className="px-4 py-2 bg-amber-50 rounded border border-amber-200 text-amber-900 font-label-xs flex items-center justify-between">
+          {/* Live Status Banner */}
+          <div className="px-4 py-2 bg-on-tertiary-container/60 rounded border border-primary-container/30 text-on-surface font-label-xs flex items-center justify-between">
             <span className="flex items-center gap-1.5">
-              <span className="material-symbols-outlined text-[16px] text-amber-700">info</span>
-              <strong>Candidate Demo View:</strong> Fictional candidate profile and sample benchmark tracks for UI/UX evaluation.
+              <span className="material-symbols-outlined text-[16px] text-primary-container">verified</span>
+              <strong>Candidate Database Verified:</strong> Connected to live Supabase Mumbai database. Scoped exclusively to your enrolled assignments.
             </span>
-            <span className="text-amber-700 font-mono">Stage 1 Verified</span>
+            <span className="text-primary-container font-mono font-semibold">Stage 3 Live</span>
           </div>
 
           {/* Welcome Header Section */}
           <header className="flex flex-col md:flex-row md:items-end justify-between gap-space-md bg-surface-container-lowest p-space-lg sm:p-space-xl rounded-lg border border-[#e2e8f0] shadow-2xs relative overflow-hidden">
             <div className="flex flex-col gap-space-xs z-10">
               <div className="inline-flex items-center gap-space-xs font-label-xs uppercase tracking-wider text-secondary">
-                <span>Candidate ID: {DEMO_CANDIDATE.id}</span>
+                <span>Candidate ID: {candidate?.candidateId ?? "DEMO-CANDIDATE-01"}</span>
                 <span>·</span>
-                <span>{DEMO_CANDIDATE.cohort}</span>
+                <span>{candidate?.cohort ?? "Campus Leadership Programme 2025"}</span>
               </div>
               <h1 className="font-display-lg text-on-surface tracking-tight">
-                Welcome back, {DEMO_CANDIDATE.name}
+                Welcome back, {candidate?.name ?? "Demo Candidate"}
               </h1>
               <p className="font-body-md text-secondary">
-                {DEMO_CANDIDATE.program}
+                {candidate?.institution ?? "National Campus Leadership Diagnostic Track"}
               </p>
             </div>
 
@@ -42,10 +74,10 @@ export default function ParticipantDashboardPage() {
               <span className="w-2 h-2 rounded-full bg-primary-container animate-pulse"></span>
               <div className="flex flex-col">
                 <span className="font-label-xs text-on-surface-variant font-semibold">
-                  Stage 2 Evaluation in Progress
+                  {contests.length} Assigned {contests.length === 1 ? "Challenge" : "Challenges"}
                 </span>
                 <span className="font-label-xs text-secondary">
-                  Sample 75-Leader Benchmark Cohort
+                  Live Participant Workspace
                 </span>
               </div>
             </div>
@@ -59,199 +91,136 @@ export default function ParticipantDashboardPage() {
                   Assigned Benchmark Contests
                 </h2>
                 <span className="font-label-sm text-secondary bg-surface-container-high px-space-sm py-0.5 rounded-full border border-[#e2e8f0]">
-                  2 Active
+                  {contests.length} Active
                 </span>
               </div>
-              <span className="font-label-sm text-secondary hidden sm:inline-block">
-                Timezone: UTC+08:00 (Standard)
-              </span>
+              <button
+                onClick={() => loadDashboard()}
+                className="text-secondary hover:text-on-surface font-label-xs flex items-center gap-1"
+              >
+                <span className="material-symbols-outlined text-[16px]">refresh</span>
+                <span>Refresh</span>
+              </button>
             </div>
 
             {/* Contest Cards Stack */}
             <div className="flex flex-col gap-space-lg">
-              {/* Card 1: Primary Active */}
-              <article className="bg-surface-container-lowest rounded-lg p-space-lg sm:p-space-xl border border-[#e2e8f0] shadow-2xs flex flex-col gap-space-lg hover:shadow-xs transition-shadow relative overflow-hidden">
-                <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-primary-container"></div>
-                <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-space-md pl-1">
-                  <div className="flex flex-col gap-space-xs max-w-2xl">
-                    <div className="flex flex-wrap items-center gap-space-sm">
-                      <span className="bg-tertiary-fixed text-on-tertiary-fixed font-label-xs px-2.5 py-0.5 rounded-full font-semibold">
-                        Stage 2 · Mandatory Evaluation
-                      </span>
-                      <span className="font-label-xs text-secondary flex items-center gap-1">
-                        <span className="material-symbols-outlined text-[14px]">
-                          lock_clock
+              {isLoading ? (
+                <div className="bg-surface-container-lowest rounded-lg p-12 border border-[#e2e8f0] text-center text-secondary">
+                  <div className="flex items-center justify-center gap-2">
+                    <span className="w-4 h-4 border-2 border-primary-container border-t-transparent rounded-full animate-spin"></span>
+                    <span>Loading your assigned benchmarks...</span>
+                  </div>
+                </div>
+              ) : contests.length > 0 ? (
+                contests.map((c) => (
+                  <article
+                    key={c.contestId}
+                    className="bg-surface-container-lowest rounded-lg p-space-lg sm:p-space-xl border border-[#e2e8f0] shadow-2xs flex flex-col gap-space-lg hover:shadow-xs transition-shadow relative overflow-hidden"
+                  >
+                    <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-primary-container"></div>
+                    <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-space-md pl-1">
+                      <div className="flex flex-col gap-space-xs max-w-2xl">
+                        <div className="flex flex-wrap items-center gap-space-sm">
+                          <span className="bg-tertiary-fixed text-on-tertiary-fixed font-label-xs px-2.5 py-0.5 rounded-full font-semibold">
+                            {c.stageTitle}
+                          </span>
+                          <span className="font-label-xs text-secondary flex items-center gap-1">
+                            <span className="material-symbols-outlined text-[14px]">
+                              lock_clock
+                            </span>
+                            Proctored Session
+                          </span>
+                        </div>
+                        <h3 className="font-headline-lg text-on-surface tracking-tight pt-1">
+                          {c.title}
+                        </h3>
+                        <p className="font-body-md text-secondary">
+                          {c.taskTitle}
+                        </p>
+                      </div>
+
+                      {/* Deadline Callout Box */}
+                      <div className="bg-surface-container-low px-space-md py-space-sm rounded border border-[#e2e8f0] flex items-center gap-space-sm shrink-0 self-start">
+                        <span className="material-symbols-outlined text-primary-container text-[20px]">
+                          calendar_clock
                         </span>
-                        Proctored Session
-                      </span>
+                        <div className="flex flex-col">
+                          <span className="font-label-xs text-secondary font-medium uppercase tracking-wider">
+                            Submission Due
+                          </span>
+                          <span className="font-label-sm text-on-surface font-semibold">
+                            {c.deadlineFormatted}
+                          </span>
+                          <span className="font-label-xs text-primary-container font-semibold">
+                            {c.daysRemainingText}
+                          </span>
+                        </div>
+                      </div>
                     </div>
-                    <h3 className="font-headline-lg text-on-surface tracking-tight pt-1">
-                      [Sample Benchmark] Campus ESG Transformation Strategy 2025
-                    </h3>
-                    <p className="font-body-md text-secondary">
-                      Task 2.1: Campus ESG Transformation Strategy & Execution Blueprint
-                    </p>
-                  </div>
 
-                  {/* Deadline Callout Box */}
-                  <div className="bg-surface-container-low px-space-md py-space-sm rounded border border-[#e2e8f0] flex items-center gap-space-sm shrink-0 self-start">
-                    <span className="material-symbols-outlined text-primary-container text-[20px]">
-                      calendar_clock
-                    </span>
-                    <div className="flex flex-col">
-                      <span className="font-label-xs text-secondary font-medium uppercase tracking-wider">
-                        Submission Due
-                      </span>
-                      <span className="font-label-sm text-on-surface font-semibold">
-                        Fri, Feb 28 · 11:59 PM
-                      </span>
-                      <span className="font-label-xs text-primary-container font-semibold">
-                        4 days remaining
-                      </span>
+                    {/* Progress Track */}
+                    <div className="flex flex-col gap-space-xs bg-surface-container-low p-space-md rounded border border-[#e2e8f0] ml-1">
+                      <div className="flex items-center justify-between font-label-sm">
+                        <span className="text-on-surface font-medium flex items-center gap-1.5">
+                          <span className="material-symbols-outlined text-primary-container text-[16px]">
+                            {c.status === "SUBMITTED" ? "check_circle" : "edit_note"}
+                          </span>
+                          {c.progressText}
+                        </span>
+                        <span className="text-secondary font-medium tabular-nums">
+                          {c.progressPercent}% Completed
+                        </span>
+                      </div>
+                      <div className="w-full bg-surface-variant h-1.5 rounded-full overflow-hidden">
+                        <div
+                          className="bg-primary-container h-full rounded-full transition-all duration-500"
+                          style={{ width: `${c.progressPercent}%` }}
+                        ></div>
+                      </div>
                     </div>
-                  </div>
-                </div>
 
-                {/* Progress Track */}
-                <div className="flex flex-col gap-space-xs bg-surface-container-low p-space-md rounded border border-[#e2e8f0] ml-1">
-                  <div className="flex items-center justify-between font-label-sm">
-                    <span className="text-on-surface font-medium flex items-center gap-1.5">
-                      <span className="material-symbols-outlined text-primary-container text-[16px]">
-                        edit_note
-                      </span>
-                      Question 2 of 4 In Progress
-                    </span>
-                    <span className="text-secondary font-medium tabular-nums">50% Completed</span>
-                  </div>
-                  <div className="w-full bg-surface-variant h-1.5 rounded-full overflow-hidden">
-                    <div className="bg-primary-container h-full rounded-full transition-all duration-500 w-1/2"></div>
-                  </div>
-                  <div className="flex items-center justify-between text-secondary font-label-xs pt-0.5">
-                    <span>Section A: Diagnostic Quantitative Model (Saved)</span>
-                    <span>Est. time to finish: 45 mins</span>
-                  </div>
-                </div>
-
-                {/* Actions Row */}
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-space-md pt-space-xs ml-1">
-                  <button
-                    onClick={() => alert("[Demo Action] Sample guidelines viewer opened.")}
-                    className="inline-flex items-center gap-space-xs font-label-md text-secondary hover:text-on-surface transition-colors text-left"
-                  >
-                    <span className="material-symbols-outlined text-[18px]">article</span>
-                    <span>View Challenge Guidelines & Case Brief</span>
-                  </button>
-                  <Link
-                    href="/assessment"
-                    className="inline-flex items-center justify-center gap-space-sm px-space-lg py-2.5 rounded bg-primary-container hover:bg-[#166534] text-on-primary font-label-md transition-colors shadow-2xs text-center font-medium active:scale-[0.98]"
-                  >
-                    <span>Continue Assessment</span>
-                    <span className="material-symbols-outlined text-[18px]">
-                      arrow_forward
-                    </span>
-                  </Link>
-                </div>
-              </article>
-
-              {/* Card 2: Upcoming / Collaborative */}
-              <article className="bg-surface-container-lowest rounded-lg p-space-lg sm:p-space-xl border border-[#e2e8f0] shadow-2xs flex flex-col gap-space-lg hover:shadow-xs transition-shadow">
-                <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-space-md">
-                  <div className="flex flex-col gap-space-xs max-w-2xl">
-                    <div className="flex flex-wrap items-center gap-space-sm">
-                      <span className="bg-surface-container-high text-secondary font-label-xs px-2.5 py-0.5 rounded-full font-medium border border-[#e2e8f0]">
-                        Stage 1 · Collaborative
-                      </span>
-                      <span className="font-label-xs text-secondary flex items-center gap-1">
-                        <span className="material-symbols-outlined text-[14px]">groups</span>
-                        Team Capstone (4 Members)
-                      </span>
+                    {/* Actions Row */}
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-space-md pt-space-xs ml-1">
+                      <div className="text-secondary font-label-sm flex items-center gap-1">
+                        <span className="material-symbols-outlined text-[16px]">domain</span>
+                        <span>{c.track}</span>
+                      </div>
+                      {c.canContinue ? (
+                        <Link
+                          href="/assessment"
+                          className="inline-flex items-center justify-center gap-space-sm px-space-lg py-2.5 rounded bg-primary-container hover:bg-[#166534] text-on-primary font-label-md transition-colors shadow-2xs text-center font-medium active:scale-[0.98]"
+                        >
+                          <span>{c.progressPercent > 0 ? "Continue Assessment" : "Start Assessment"}</span>
+                          <span className="material-symbols-outlined text-[18px]">
+                            arrow_forward
+                          </span>
+                        </Link>
+                      ) : (
+                        <Link
+                          href="/assessment"
+                          className="inline-flex items-center justify-center gap-space-sm px-space-lg py-2 rounded bg-surface-container-high hover:bg-surface-container text-on-surface font-label-md transition-colors border border-[#e2e8f0]"
+                        >
+                          <span className="material-symbols-outlined text-[18px] text-primary-container">
+                            verified
+                          </span>
+                          <span>View Submitted Record</span>
+                        </Link>
+                      )}
                     </div>
-                    <h3 className="font-headline-lg text-on-surface tracking-tight pt-1">
-                      [Sample Challenge] Sustainable Enterprise Ideation
-                    </h3>
-                    <p className="font-body-md text-secondary">
-                      Task 1: Team Formation, Stakeholder Mapping & Problem Statement
-                    </p>
+                  </article>
+                ))
+              ) : (
+                <div className="bg-surface-container-lowest rounded-lg p-12 border border-[#e2e8f0] text-center">
+                  <div className="w-12 h-12 rounded-full bg-surface-container flex items-center justify-center text-secondary mx-auto mb-3">
+                    <span className="material-symbols-outlined text-[24px]">assignment_late</span>
                   </div>
-
-                  <div className="bg-surface-container-low px-space-md py-space-sm rounded border border-[#e2e8f0] flex items-center gap-space-sm shrink-0 self-start">
-                    <span className="material-symbols-outlined text-secondary text-[20px]">
-                      event_upcoming
-                    </span>
-                    <div className="flex flex-col">
-                      <span className="font-label-xs text-secondary font-medium uppercase tracking-wider">
-                        Schedule
-                      </span>
-                      <span className="font-label-sm text-on-surface font-semibold">
-                        Opens March 10, 2025
-                      </span>
-                      <span className="font-label-xs text-secondary">Access locks until start</span>
-                    </div>
-                  </div>
+                  <h4 className="font-headline-sm font-semibold text-on-surface">No Assigned Contests</h4>
+                  <p className="font-body-sm text-secondary mt-1 max-w-md mx-auto">
+                    You do not currently have any active challenge assignments. Ask your cohort administrator to enroll your email ({candidate?.email}).
+                  </p>
                 </div>
-
-                <div className="flex items-center gap-space-sm text-secondary font-label-sm bg-surface-container-low/60 px-space-md py-space-sm rounded border border-[#e2e8f0]">
-                  <span className="w-2 h-2 rounded-full bg-secondary"></span>
-                  <span>Status: Not Started · Roster confirmations pending administrative sign-off</span>
-                </div>
-
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-space-md pt-space-xs">
-                  <button
-                    onClick={() => alert("[Demo Action] Team roster management modal.")}
-                    className="inline-flex items-center gap-space-xs font-label-md text-secondary hover:text-on-surface transition-colors"
-                  >
-                    <span className="material-symbols-outlined text-[18px]">group_add</span>
-                    <span>Manage Team Members (3/4 Assigned)</span>
-                  </button>
-                  <button
-                    onClick={() => alert("[Demo Action] Sample preparation guidelines.")}
-                    className="inline-flex items-center justify-center gap-space-xs px-space-lg py-2 rounded bg-surface-container-high hover:bg-surface-variant text-on-surface font-label-md transition-colors text-center border border-[#e2e8f0]"
-                  >
-                    <span>Prepare Materials</span>
-                    <span className="material-symbols-outlined text-[18px]">description</span>
-                  </button>
-                </div>
-              </article>
-            </div>
-          </section>
-
-          {/* Completed Evaluations Section */}
-          <section className="flex flex-col gap-space-md pt-space-md">
-            <div className="flex items-center justify-between">
-              <h2 className="font-headline-sm text-on-surface tracking-tight">
-                Completed Sample Evaluations
-              </h2>
-              <span className="font-label-xs text-secondary">1 Archive Record</span>
-            </div>
-
-            <div className="bg-surface-container-lowest rounded-lg p-space-lg border border-[#e2e8f0] shadow-2xs flex flex-col md:flex-row md:items-center justify-between gap-space-md">
-              <div className="flex items-start gap-space-md">
-                <div className="w-10 h-10 rounded bg-surface-container-low border border-[#e2e8f0] flex items-center justify-center shrink-0 text-primary-container">
-                  <span className="material-symbols-outlined text-[24px]">verified</span>
-                </div>
-                <div className="flex flex-col gap-0.5">
-                  <div className="flex items-center gap-space-sm">
-                    <span className="font-label-xs font-semibold px-2 py-0.5 rounded-full bg-on-tertiary-container text-primary-container">
-                      Final Passed (Sample)
-                    </span>
-                    <span className="font-label-xs text-secondary">Jan 10, 2025</span>
-                  </div>
-                  <span className="font-label-md text-on-surface font-semibold">
-                    [Sample Archive] Q1 Ethical Leadership Case Study
-                  </span>
-                  <span className="font-body-sm text-secondary">
-                    Final Score: <strong className="text-on-surface font-semibold tabular-nums">92/100</strong> (Sample 5th Percentile)
-                  </span>
-                </div>
-              </div>
-
-              <button
-                onClick={() => alert("[Demo Action] Viewing verified sample score sheet and rubric feedback.")}
-                className="inline-flex items-center gap-space-xs px-space-md py-2 rounded bg-surface-container-low hover:bg-surface-container text-on-surface font-label-sm transition-colors border border-[#e2e8f0] self-start md:self-center shrink-0"
-              >
-                <span>View Evaluation & Feedback</span>
-                <span className="material-symbols-outlined text-[16px]">visibility</span>
-              </button>
+              )}
             </div>
           </section>
 
