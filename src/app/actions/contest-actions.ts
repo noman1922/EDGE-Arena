@@ -252,6 +252,13 @@ export async function createContestAction(input: CreateContestInput) {
                     },
                   ],
                 },
+                rubrics: {
+                  create: [
+                    { name: "Analytical Depth & Quantitative Proof", weightPercentage: 40.0, maxPoints: 40.0 },
+                    { name: "ESG Alignment & Global Compliance", weightPercentage: 35.0, maxPoints: 35.0 },
+                    { name: "Executive Communication & Defense", weightPercentage: 25.0, maxPoints: 25.0 },
+                  ],
+                },
               },
             },
           },
