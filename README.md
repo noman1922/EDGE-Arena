@@ -1,4 +1,6 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ACI Career EDGE Assessment (EDGE-Arena)
+
+Enterprise assessment and competition evaluation platform for ACI Career EDGE.
 
 ## Getting Started
 
