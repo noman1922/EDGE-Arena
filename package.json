@@ -9,6 +9,7 @@
     "lint": "eslint",
     "test": "tsx --test src/test/**/*.test.ts",
     "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate deploy",
     "prisma:seed": "tsx prisma/seed-demo.ts"
   },
   "dependencies": {

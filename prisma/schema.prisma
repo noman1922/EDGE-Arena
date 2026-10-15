@@ -51,7 +51,7 @@ enum SubmissionStatus {
 }
 
 model User {
-  id          String   @id @default(uuid())
+  id          String   @id
   email       String   @unique
   role        UserRole @default(PARTICIPANT)
   name        String
@@ -264,7 +264,7 @@ model Submission {
   @@unique([taskId, userId])
   @@index([taskId, status])
   @@index([userId, status])
-  @@index([contestId, phaseId, finalScore(sort: Desc)])
+  @@index([contestId, phaseId, finalScore(sort: Desc), submittedAt(sort: Asc)])
 }
 
 model SubmissionAnswer {

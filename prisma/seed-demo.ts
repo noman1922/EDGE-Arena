@@ -27,10 +27,12 @@ async function main() {
   });
 
   // 2. Create Demo Evaluator
+  const DEMO_EVALUATOR_ID = "00000000-0000-4000-8000-000000000001";
   const evaluator = await prisma.user.upsert({
     where: { email: "evaluator.demo@example.com" },
     update: {},
     create: {
+      id: DEMO_EVALUATOR_ID,
       email: "evaluator.demo@example.com",
       name: "Demo Evaluator",
       role: UserRole.EVALUATOR,
@@ -40,10 +42,12 @@ async function main() {
   });
 
   // 3. Create Demo Candidate
+  const DEMO_CANDIDATE_ID = "00000000-0000-4000-8000-000000000002";
   const candidate = await prisma.user.upsert({
     where: { email: "candidate.demo@example.com" },
     update: {},
     create: {
+      id: DEMO_CANDIDATE_ID,
       email: "candidate.demo@example.com",
       name: "Demo Candidate",
       candidateId: "DEMO-CANDIDATE-01",

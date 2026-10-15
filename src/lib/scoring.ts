@@ -148,7 +148,7 @@ export function calculateWeightedRubricScore(
  */
 export function checkUserPermission(
   userRole: "ADMIN" | "EVALUATOR" | "PARTICIPANT",
-  action: "VIEW_CONTEST" | "SUBMIT_TASK" | "GRADE_SUBMISSION" | "PUBLISH_RESULTS" | "EDIT_CONTEST"
+  action: "VIEW_CONTEST" | "SUBMIT_TASK" | "GRADE_SUBMISSION" | "PUBLISH_RESULTS" | "EDIT_CONTEST" | "CHANGE_ROLE"
 ): boolean {
   switch (action) {
     case "VIEW_CONTEST":
@@ -159,8 +159,65 @@ export function checkUserPermission(
       return userRole === "ADMIN" || userRole === "EVALUATOR";
     case "PUBLISH_RESULTS":
     case "EDIT_CONTEST":
+    case "CHANGE_ROLE":
       return userRole === "ADMIN";
     default:
       return false;
   }
 }
+
+/**
+ * Strips private answer keys and scoring guides from question payloads
+ * before returning them to participant clients.
+ */
+export function sanitizeQuestionForParticipant<T extends { answerKey?: unknown }>(
+  question: T
+): Omit<T, "answerKey"> {
+  const { answerKey: _stripped, ...safeQuestion } = question;
+  return safeQuestion;
+}
+
+/**
+ * Sanitizes submission answers for participant viewing.
+ * Masks score and isCorrect indicators while a contest is still active or unpublished.
+ */
+export function sanitizeSubmissionAnswerForParticipant<
+  T extends { score?: unknown; isCorrect?: unknown }
+>(answer: T, isContestPublished: boolean): T {
+  if (isContestPublished) {
+    return answer;
+  }
+  return {
+    ...answer,
+    score: null,
+    isCorrect: null,
+  };
+}
+
+/**
+ * Sanitizes full submission data for participant viewing.
+ * Hides interim auto-grading, manual scores, and final scores until results are officially published.
+ */
+export function sanitizeSubmissionForParticipant<
+  T extends {
+    autoGradeScore?: unknown;
+    manualGradeScore?: unknown;
+    finalScore?: unknown;
+    answers?: { score?: unknown; isCorrect?: unknown }[];
+  }
+>(submission: T, isContestPublished: boolean): T {
+  if (isContestPublished) {
+    return submission;
+  }
+
+  return {
+    ...submission,
+    autoGradeScore: null,
+    manualGradeScore: null,
+    finalScore: null,
+    answers: submission.answers?.map((ans) =>
+      sanitizeSubmissionAnswerForParticipant(ans, false)
+    ),
+  };
+}
+

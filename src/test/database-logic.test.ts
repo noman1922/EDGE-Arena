@@ -5,6 +5,9 @@ import {
   calculateWeightedRubricScore,
   checkSubmissionDeadline,
   checkUserPermission,
+  sanitizeQuestionForParticipant,
+  sanitizeSubmissionAnswerForParticipant,
+  sanitizeSubmissionForParticipant,
   type McqAnswerKey,
   type ParticipantMcqAnswer,
   type RubricScoreInput,
@@ -137,26 +140,105 @@ describe("Database & Assessment Security Engine Tests", () => {
   // 4. Role-Based Permissions & Access Control
   // ---------------------------------------------------------------------------
   describe("Role-Based Authorization Permissions", () => {
-    it("should permit participants to submit tasks but forbid grading and publishing", () => {
+    it("should permit participants to submit tasks but forbid grading, publishing, and role changes", () => {
       assert.equal(checkUserPermission("PARTICIPANT", "SUBMIT_TASK"), true);
       assert.equal(checkUserPermission("PARTICIPANT", "VIEW_CONTEST"), true);
       assert.equal(checkUserPermission("PARTICIPANT", "GRADE_SUBMISSION"), false);
       assert.equal(checkUserPermission("PARTICIPANT", "PUBLISH_RESULTS"), false);
       assert.equal(checkUserPermission("PARTICIPANT", "EDIT_CONTEST"), false);
+      assert.equal(checkUserPermission("PARTICIPANT", "CHANGE_ROLE"), false);
     });
 
-    it("should permit evaluators to grade submissions but forbid submitting tasks and publishing", () => {
+    it("should permit evaluators to grade submissions but forbid submitting tasks, publishing, and role changes", () => {
       assert.equal(checkUserPermission("EVALUATOR", "GRADE_SUBMISSION"), true);
       assert.equal(checkUserPermission("EVALUATOR", "VIEW_CONTEST"), true);
       assert.equal(checkUserPermission("EVALUATOR", "SUBMIT_TASK"), false);
       assert.equal(checkUserPermission("EVALUATOR", "PUBLISH_RESULTS"), false);
+      assert.equal(checkUserPermission("EVALUATOR", "CHANGE_ROLE"), false);
     });
 
-    it("should permit admins full privileges", () => {
+    it("should permit admins full privileges including role modification", () => {
       assert.equal(checkUserPermission("ADMIN", "GRADE_SUBMISSION"), true);
       assert.equal(checkUserPermission("ADMIN", "PUBLISH_RESULTS"), true);
       assert.equal(checkUserPermission("ADMIN", "EDIT_CONTEST"), true);
       assert.equal(checkUserPermission("ADMIN", "VIEW_CONTEST"), true);
+      assert.equal(checkUserPermission("ADMIN", "CHANGE_ROLE"), true);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 5. Participant-Facing Answer Key Sanitization & Score Masking
+  // ---------------------------------------------------------------------------
+  describe("Participant-Facing Data Sanitization & Secrecy", () => {
+    it("should completely strip private answerKey from question objects", () => {
+      const rawQuestion = {
+        id: "q-101",
+        prompt: "Scope 1 emissions definition?",
+        points: 10,
+        options: [
+          { optionKey: "A", text: "Purchased electricity" },
+          { optionKey: "B", text: "Direct boiler combustion" },
+        ],
+        answerKey: {
+          id: "ak-101",
+          correctOptionKey: "B",
+          explanation: "Scope 1 covers direct owned combustions.",
+          scoringGuide: "Award full 10 points for B.",
+        },
+      };
+
+      const sanitized = sanitizeQuestionForParticipant(rawQuestion);
+      assert.equal("answerKey" in sanitized, false);
+      assert.equal((sanitized as typeof rawQuestion).answerKey, undefined);
+      assert.equal(sanitized.prompt, "Scope 1 emissions definition?");
+      assert.equal(sanitized.options.length, 2);
+    });
+
+    it("should mask interim score and isCorrect indicators while contest is unpublished", () => {
+      const rawAnswer = {
+        id: "ans-1",
+        questionId: "q-101",
+        selectedOption: "B",
+        score: 10,
+        isCorrect: true,
+      };
+
+      const hiddenAnswer = sanitizeSubmissionAnswerForParticipant(rawAnswer, false);
+      assert.equal(hiddenAnswer.score, null);
+      assert.equal(hiddenAnswer.isCorrect, null);
+      assert.equal(hiddenAnswer.selectedOption, "B");
+
+      const revealedAnswer = sanitizeSubmissionAnswerForParticipant(rawAnswer, true);
+      assert.equal(revealedAnswer.score, 10);
+      assert.equal(revealedAnswer.isCorrect, true);
+    });
+
+    it("should mask overall submission scores and nested answers when contest is unpublished", () => {
+      const rawSubmission = {
+        id: "sub-1",
+        taskId: "task-1",
+        userId: "user-1",
+        autoGradeScore: 25,
+        manualGradeScore: 60,
+        finalScore: 85,
+        answers: [
+          { questionId: "q1", selectedOption: "A", score: 10, isCorrect: true },
+          { questionId: "q2", selectedOption: "B", score: 15, isCorrect: true },
+        ],
+      };
+
+      const hiddenSubmission = sanitizeSubmissionForParticipant(rawSubmission, false);
+      assert.equal(hiddenSubmission.autoGradeScore, null);
+      assert.equal(hiddenSubmission.manualGradeScore, null);
+      assert.equal(hiddenSubmission.finalScore, null);
+      assert.equal(hiddenSubmission.answers![0].score, null);
+      assert.equal(hiddenSubmission.answers![0].isCorrect, null);
+
+      const publishedSubmission = sanitizeSubmissionForParticipant(rawSubmission, true);
+      assert.equal(publishedSubmission.autoGradeScore, 25);
+      assert.equal(publishedSubmission.finalScore, 85);
+      assert.equal(publishedSubmission.answers![0].score, 10);
     });
   });
 });
+
