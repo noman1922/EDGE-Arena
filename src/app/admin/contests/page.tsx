@@ -6,7 +6,11 @@ import { DEMO_METRICS } from "@/lib/demo-data";
 import {
   getAdminContests,
   createContestAction,
+  updateContestAction,
+  updateContestStatusAction,
   assignParticipantAction,
+  removeParticipantAction,
+  deleteContestAction,
   type AdminContestListItem,
 } from "@/app/actions/contest-actions";
 
@@ -34,6 +38,17 @@ export default function ContestManagementPage() {
   const [assignName, setAssignName] = useState("");
   const [isAssigning, setIsAssigning] = useState(false);
   const [assignMessage, setAssignMessage] = useState<string | null>(null);
+
+  // Edit Contest Modal State
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [editId, setEditId] = useState("");
+  const [editTitle, setEditTitle] = useState("");
+  const [editTrack, setEditTrack] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [editStartDate, setEditStartDate] = useState("");
+  const [editEndDate, setEditEndDate] = useState("");
+  const [editStatus, setEditStatus] = useState<"DRAFT" | "LIVE" | "COMPLETED" | "ARCHIVED">("LIVE");
+  const [isSubmittingEdit, setIsSubmittingEdit] = useState(false);
 
   const fetchContests = async () => {
     try {
@@ -138,6 +153,89 @@ export default function ContestManagementPage() {
       setAssignMessage("Failed to assign participant.");
     } finally {
       setIsAssigning(false);
+    }
+  };
+
+  const openEditModal = (c: AdminContestListItem) => {
+    setEditId(c.id);
+    setEditTitle(c.name);
+    setEditTrack(c.track);
+    setEditDescription("");
+    setEditStatus(c.status as any);
+    setIsEditModalOpen(true);
+  };
+
+  const handleUpdateContest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editId || !editTitle.trim()) return;
+
+    try {
+      setIsSubmittingEdit(true);
+      const res = await updateContestAction(editId, {
+        title: editTitle.trim(),
+        track: editTrack.trim(),
+        description: editDescription.trim() || undefined,
+        status: editStatus,
+        ...(editStartDate ? { startDate: new Date(editStartDate).toISOString() } : {}),
+        ...(editEndDate ? { endDate: new Date(editEndDate).toISOString() } : {}),
+      });
+
+      if (res.success) {
+        setIsEditModalOpen(false);
+        await fetchContests();
+      } else {
+        alert(`Failed to update contest: ${res.error}`);
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error updating contest.");
+    } finally {
+      setIsSubmittingEdit(false);
+    }
+  };
+
+  const handleChangeStatus = async (contestId: string, status: "DRAFT" | "LIVE" | "COMPLETED" | "ARCHIVED") => {
+    try {
+      const res = await updateContestStatusAction(contestId, status);
+      if (res.success) {
+        await fetchContests();
+      } else {
+        alert(`Failed to update status: ${res.error}`);
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error changing contest status.");
+    }
+  };
+
+  const handleRemoveParticipant = async (contestId: string, userId: string) => {
+    if (!confirm("Are you sure you want to unenroll this participant from the contest?")) return;
+    try {
+      const res = await removeParticipantAction(contestId, userId);
+      if (res.success) {
+        await fetchContests();
+      } else {
+        alert(`Failed to remove participant: ${res.error}`);
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error removing participant.");
+    }
+  };
+
+  const handleDeleteContest = async (contestId: string) => {
+    if (!confirm("Are you sure you want to permanently delete this contest and its curriculum?")) return;
+    try {
+      const res = await deleteContestAction(contestId);
+      if (res.success) {
+        setSelectedContest(null);
+        await fetchContests();
+      } else {
+        alert(`Failed to delete contest: ${res.error}`);
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error deleting contest.");
     }
   };
 
@@ -642,11 +740,26 @@ export default function ContestManagementPage() {
             <div className="flex flex-col overflow-y-auto pr-1">
               {/* Drawer Header */}
               <div className="flex items-center justify-between pb-space-md border-b border-[#f1f5f9]">
-                <div className="flex items-center gap-space-xs">
-                  <span className="px-2 py-0.5 rounded bg-on-tertiary-container text-on-primary-fixed-variant font-label-xs font-semibold">
-                    {selectedContest.status} Track
-                  </span>
-                  <span className="font-label-xs text-secondary font-mono truncate max-w-[200px]">
+                <div className="flex items-center gap-space-xs flex-wrap">
+                  <select
+                    value={selectedContest.status}
+                    onChange={(e) => handleChangeStatus(selectedContest.id, e.target.value as any)}
+                    className="px-2 py-0.5 rounded bg-surface-container font-label-xs font-semibold text-on-surface border border-[#e2e8f0] focus:outline-none"
+                    title="Change Contest Lifecycle Status"
+                  >
+                    <option value="DRAFT">DRAFT</option>
+                    <option value="LIVE">LIVE</option>
+                    <option value="COMPLETED">COMPLETED</option>
+                    <option value="ARCHIVED">ARCHIVED</option>
+                  </select>
+                  <button
+                    onClick={() => openEditModal(selectedContest)}
+                    className="px-2 py-0.5 rounded bg-surface-container-high hover:bg-surface-container text-on-surface font-label-xs font-medium border border-[#e2e8f0] flex items-center gap-1"
+                  >
+                    <span className="material-symbols-outlined text-[13px]">edit</span>
+                    Edit
+                  </button>
+                  <span className="font-label-xs text-secondary font-mono truncate max-w-[140px]">
                     ID: {selectedContest.id.slice(0, 8)}...
                   </span>
                 </div>
@@ -750,9 +863,18 @@ export default function ContestManagementPage() {
                             <span className="text-secondary text-[10px]">{p.email}</span>
                           </div>
                         </div>
-                        <span className="font-label-xs px-2 py-0.5 rounded-full bg-surface-container font-medium text-secondary">
-                          {p.status}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="font-label-xs px-2 py-0.5 rounded-full bg-surface-container font-medium text-secondary">
+                            {p.status}
+                          </span>
+                          <button
+                            onClick={() => handleRemoveParticipant(selectedContest.id, p.id)}
+                            className="p-1 text-secondary hover:text-error hover:bg-error/10 rounded transition-colors"
+                            title="Unenroll participant"
+                          >
+                            <span className="material-symbols-outlined text-[16px]">person_remove</span>
+                          </button>
+                        </div>
                       </div>
                     ))
                   ) : (
@@ -790,20 +912,112 @@ export default function ContestManagementPage() {
             </div>
 
             {/* Drawer Footer Actions */}
-            <div className="pt-space-md flex items-center justify-end gap-space-sm border-t border-[#f1f5f9]">
+            <div className="pt-space-md flex items-center justify-between border-t border-[#f1f5f9]">
               <button
-                onClick={() => setSelectedContest(null)}
-                className="px-space-md py-2 rounded bg-surface-container-high hover:bg-surface-container text-on-surface font-label-md transition-colors border border-[#e2e8f0]"
+                onClick={() => handleDeleteContest(selectedContest.id)}
+                className="px-3 py-1.5 rounded text-error hover:bg-error/10 font-label-xs font-semibold flex items-center gap-1 transition-colors"
               >
-                Dismiss
+                <span className="material-symbols-outlined text-[16px]">delete</span>
+                Delete
               </button>
-              <Link
-                href="/assessment"
-                className="px-space-md py-2 rounded bg-primary-container hover:bg-[#166534] text-on-primary font-label-md font-medium transition-colors shadow-2xs"
-              >
-                Inspect Assessment View
-              </Link>
+              <div className="flex items-center gap-space-sm">
+                <Link
+                  href="/admin/tasks"
+                  className="px-3 py-1.5 rounded bg-surface-container-high hover:bg-surface-container text-on-surface font-label-xs font-medium border border-[#e2e8f0] flex items-center gap-1"
+                >
+                  <span className="material-symbols-outlined text-[14px]">account_tree</span>
+                  Task Builder
+                </Link>
+                <button
+                  onClick={() => setSelectedContest(null)}
+                  className="px-space-md py-2 rounded bg-surface-container-high hover:bg-surface-container text-on-surface font-label-md transition-colors border border-[#e2e8f0]"
+                >
+                  Dismiss
+                </button>
+              </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* EDIT CONTEST MODAL */}
+      {isEditModalOpen && (
+        <div className="fixed inset-0 bg-inverse-surface/40 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-surface-container-lowest rounded-lg border border-[#e2e8f0] shadow-xl max-w-lg w-full p-space-lg">
+            <div className="flex items-center justify-between pb-space-sm border-b border-[#e2e8f0] mb-space-md">
+              <h3 className="font-headline-sm font-semibold text-on-surface">Edit Contest Configuration</h3>
+              <button onClick={() => setIsEditModalOpen(false)} className="text-secondary hover:text-on-surface">
+                <span className="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+            <form onSubmit={handleUpdateContest} className="space-y-3 font-body-sm">
+              <div>
+                <label className="font-label-xs text-secondary uppercase font-semibold block mb-1">
+                  Contest Title *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                  className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface font-body-sm focus:outline-none focus:border-primary-container"
+                />
+              </div>
+              <div>
+                <label className="font-label-xs text-secondary uppercase font-semibold block mb-1">
+                  Track / Discipline *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editTrack}
+                  onChange={(e) => setEditTrack(e.target.value)}
+                  className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface font-body-sm focus:outline-none focus:border-primary-container"
+                />
+              </div>
+              <div>
+                <label className="font-label-xs text-secondary uppercase font-semibold block mb-1">
+                  Description
+                </label>
+                <textarea
+                  rows={2}
+                  value={editDescription}
+                  onChange={(e) => setEditDescription(e.target.value)}
+                  className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface font-body-sm focus:outline-none focus:border-primary-container resize-none"
+                />
+              </div>
+              <div>
+                <label className="font-label-xs text-secondary uppercase font-semibold block mb-1">
+                  Lifecycle Status
+                </label>
+                <select
+                  value={editStatus}
+                  onChange={(e) => setEditStatus(e.target.value as any)}
+                  className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface font-body-sm focus:outline-none"
+                >
+                  <option value="DRAFT">DRAFT</option>
+                  <option value="LIVE">LIVE</option>
+                  <option value="COMPLETED">COMPLETED</option>
+                  <option value="ARCHIVED">ARCHIVED</option>
+                </select>
+              </div>
+              <div className="flex items-center justify-end gap-3 pt-4 border-t border-[#e2e8f0]">
+                <button
+                  type="button"
+                  onClick={() => setIsEditModalOpen(false)}
+                  className="px-4 py-2 rounded bg-surface-container-high text-on-surface font-label-md border border-[#e2e8f0]"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingEdit}
+                  className="px-5 py-2 rounded bg-primary-container hover:bg-[#166534] text-on-primary font-label-md font-medium"
+                >
+                  {isSubmittingEdit ? "Updating..." : "Save Changes"}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

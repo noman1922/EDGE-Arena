@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { ContestStatus, ParticipantStatus, PhaseStatus, UserRole } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { requireRole } from "@/lib/auth";
+import { recordAuditLog } from "@/lib/audit";
 
 export interface AdminContestListItem {
   id: string;
@@ -12,13 +13,16 @@ export interface AdminContestListItem {
   stage: string;
   track: string;
   description: string | null;
-  status: "Live" | "Draft" | "Completed";
+  status: "Live" | "Draft" | "Completed" | "Archived";
+  isPublished: boolean;
   cohortText: string;
   cohortSubtext: string;
   submitted: number;
   total: number;
   avgScore: string;
   dates: string;
+  startDateIso: string;
+  endDateIso: string;
   icon: string;
   iconBg: string;
   iconColor: string;
@@ -60,9 +64,10 @@ export async function getAdminContests(): Promise<AdminContestListItem[]> {
 
     return contests.map((c) => {
       // Format status
-      let uiStatus: "Live" | "Draft" | "Completed" = "Draft";
+      let uiStatus: "Live" | "Draft" | "Completed" | "Archived" = "Draft";
       if (c.status === ContestStatus.LIVE) uiStatus = "Live";
-      else if (c.status === ContestStatus.COMPLETED || c.status === ContestStatus.ARCHIVED) uiStatus = "Completed";
+      else if (c.status === ContestStatus.COMPLETED) uiStatus = "Completed";
+      else if (c.status === ContestStatus.ARCHIVED) uiStatus = "Archived";
 
       // Current stage string
       const activePhase = c.phases.find((p) => p.status === PhaseStatus.OPEN) || c.phases[0];
@@ -89,10 +94,10 @@ export async function getAdminContests(): Promise<AdminContestListItem[]> {
             { name: "Executive Communication & Defense", weight: 25, passRate: 88 },
           ];
 
-      // Format date window
-      const startStr = c.startDate.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-      const endStr = c.endDate.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-      const dateWindow = `${startStr} – ${endStr}`;
+      // Format date window (displaying Asia/Dhaka schedule)
+      const startStr = c.startDate.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "Asia/Dhaka" });
+      const endStr = c.endDate.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "Asia/Dhaka" });
+      const dateWindow = `${startStr} – ${endStr} (BST)`;
 
       // Recent uploads
       const recentUploads = allSubmissions
@@ -101,7 +106,7 @@ export async function getAdminContests(): Promise<AdminContestListItem[]> {
         .slice(0, 3)
         .map((s) => ({
           name: s.user.name || s.user.email,
-          time: s.submittedAt ? s.submittedAt.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }) : "Recently",
+          time: s.submittedAt ? s.submittedAt.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Dhaka" }) : "Recently",
           score: s.finalScore ? `${s.finalScore}/100` : undefined,
         }));
 
@@ -123,12 +128,15 @@ export async function getAdminContests(): Promise<AdminContestListItem[]> {
         track: c.track,
         description: c.description,
         status: uiStatus,
+        isPublished: c.isPublished,
         cohortText: c.cohort?.name || "Global Leadership Cohort",
         cohortSubtext: `${totalParticipants} Enrolled Candidate${totalParticipants === 1 ? "" : "s"}`,
         submitted: submittedCount,
         total: totalParticipants > 0 ? totalParticipants : 1,
         avgScore: "84.2",
         dates: dateWindow,
+        startDateIso: c.startDate.toISOString(),
+        endDateIso: c.endDate.toISOString(),
         icon: c.track.toLowerCase().includes("esg") || c.track.toLowerCase().includes("sustain") ? "eco" : "psychology",
         iconBg: "bg-primary-fixed/40",
         iconColor: "text-primary-container",
@@ -271,6 +279,13 @@ export async function createContestAction(input: CreateContestInput) {
       },
     });
 
+    await recordAuditLog({
+      action: "CREATE_CONTEST",
+      targetType: "CONTEST",
+      targetId: newContest.id,
+      metadata: { title: newContest.title, track: newContest.track, status: newContest.status },
+    });
+
     safeRevalidatePath("/admin/contests");
     safeRevalidatePath("/dashboard");
 
@@ -333,6 +348,13 @@ export async function assignParticipantAction(contestId: string, email: string, 
       },
     });
 
+    await recordAuditLog({
+      action: "ASSIGN_PARTICIPANT",
+      targetType: "CONTEST",
+      targetId: contest.id,
+      metadata: { participantEmail: trimmedEmail, participantId: participant.id },
+    });
+
     safeRevalidatePath("/admin/contests");
     safeRevalidatePath("/dashboard");
 
@@ -348,5 +370,120 @@ export async function assignParticipantAction(contestId: string, email: string, 
   } catch (error) {
     console.error("Error assigning participant:", error);
     return { success: false, error: error instanceof Error ? error.message : "Failed to assign participant" };
+  }
+}
+
+export interface UpdateContestInput {
+  title?: string;
+  track?: string;
+  description?: string;
+  startDate?: string;
+  endDate?: string;
+  status?: "DRAFT" | "LIVE" | "COMPLETED" | "ARCHIVED";
+  isPublished?: boolean;
+}
+
+export async function updateContestAction(contestId: string, input: UpdateContestInput) {
+  try {
+    const session = await requireRole(["ADMIN"]);
+
+    const contest = await prisma.contest.findUnique({
+      where: { id: contestId },
+    });
+
+    if (!contest) {
+      return { success: false, error: "Contest not found." };
+    }
+
+    const updated = await prisma.contest.update({
+      where: { id: contestId },
+      data: {
+        ...(input.title !== undefined && { title: input.title.trim() }),
+        ...(input.track !== undefined && { track: input.track.trim() }),
+        ...(input.description !== undefined && { description: input.description.trim() || null }),
+        ...(input.startDate !== undefined && { startDate: new Date(input.startDate) }),
+        ...(input.endDate !== undefined && { endDate: new Date(input.endDate) }),
+        ...(input.status !== undefined && { status: input.status as ContestStatus }),
+        ...(input.isPublished !== undefined && { isPublished: input.isPublished }),
+      },
+    });
+
+    await recordAuditLog({
+      actorId: session.userId,
+      action: "UPDATE_CONTEST",
+      targetType: "CONTEST",
+      targetId: contestId,
+      metadata: { updatedFields: Object.keys(input) },
+    });
+
+    safeRevalidatePath("/admin/contests");
+    safeRevalidatePath("/dashboard");
+    safeRevalidatePath("/admin/tasks");
+
+    return { success: true, contest: updated };
+  } catch (error) {
+    console.error("Error updating contest:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Failed to update contest" };
+  }
+}
+
+export async function updateContestStatusAction(
+  contestId: string,
+  status: "DRAFT" | "LIVE" | "COMPLETED" | "ARCHIVED"
+) {
+  return updateContestAction(contestId, { status });
+}
+
+export async function removeParticipantAction(contestId: string, userId: string) {
+  try {
+    const session = await requireRole(["ADMIN"]);
+
+    await prisma.contestParticipant.deleteMany({
+      where: {
+        contestId,
+        userId,
+      },
+    });
+
+    await recordAuditLog({
+      actorId: session.userId,
+      action: "REMOVE_PARTICIPANT",
+      targetType: "CONTEST",
+      targetId: contestId,
+      metadata: { removedUserId: userId },
+    });
+
+    safeRevalidatePath("/admin/contests");
+    safeRevalidatePath("/dashboard");
+
+    return { success: true };
+  } catch (error) {
+    console.error("Error removing participant:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Failed to remove participant" };
+  }
+}
+
+export async function deleteContestAction(contestId: string) {
+  try {
+    const session = await requireRole(["ADMIN"]);
+
+    await prisma.contest.delete({
+      where: { id: contestId },
+    });
+
+    await recordAuditLog({
+      actorId: session.userId,
+      action: "DELETE_CONTEST",
+      targetType: "CONTEST",
+      targetId: contestId,
+    });
+
+    safeRevalidatePath("/admin/contests");
+    safeRevalidatePath("/dashboard");
+
+    return { success: true };
+  } catch (error) {
+    console.error("Error deleting contest:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Failed to delete contest" };
   }
 }

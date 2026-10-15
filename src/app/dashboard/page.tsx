@@ -40,11 +40,7 @@ export default function ParticipantDashboardPage() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-surface flex flex-col justify-between">
-      <ParticipantHeader />
-
-      <main className="w-full pt-16 bg-surface min-h-[calc(100vh-80px)]">
-        <div className="w-full max-w-4xl mx-auto px-4 sm:px-6 py-space-lg sm:py-space-xl flex flex-col gap-space-xl">
+    <div className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-space-lg sm:py-space-xl flex flex-col gap-space-xl">
           {/* Live Status Banner */}
           <div className="px-4 py-2 bg-on-tertiary-container/60 rounded border border-primary-container/30 text-on-surface font-label-xs flex items-center justify-between">
             <span className="flex items-center gap-1.5">
@@ -239,10 +235,6 @@ export default function ParticipantDashboardPage() {
               <span className="font-medium">System Status: Fully Operational</span>
             </div>
           </aside>
-        </div>
-      </main>
-
-      <ParticipantFooter />
     </div>
   );
 }

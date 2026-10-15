@@ -7,15 +7,24 @@ import { BrandLogo } from "@/components/ui/brand-logo";
 import { DEMO_CANDIDATE } from "@/lib/demo-data";
 import { logoutAction } from "@/app/actions/auth-actions";
 
-export function ParticipantHeader() {
+interface ParticipantHeaderProps {
+  onToggleMobileNav?: () => void;
+  showSidebarOffset?: boolean;
+}
+
+export function ParticipantHeader({
+  onToggleMobileNav,
+  showSidebarOffset = false,
+}: ParticipantHeaderProps) {
   const pathname = usePathname();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   const navLinks = [
-    { label: "My Contests", href: "/dashboard" },
+    { label: "My Contests", href: "/dashboard/contests" },
     { label: "Assessment", href: "/assessment" },
-    { label: "My Profile", href: "/dashboard" },
+    { label: "Leaderboard", href: "/dashboard/leaderboard" },
+    { label: "Results", href: "/dashboard/results" },
   ];
 
   const handleLogout = async () => {
@@ -32,18 +41,35 @@ export function ParticipantHeader() {
   };
 
   return (
-    <header className="fixed top-0 w-full z-50 bg-surface-container-lowest/95 backdrop-blur-xl border-b border-[#e2e8f0]">
-      <div className="h-16 max-w-7xl mx-auto px-4 sm:px-6 lg:px-12 flex items-center justify-between">
-        {/* Logo and Nav */}
-        <div className="flex items-center gap-space-md sm:gap-space-xl">
-          <Link href="/dashboard" className="flex items-center">
-            <BrandLogo subtitleText="Candidate Portal" />
-          </Link>
+    <header
+      className={`fixed top-0 right-0 z-40 bg-surface-container-lowest/95 backdrop-blur-xl border-b border-[#e2e8f0] ${
+        showSidebarOffset ? "left-0 lg:left-64" : "left-0"
+      }`}
+    >
+      <div className="h-16 w-full px-4 sm:px-6 lg:px-8 flex items-center justify-between">
+        {/* Left: Hamburger & Logo */}
+        <div className="flex items-center gap-space-sm sm:gap-space-md">
+          {onToggleMobileNav && (
+            <button
+              onClick={onToggleMobileNav}
+              className="lg:hidden p-2 rounded hover:bg-surface-container text-secondary"
+              aria-label="Open candidate menu"
+            >
+              <span className="material-symbols-outlined text-[22px]">menu</span>
+            </button>
+          )}
 
-          <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded font-label-xs bg-emerald-50 text-emerald-800 border border-emerald-200">
+          {!showSidebarOffset && (
+            <Link href="/dashboard" className="flex items-center">
+              <BrandLogo subtitleText="Candidate Portal" />
+            </Link>
+          )}
+
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded font-label-xs bg-emerald-50 text-emerald-800 border border-emerald-200">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-600"></span>
             Participant Workspace
           </span>
+        </div>
 
           <nav className="hidden md:flex items-center gap-space-xs">
             {navLinks.map((link) => {
@@ -67,7 +93,6 @@ export function ParticipantHeader() {
               );
             })}
           </nav>
-        </div>
 
         {/* Right Controls */}
         <div className="flex items-center gap-space-sm sm:gap-space-md">

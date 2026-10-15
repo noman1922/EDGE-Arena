@@ -15,13 +15,12 @@ export function AdminSidebar({ mobileOpen = false, onCloseMobile }: AdminSidebar
 
   const navItems = [
     { label: "Overview", href: "/admin", icon: "grid_view" },
-    { label: "Contests", href: "/admin/contests", icon: "award_star" },
+    { label: "Contest Management", href: "/admin/contests", icon: "award_star" },
     { label: "Participants", href: "/admin/participants", icon: "group" },
+    { label: "Phases & Tasks", href: "/admin/tasks", icon: "assignment" },
     { label: "Submissions", href: "/admin/submissions", icon: "rule" },
-    { label: "Leaderboard", href: "/admin/leaderboard", icon: "leaderboard" },
-    { label: "Monitoring", href: "/admin/monitoring", icon: "visibility" },
-    { label: "Results", href: "/admin/results", icon: "analytics" },
-    { label: "Settings", href: "/admin/settings", icon: "tune" },
+    { label: "Leaderboards & Results", href: "/admin/results", icon: "leaderboard" },
+    { label: "Audit Log", href: "/admin/audit", icon: "history" },
   ];
 
   return (
