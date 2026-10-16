@@ -178,11 +178,42 @@ describe("EDGE-Arena File Handling, Storage Engine & Security Tests", () => {
       assert.ok(admin);
       adminUser = { id: admin.id, email: admin.email };
 
-      // 2. Find task and update phase deadline to future
-      const task = await prisma.task.findFirst({
-        where: { title: { contains: "ESG" } },
+      // 2. Find or create task and update phase deadline to future
+      let task = await prisma.task.findFirst({
         include: { phase: true },
       });
+
+      if (!task) {
+        const contest = await prisma.contest.create({
+          data: {
+            title: "File Storage Test Contest",
+            slug: `file-test-${Date.now()}`,
+            track: "Track A",
+            status: "LIVE",
+            startDate: new Date(),
+            endDate: new Date(Date.now() + 86400000),
+          },
+        });
+        const phase = await prisma.phase.create({
+          data: {
+            contestId: contest.id,
+            phaseNumber: 1,
+            title: "Phase 1",
+            status: "OPEN",
+            deadline: new Date(Date.now() + 7 * 24 * 3600 * 1000),
+            weightPercentage: 50.0,
+          },
+        });
+        task = await prisma.task.create({
+          data: {
+            phaseId: phase.id,
+            taskNumber: 1,
+            title: "File Storage Test Task",
+          },
+          include: { phase: true },
+        });
+      }
+
       assert.ok(task);
 
       // Ensure phase deadline is in the future for submission eligibility
@@ -191,6 +222,22 @@ describe("EDGE-Arena File Handling, Storage Engine & Security Tests", () => {
         data: {
           deadline: new Date(Date.now() + 7 * 24 * 3600 * 1000),
           status: "OPEN",
+        },
+      });
+
+      // Ensure candidateUser is actively enrolled in contest
+      await prisma.contestParticipant.upsert({
+        where: {
+          contestId_userId: {
+            contestId: task.phase.contestId,
+            userId: candidateUser.id,
+          },
+        },
+        update: { status: "ACTIVE" },
+        create: {
+          contestId: task.phase.contestId,
+          userId: candidateUser.id,
+          status: "ACTIVE",
         },
       });
 
@@ -212,9 +259,21 @@ describe("EDGE-Arena File Handling, Storage Engine & Security Tests", () => {
       });
       testSubmission = { id: sub.id, taskId: task.id };
 
-      const q = await prisma.question.findFirst({
-        where: { taskId: task.id, questionNumber: 4 },
+      let q = await prisma.question.findFirst({
+        where: { taskId: task.id },
       });
+      if (!q) {
+        q = await prisma.question.create({
+          data: {
+            taskId: task.id,
+            questionNumber: 4,
+            type: "FILE_UPLOAD",
+            prompt: "Upload submission deliverable",
+            points: 25,
+            isMandatory: true,
+          },
+        });
+      }
       assert.ok(q);
       testQuestion = { id: q.id };
     });

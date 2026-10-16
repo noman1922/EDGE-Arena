@@ -19,6 +19,7 @@ export function AdminSidebar({ mobileOpen = false, onCloseMobile }: AdminSidebar
     { label: "Participants", href: "/admin/participants", icon: "group" },
     { label: "Phases & Tasks", href: "/admin/tasks", icon: "assignment" },
     { label: "Submissions", href: "/admin/submissions", icon: "rule" },
+    { label: "Monitoring", href: "/admin/monitoring", icon: "sensors" },
     { label: "Leaderboards & Results", href: "/admin/results", icon: "leaderboard" },
     { label: "Audit Log", href: "/admin/audit", icon: "history" },
   ];

@@ -13,6 +13,14 @@ import {
   deleteContestAction,
   type AdminContestListItem,
 } from "@/app/actions/contest-actions";
+import {
+  getContestMonitoringSettingsAction,
+  saveContestMonitoringSettingsAction,
+} from "@/app/actions/monitoring-actions";
+import {
+  type ContestMonitoringSettings,
+  DEFAULT_MONITORING_SETTINGS,
+} from "@/lib/monitoring";
 
 export default function ContestManagementPage() {
   const [contests, setContests] = useState<AdminContestListItem[]>([]);
@@ -49,6 +57,36 @@ export default function ContestManagementPage() {
   const [editEndDate, setEditEndDate] = useState("");
   const [editStatus, setEditStatus] = useState<"DRAFT" | "LIVE" | "COMPLETED" | "ARCHIVED">("LIVE");
   const [isSubmittingEdit, setIsSubmittingEdit] = useState(false);
+  const [monitoringSettings, setMonitoringSettings] = useState<ContestMonitoringSettings>(DEFAULT_MONITORING_SETTINGS);
+  const [isSavingMonitoring, setIsSavingMonitoring] = useState(false);
+  const [monitoringSaveSuccess, setMonitoringSaveSuccess] = useState(false);
+
+  useEffect(() => {
+    if (selectedContest?.id) {
+      getContestMonitoringSettingsAction(selectedContest.id).then((settings) => {
+        setMonitoringSettings(settings);
+      });
+      setMonitoringSaveSuccess(false);
+    }
+  }, [selectedContest?.id]);
+
+  const handleSaveMonitoringSettings = async () => {
+    if (!selectedContest) return;
+    try {
+      setIsSavingMonitoring(true);
+      const res = await saveContestMonitoringSettingsAction(selectedContest.id, monitoringSettings);
+      if (res.success) {
+        setMonitoringSaveSuccess(true);
+        setTimeout(() => setMonitoringSaveSuccess(false), 3000);
+      } else {
+        alert(res.error || "Failed to save monitoring settings");
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsSavingMonitoring(false);
+    }
+  };
 
   const fetchContests = async () => {
     try {
@@ -909,18 +947,165 @@ export default function ContestManagementPage() {
                   ))}
                 </div>
               </div>
+
+              {/* Contest-Specific Monitoring & Telemetry Settings */}
+              <div className="bg-surface-container-low p-4 rounded-lg border border-[#e2e8f0] mt-space-md">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="font-label-xs uppercase tracking-wider text-secondary font-semibold flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-[16px] text-primary-container">sensors</span>
+                    Contest Monitoring & Proctoring Policies
+                  </span>
+                  {monitoringSaveSuccess && (
+                    <span className="text-[11px] text-emerald-700 font-semibold flex items-center gap-1">
+                      <span className="material-symbols-outlined text-[14px]">check</span> Saved
+                    </span>
+                  )}
+                </div>
+
+                <p className="text-[11px] text-secondary mb-3 leading-relaxed">
+                  Configure active candidate telemetry rules. Candidates must acknowledge these policies before entering the assessment.
+                </p>
+
+                <div className="flex flex-col gap-2.5 text-xs font-body-sm">
+                  {/* 1. Camera */}
+                  <label className="flex items-center justify-between p-2 rounded bg-surface-container-lowest border border-[#e2e8f0] cursor-pointer hover:border-primary-container/40">
+                    <div className="flex items-center gap-2">
+                      <span className="material-symbols-outlined text-[18px] text-secondary">videocam</span>
+                      <div className="flex flex-col">
+                        <span className="font-semibold text-on-surface">Camera / Webcam Permission</span>
+                        <span className="text-[10px] text-secondary">Verify camera availability & permission state</span>
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={monitoringSettings.cameraEnabled}
+                      onChange={(e) => setMonitoringSettings((prev) => ({ ...prev, cameraEnabled: e.target.checked }))}
+                      className="w-4 h-4 text-primary-container rounded cursor-pointer"
+                    />
+                  </label>
+
+                  {/* 2. Microphone */}
+                  <label className="flex items-center justify-between p-2 rounded bg-surface-container-lowest border border-[#e2e8f0] cursor-pointer hover:border-primary-container/40">
+                    <div className="flex items-center gap-2">
+                      <span className="material-symbols-outlined text-[18px] text-secondary">mic</span>
+                      <div className="flex flex-col">
+                        <span className="font-semibold text-on-surface">Microphone Telemetry</span>
+                        <span className="text-[10px] text-secondary">Verify audio permission & capture status</span>
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={monitoringSettings.micEnabled}
+                      onChange={(e) => setMonitoringSettings((prev) => ({ ...prev, micEnabled: e.target.checked }))}
+                      className="w-4 h-4 text-primary-container rounded cursor-pointer"
+                    />
+                  </label>
+
+                  {/* 3. Fullscreen Tracking */}
+                  <label className="flex items-center justify-between p-2 rounded bg-surface-container-lowest border border-[#e2e8f0] cursor-pointer hover:border-primary-container/40">
+                    <div className="flex items-center gap-2">
+                      <span className="material-symbols-outlined text-[18px] text-secondary">fullscreen</span>
+                      <div className="flex flex-col">
+                        <span className="font-semibold text-on-surface">Fullscreen Requirement</span>
+                        <span className="text-[10px] text-secondary">Enforce fullscreen view and track exit events</span>
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={monitoringSettings.fullscreenEnabled}
+                      onChange={(e) => setMonitoringSettings((prev) => ({ ...prev, fullscreenEnabled: e.target.checked }))}
+                      className="w-4 h-4 text-primary-container rounded cursor-pointer"
+                    />
+                  </label>
+
+                  {/* 4. Tab Switch Tracking */}
+                  <label className="flex items-center justify-between p-2 rounded bg-surface-container-lowest border border-[#e2e8f0] cursor-pointer hover:border-primary-container/40">
+                    <div className="flex items-center gap-2">
+                      <span className="material-symbols-outlined text-[18px] text-secondary">tab</span>
+                      <div className="flex flex-col">
+                        <span className="font-semibold text-on-surface">Tab Switch & Focus Detection</span>
+                        <span className="text-[10px] text-secondary">Track browser window blur and visibility changes</span>
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={monitoringSettings.tabSwitchEnabled}
+                      onChange={(e) => setMonitoringSettings((prev) => ({ ...prev, tabSwitchEnabled: e.target.checked }))}
+                      className="w-4 h-4 text-primary-container rounded cursor-pointer"
+                    />
+                  </label>
+
+                  {/* 5. Live Screen Sharing */}
+                  <div className="flex items-center justify-between p-2 rounded bg-surface-container-lowest/60 border border-[#e2e8f0] opacity-75">
+                    <div className="flex items-center gap-2">
+                      <span className="material-symbols-outlined text-[18px] text-secondary">screen_share</span>
+                      <div className="flex flex-col">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-semibold text-on-surface">Live Screen Streaming</span>
+                          <span className="px-1.5 py-0.2 bg-amber-100 text-amber-800 rounded text-[9px] font-bold uppercase">Not Available</span>
+                        </div>
+                        <span className="text-[10px] text-secondary">Requires WebRTC cluster. Telemetry events active instead.</span>
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      disabled
+                      checked={false}
+                      className="w-4 h-4 text-secondary rounded cursor-not-allowed"
+                    />
+                  </div>
+
+                  {/* 6. Live Webcam Streaming */}
+                  <div className="flex items-center justify-between p-2 rounded bg-surface-container-lowest/60 border border-[#e2e8f0] opacity-75">
+                    <div className="flex items-center gap-2">
+                      <span className="material-symbols-outlined text-[18px] text-secondary">nest_cam_wired_stand</span>
+                      <div className="flex flex-col">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-semibold text-on-surface">Live Video Broadcasting</span>
+                          <span className="px-1.5 py-0.2 bg-amber-100 text-amber-800 rounded text-[9px] font-bold uppercase">Not Available</span>
+                        </div>
+                        <span className="text-[10px] text-secondary">Requires media gateway. Telemetry events active instead.</span>
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      disabled
+                      checked={false}
+                      className="w-4 h-4 text-secondary rounded cursor-not-allowed"
+                    />
+                  </div>
+
+                  <div className="pt-2 flex items-center justify-end">
+                    <button
+                      type="button"
+                      disabled={isSavingMonitoring}
+                      onClick={handleSaveMonitoringSettings}
+                      className="px-3 py-1.5 rounded bg-primary-container hover:bg-[#166534] text-on-primary font-label-xs font-semibold shadow-2xs flex items-center gap-1 transition-colors cursor-pointer"
+                    >
+                      {isSavingMonitoring ? "Saving..." : "Save Monitoring Settings"}
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
 
             {/* Drawer Footer Actions */}
             <div className="pt-space-md flex items-center justify-between border-t border-[#f1f5f9]">
               <button
                 onClick={() => handleDeleteContest(selectedContest.id)}
-                className="px-3 py-1.5 rounded text-error hover:bg-error/10 font-label-xs font-semibold flex items-center gap-1 transition-colors"
+                className="px-3 py-1.5 rounded text-error hover:bg-error/10 font-label-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
               >
                 <span className="material-symbols-outlined text-[16px]">delete</span>
                 Delete
               </button>
               <div className="flex items-center gap-space-sm">
+                <Link
+                  href={`/admin/monitoring?contestId=${selectedContest.id}`}
+                  className="px-3 py-1.5 rounded bg-surface-container-high hover:bg-surface-container text-on-surface font-label-xs font-medium border border-[#e2e8f0] flex items-center gap-1"
+                >
+                  <span className="material-symbols-outlined text-[14px] text-primary-container">sensors</span>
+                  Monitoring Roster
+                </Link>
                 <Link
                   href="/admin/tasks"
                   className="px-3 py-1.5 rounded bg-surface-container-high hover:bg-surface-container text-on-surface font-label-xs font-medium border border-[#e2e8f0] flex items-center gap-1"

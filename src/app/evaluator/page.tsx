@@ -118,7 +118,24 @@ export default function EvaluatorConsolePage() {
     <div className="min-h-screen bg-surface flex flex-col justify-between">
       {/* Top Header */}
       <header className="h-16 w-full border-b border-[#e2e8f0] bg-surface-container-lowest/90 backdrop-blur-xl px-4 sm:px-gutter flex items-center justify-between sticky top-0 z-30">
-        <BrandLogo showSubtitle={true} />
+        <div className="flex items-center gap-4">
+          <BrandLogo showSubtitle={true} />
+          <nav className="hidden md:flex items-center gap-1 pl-4 border-l border-[#e2e8f0]">
+            <Link
+              href="/evaluator"
+              className="px-3 py-1.5 rounded font-label-xs font-semibold bg-primary-container text-on-primary shadow-xs"
+            >
+              Grading
+            </Link>
+            <Link
+              href="/evaluator/monitoring"
+              className="px-3 py-1.5 rounded font-label-xs font-medium bg-surface-container-low hover:bg-surface-container-high text-on-surface border border-[#e2e8f0] flex items-center gap-1.5 transition-colors"
+            >
+              <span className="material-symbols-outlined text-[16px] text-primary-container">sensors</span>
+              <span>Monitoring</span>
+            </Link>
+          </nav>
+        </div>
 
         <div className="flex items-center gap-3">
           <div className="hidden sm:flex items-center gap-2 px-3 py-1 rounded-full bg-surface-container-low border border-[#e2e8f0] font-label-xs text-secondary">

@@ -180,6 +180,7 @@ export async function getParticipantDashboard(
 export interface TaskAssessmentData {
   task: {
     id: string;
+    contestId: string;
     title: string;
     instructions: string | null;
     totalPoints: number;
@@ -343,6 +344,7 @@ export async function getTaskAssessmentData(
     return {
       task: {
         id: task.id,
+        contestId: contest.id,
         title: task.title,
         instructions: task.instructions,
         totalPoints: task.totalPoints,

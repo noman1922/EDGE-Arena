@@ -11,6 +11,8 @@ import {
 } from "@/lib/auth";
 import { revalidatePath } from "next/cache";
 
+import { getUserCredentials, verifyPassword } from "@/lib/credentials";
+
 export interface LoginResult {
   success: boolean;
   role?: "ADMIN" | "EVALUATOR" | "PARTICIPANT";
@@ -25,7 +27,7 @@ export interface LoginResult {
 
 export async function loginAction(
   email: string,
-  _password?: string
+  password?: string
 ): Promise<LoginResult> {
   try {
     if (!email || !email.trim()) {
@@ -46,7 +48,18 @@ export async function loginAction(
       };
     }
 
-    // 2. Read canonical database role
+    // 2. Check credentials vault if provisioned
+    const storedCreds = await getUserCredentials(user.id);
+    if (storedCreds) {
+      if (!password || !verifyPassword(password, storedCreds.passwordHash, storedCreds.salt)) {
+        return {
+          success: false,
+          error: "Invalid password. Please check your credentials or contact administrator.",
+        };
+      }
+    }
+
+    // 3. Read canonical database role
     const role = user.role as "ADMIN" | "EVALUATOR" | "PARTICIPANT";
 
     // 3. Issue cryptographically signed session token

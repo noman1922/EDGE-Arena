@@ -1,11 +1,13 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   getAdminParticipants,
   createParticipantAccountAction,
   updateParticipantStatusAction,
+  bulkImportUsersAction,
   type AdminParticipantItem,
+  type BulkImportResult,
 } from "@/app/actions/participant-actions";
 import { getAdminContests, type AdminContestListItem } from "@/app/actions/contest-actions";
 
@@ -16,16 +18,26 @@ export default function AdminParticipantsPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [roleFilter, setRoleFilter] = useState<"ALL" | "PARTICIPANT" | "EVALUATOR">("ALL");
 
-  // Create Modal State
+  // Single Create Modal State
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<"PARTICIPANT" | "EVALUATOR">("PARTICIPANT");
   const [institution, setInstitution] = useState("National Campus Leadership");
   const [candidateId, setCandidateId] = useState("");
+  const [initialPassword, setInitialPassword] = useState("");
   const [assignContestId, setAssignContestId] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
+
+  // Bulk Import Modal State
+  const [isBulkModalOpen, setIsBulkModalOpen] = useState(false);
+  const [bulkCsvText, setBulkCsvText] = useState("");
+  const [bulkAssignContestId, setBulkAssignContestId] = useState("");
+  const [isBulkSubmitting, setIsBulkSubmitting] = useState(false);
+  const [bulkResult, setBulkResult] = useState<BulkImportResult | null>(null);
+  const [bulkGeneralError, setBulkGeneralError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Status Action State
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
@@ -64,6 +76,7 @@ export default function AdminParticipantsPage() {
         institution,
         candidateId: candidateId.trim() || undefined,
         assignContestId: assignContestId || undefined,
+        initialPassword: initialPassword.trim() || undefined,
       });
 
       if (res.success) {
@@ -71,7 +84,8 @@ export default function AdminParticipantsPage() {
         setName("");
         setEmail("");
         setCandidateId("");
-        setActionSuccess(`Account created for ${email}`);
+        setInitialPassword("");
+        setActionSuccess(`Account successfully created for ${email}`);
         await loadData();
       } else {
         setModalError(res.error || "Failed to create account.");
@@ -81,6 +95,66 @@ export default function AdminParticipantsPage() {
       setModalError("Unexpected network error.");
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleDownloadTemplate = () => {
+    const csvContent =
+      "Name,Email,Role,CandidateId,Institution,InitialPassword\n" +
+      '"Sarah Jenkins","s.jenkins@campus.edu","PARTICIPANT","ACI-3001-SJ","Faculty of Science","SecureEdge#2025"\n' +
+      '"Dr. Aris Thorne","a.thorne@faculty.edu","EVALUATOR","","Academic Examination Board","EvalAccess#2025"\n';
+
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", "edge_arena_users_template.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result as string;
+      setBulkCsvText(text || "");
+      setBulkResult(null);
+      setBulkGeneralError(null);
+    };
+    reader.readAsText(file);
+  };
+
+  const handleBulkImportSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!bulkCsvText.trim()) {
+      setBulkGeneralError("Please upload a CSV file or paste CSV content.");
+      return;
+    }
+
+    try {
+      setIsBulkSubmitting(true);
+      setBulkGeneralError(null);
+      setBulkResult(null);
+
+      const res = await bulkImportUsersAction(bulkCsvText, bulkAssignContestId || undefined);
+      setBulkResult(res);
+
+      if (res.importedCount > 0) {
+        setActionSuccess(`Successfully imported ${res.importedCount} user accounts.`);
+        await loadData();
+      }
+      if (!res.success && res.errors.length > 0) {
+        setBulkGeneralError(`Import completed with ${res.errors.length} issue(s). Review details below.`);
+      }
+    } catch (err) {
+      console.error("Bulk import error:", err);
+      setBulkGeneralError("An unexpected server error occurred during bulk import.");
+    } finally {
+      setIsBulkSubmitting(false);
     }
   };
 
@@ -115,20 +189,50 @@ export default function AdminParticipantsPage() {
           </div>
           <h1 className="font-display-lg text-on-surface">Participants & Accounts</h1>
           <p className="font-body-md text-secondary mt-1">
-            Manage student candidates, evaluators, institutional credentials, and active contest assignments.
+            Closed-access platform: provision student candidates, academic evaluators, and assign to contests.
           </p>
         </div>
 
-        <button
-          onClick={() => {
-            setModalError(null);
-            setIsCreateModalOpen(true);
-          }}
-          className="inline-flex items-center gap-space-xs px-space-md py-2.5 bg-primary-container hover:bg-[#166534] text-on-primary font-label-md font-medium rounded shadow-2xs transition-colors self-start md:self-auto cursor-pointer"
-        >
-          <span className="material-symbols-outlined text-[18px]">person_add</span>
-          <span>Enroll New Account</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2 self-start md:self-auto">
+          {/* Download Template */}
+          <button
+            onClick={handleDownloadTemplate}
+            type="button"
+            className="inline-flex items-center gap-1.5 px-3 py-2 bg-surface-container hover:bg-surface-container-high text-on-surface font-label-sm font-medium rounded border border-[#e2e8f0] transition-colors cursor-pointer"
+            title="Download CSV format template"
+          >
+            <span className="material-symbols-outlined text-[18px] text-secondary">download</span>
+            <span>CSV Template</span>
+          </button>
+
+          {/* Bulk Import */}
+          <button
+            onClick={() => {
+              setBulkResult(null);
+              setBulkGeneralError(null);
+              setBulkCsvText("");
+              setIsBulkModalOpen(true);
+            }}
+            type="button"
+            className="inline-flex items-center gap-1.5 px-3 py-2 bg-surface-container hover:bg-surface-container-high text-on-surface font-label-sm font-medium rounded border border-[#e2e8f0] transition-colors cursor-pointer"
+          >
+            <span className="material-symbols-outlined text-[18px] text-primary-container">upload_file</span>
+            <span>Bulk CSV Import</span>
+          </button>
+
+          {/* Enroll Single */}
+          <button
+            onClick={() => {
+              setModalError(null);
+              setIsCreateModalOpen(true);
+            }}
+            type="button"
+            className="inline-flex items-center gap-1.5 px-4 py-2 bg-primary-container hover:bg-[#166534] text-on-primary font-label-md font-medium rounded shadow-2xs transition-colors cursor-pointer"
+          >
+            <span className="material-symbols-outlined text-[18px]">person_add</span>
+            <span>Enroll New Account</span>
+          </button>
+        </div>
       </div>
 
       {actionSuccess && (
@@ -137,7 +241,7 @@ export default function AdminParticipantsPage() {
             <span className="material-symbols-outlined text-[18px] text-emerald-600">check_circle</span>
             {actionSuccess}
           </span>
-          <button onClick={() => setActionSuccess(null)} className="text-emerald-700 hover:text-emerald-900">
+          <button onClick={() => setActionSuccess(null)} className="text-emerald-700 hover:text-emerald-900 cursor-pointer">
             <span className="material-symbols-outlined text-[16px]">close</span>
           </button>
         </div>
@@ -165,7 +269,7 @@ export default function AdminParticipantsPage() {
               <button
                 key={r}
                 onClick={() => setRoleFilter(r)}
-                className={`px-2.5 py-1 rounded transition-colors ${
+                className={`px-2.5 py-1 rounded transition-colors cursor-pointer ${
                   roleFilter === r
                     ? "bg-surface-container-lowest text-on-surface font-semibold shadow-2xs"
                     : "text-secondary hover:text-on-surface"
@@ -184,7 +288,7 @@ export default function AdminParticipantsPage() {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="border-b border-[#e2e8f0] bg-surface-container-low/50 text-secondary font-label-xs uppercase">
-                <th className="py-3 px-4 font-semibold">Candidate / User</th>
+                <th className="py-3 px-4 font-semibold">User / Profile</th>
                 <th className="py-3 px-4 font-semibold">Role</th>
                 <th className="py-3 px-4 font-semibold">Candidate ID</th>
                 <th className="py-3 px-4 font-semibold">Institution</th>
@@ -232,7 +336,7 @@ export default function AdminParticipantsPage() {
                         {p.role}
                       </span>
                     </td>
-                    <td className="py-3 px-4 font-mono text-xs text-secondary">{p.candidateId}</td>
+                    <td className="py-3 px-4 font-mono text-xs text-secondary">{p.candidateId || "—"}</td>
                     <td className="py-3 px-4 text-xs text-secondary max-w-xs truncate">{p.institution}</td>
                     <td className="py-3 px-4">
                       <div className="flex items-center gap-1.5">
@@ -266,7 +370,7 @@ export default function AdminParticipantsPage() {
                             <button
                               onClick={() => handleStatusChange(p.id, "DISQUALIFIED")}
                               title="Flag or Disqualify Participant"
-                              className="px-2 py-1 text-xs rounded bg-red-50 hover:bg-red-100 text-red-700 transition-colors"
+                              className="px-2 py-1 text-xs rounded bg-red-50 hover:bg-red-100 text-red-700 transition-colors cursor-pointer"
                             >
                               Disqualify
                             </button>
@@ -274,7 +378,7 @@ export default function AdminParticipantsPage() {
                             <button
                               onClick={() => handleStatusChange(p.id, "ACTIVE")}
                               title="Reactivate Participant"
-                              className="px-2 py-1 text-xs rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-700 transition-colors"
+                              className="px-2 py-1 text-xs rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-700 transition-colors cursor-pointer"
                             >
                               Activate
                             </button>
@@ -290,15 +394,15 @@ export default function AdminParticipantsPage() {
         </div>
       </div>
 
-      {/* Enroll Account Modal */}
+      {/* Enroll Single Account Modal */}
       {isCreateModalOpen && (
-        <div className="fixed inset-0 z-50 bg-inverse-surface/40 backdrop-blur-xs flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-surface-container-lowest max-w-md w-full rounded-lg border border-[#e2e8f0] shadow-xl p-6 flex flex-col gap-4">
             <div className="flex items-center justify-between pb-3 border-b border-[#e2e8f0]">
               <h2 className="font-headline-sm text-on-surface font-semibold">Enroll New Account</h2>
               <button
                 onClick={() => setIsCreateModalOpen(false)}
-                className="text-secondary hover:text-on-surface"
+                className="text-secondary hover:text-on-surface cursor-pointer"
               >
                 <span className="material-symbols-outlined text-[20px]">close</span>
               </button>
@@ -370,6 +474,19 @@ export default function AdminParticipantsPage() {
 
               <div>
                 <label className="font-label-xs uppercase text-secondary font-semibold block mb-1">
+                  Initial Password (Optional / Defaults to Secure Default)
+                </label>
+                <input
+                  type="text"
+                  value={initialPassword}
+                  onChange={(e) => setInitialPassword(e.target.value)}
+                  placeholder="Leave blank for auto-generated initial password"
+                  className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface focus:outline-none focus:border-primary-container"
+                />
+              </div>
+
+              <div>
+                <label className="font-label-xs uppercase text-secondary font-semibold block mb-1">
                   Institution / Campus
                 </label>
                 <input
@@ -403,19 +520,161 @@ export default function AdminParticipantsPage() {
                 <button
                   type="button"
                   onClick={() => setIsCreateModalOpen(false)}
-                  className="px-3 py-1.5 rounded bg-surface-container-high hover:bg-surface-container text-on-surface font-label-sm"
+                  className="px-3 py-1.5 rounded bg-surface-container-high hover:bg-surface-container text-on-surface font-label-sm cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isSubmitting}
-                  className="px-4 py-1.5 rounded bg-primary-container hover:bg-[#166534] text-on-primary font-label-sm font-semibold shadow-2xs flex items-center gap-1.5"
+                  className="px-4 py-1.5 rounded bg-primary-container hover:bg-[#166534] text-on-primary font-label-sm font-semibold shadow-2xs flex items-center gap-1.5 cursor-pointer"
                 >
                   {isSubmitting && (
                     <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
                   )}
                   <span>Create Account</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Import CSV Modal */}
+      {isBulkModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-surface-container-lowest max-w-2xl w-full rounded-lg border border-[#e2e8f0] shadow-xl p-6 flex flex-col gap-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between pb-3 border-b border-[#e2e8f0]">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-primary-container text-[22px]">upload_file</span>
+                <h2 className="font-headline-sm text-on-surface font-semibold">Bulk Import Users from CSV</h2>
+              </div>
+              <button
+                onClick={() => setIsBulkModalOpen(false)}
+                className="text-secondary hover:text-on-surface cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+
+            <p className="font-body-sm text-secondary">
+              Upload or paste user data. Expected columns: <code>Name, Email, Role, CandidateId, Institution, InitialPassword</code>. Role must be <code>PARTICIPANT</code> or <code>EVALUATOR</code>.
+            </p>
+
+            {bulkGeneralError && (
+              <div className="p-3 rounded bg-red-50 border border-red-200 text-red-800 text-xs flex items-start gap-2">
+                <span className="material-symbols-outlined text-[18px] shrink-0 mt-0.5">error</span>
+                <span>{bulkGeneralError}</span>
+              </div>
+            )}
+
+            {bulkResult && (
+              <div
+                className={`p-3.5 rounded-lg border text-xs flex flex-col gap-2 ${
+                  bulkResult.failedCount === 0
+                    ? "bg-emerald-50 border-emerald-200 text-emerald-800"
+                    : "bg-amber-50 border-amber-200 text-amber-900"
+                }`}
+              >
+                <div className="font-semibold flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[18px]">
+                    {bulkResult.failedCount === 0 ? "task_alt" : "warning"}
+                  </span>
+                  <span>
+                    Import Summary: {bulkResult.importedCount} successfully enrolled, {bulkResult.failedCount} failed out of {bulkResult.totalRows} records.
+                  </span>
+                </div>
+
+                {bulkResult.errors.length > 0 && (
+                  <div className="mt-2 bg-white/80 p-2.5 rounded border border-amber-200 max-h-48 overflow-y-auto">
+                    <span className="font-semibold block mb-1 text-red-800">Row-Level Errors:</span>
+                    <ul className="list-disc list-inside space-y-1 text-xs text-red-700 font-mono">
+                      {bulkResult.errors.map((err, idx) => (
+                        <li key={idx}>
+                          Row {err.row} {err.email ? `(${err.email})` : ""}: {err.error}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <form onSubmit={handleBulkImportSubmit} className="flex flex-col gap-4 text-xs font-body-sm">
+              <div>
+                <label className="font-label-xs uppercase text-secondary font-semibold block mb-1">
+                  Assign to Contest (Optional)
+                </label>
+                <select
+                  value={bulkAssignContestId}
+                  onChange={(e) => setBulkAssignContestId(e.target.value)}
+                  className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface focus:outline-none focus:border-primary-container"
+                >
+                  <option value="">-- No initial contest assignment --</option>
+                  {contests.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} ({c.status})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="font-label-xs uppercase text-secondary font-semibold">
+                    Upload CSV File
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleDownloadTemplate}
+                    className="text-primary-container hover:underline text-[11px] font-semibold flex items-center gap-1 cursor-pointer"
+                  >
+                    <span className="material-symbols-outlined text-[14px]">download</span>
+                    Download sample template
+                  </button>
+                </div>
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  accept=".csv,text/csv"
+                  onChange={handleFileUpload}
+                  className="w-full px-3 py-2 text-xs rounded bg-surface-container-low border border-[#e2e8f0] text-secondary file:mr-3 file:py-1 file:px-2.5 file:rounded file:border-0 file:text-xs file:font-semibold file:bg-primary-container file:text-on-primary hover:file:bg-[#166534] cursor-pointer"
+                />
+              </div>
+
+              <div>
+                <label className="font-label-xs uppercase text-secondary font-semibold block mb-1">
+                  Or Paste CSV Text Directly
+                </label>
+                <textarea
+                  rows={6}
+                  value={bulkCsvText}
+                  onChange={(e) => {
+                    setBulkCsvText(e.target.value);
+                    setBulkGeneralError(null);
+                  }}
+                  placeholder={'Name,Email,Role,CandidateId,Institution,InitialPassword\n"Alice Chen","alice@campus.edu","PARTICIPANT","ACI-4001","Tech College","AliceSecure#2025"'}
+                  className="w-full px-3 py-2 font-mono text-xs rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface focus:outline-none focus:border-primary-container"
+                />
+              </div>
+
+              <div className="pt-3 flex items-center justify-end gap-2 border-t border-[#e2e8f0]">
+                <button
+                  type="button"
+                  onClick={() => setIsBulkModalOpen(false)}
+                  className="px-3 py-1.5 rounded bg-surface-container-high hover:bg-surface-container text-on-surface font-label-sm cursor-pointer"
+                >
+                  Close
+                </button>
+                <button
+                  type="submit"
+                  disabled={isBulkSubmitting || !bulkCsvText.trim()}
+                  className="px-4 py-1.5 rounded bg-primary-container hover:bg-[#166534] disabled:opacity-50 text-on-primary font-label-sm font-semibold shadow-2xs flex items-center gap-1.5 cursor-pointer"
+                >
+                  {isBulkSubmitting && (
+                    <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                  )}
+                  <span>Validate & Import Users</span>
                 </button>
               </div>
             </form>

@@ -15,14 +15,25 @@ import {
   deleteSubmissionAttachmentAction,
   getFileDownloadUrlAction,
 } from "@/app/actions/file-actions";
+import {
+  getContestMonitoringSettingsAction,
+  recordMonitoringEventAction,
+} from "@/app/actions/monitoring-actions";
+import {
+  type ContestMonitoringSettings,
+  DEFAULT_MONITORING_SETTINGS,
+} from "@/lib/monitoring";
 
 export default function AssessmentInterfacePage() {
   const [data, setData] = useState<TaskAssessmentData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [monitoringSettings, setMonitoringSettings] = useState<ContestMonitoringSettings>(DEFAULT_MONITORING_SETTINGS);
+  const [hasConsented, setHasConsented] = useState(false);
+  const [isStartingAssessment, setIsStartingAssessment] = useState(false);
 
   // Timer state
   const [secondsLeft, setSecondsLeft] = useState(84 * 60 + 10);
-  const [selectedOption, setSelectedOption] = useState<string>("B");
+  const [selectedOption, setSelectedOption] = useState<string>("");
   const [writtenResponse, setWrittenResponse] = useState<string>("");
   const [lastSaved, setLastSaved] = useState<string>("Not saved yet");
   const [isSaving, setIsSaving] = useState(false);
@@ -63,13 +74,18 @@ export default function AssessmentInterfacePage() {
         if (writtenAns?.writtenText) {
           setWrittenResponse(writtenAns.writtenText);
         } else {
-          setWrittenResponse(
-            "Our transformation strategy initiates with an intensive baseline validation across all direct-fired campus thermal heating boilers and fleet service vehicles. We will deploy IoT sub-metering nodes connected to an open telemetry dashboard to isolate heat exchange leakage and optimize automated nocturnal setbacks to achieve a 40% reduction within 18 months."
-          );
+          setWrittenResponse("");
         }
 
         if (res.submission.status === "SUBMITTED") {
           setSubmitted(true);
+          setHasConsented(true);
+        }
+
+        // Fetch contest monitoring permissions
+        if (res.task.contestId) {
+          const settings = await getContestMonitoringSettingsAction(res.task.contestId);
+          setMonitoringSettings(settings);
         }
 
         // Check for attached PDF deliverable
@@ -114,6 +130,127 @@ export default function AssessmentInterfacePage() {
     }, 1000);
     return () => clearInterval(timer);
   }, []);
+
+  const handleAcknowledgeAndStart = async () => {
+    try {
+      setIsStartingAssessment(true);
+      const contestId = data?.task.contestId;
+      if (!contestId) {
+        setHasConsented(true);
+        return;
+      }
+
+      // Camera request if enabled
+      if (monitoringSettings.cameraEnabled && typeof navigator !== "undefined" && navigator.mediaDevices?.getUserMedia) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+          stream.getTracks().forEach((t) => t.stop());
+          await recordMonitoringEventAction({
+            contestId,
+            eventType: "CAMERA_STATUS",
+            status: "Permission Granted",
+            details: "Camera permission granted by candidate",
+          });
+        } catch {
+          await recordMonitoringEventAction({
+            contestId,
+            eventType: "CAMERA_STATUS",
+            status: "Unavailable",
+            details: "Camera access unavailable or declined",
+          });
+        }
+      }
+
+      // Mic request if enabled
+      if (monitoringSettings.micEnabled && typeof navigator !== "undefined" && navigator.mediaDevices?.getUserMedia) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          stream.getTracks().forEach((t) => t.stop());
+          await recordMonitoringEventAction({
+            contestId,
+            eventType: "MIC_STATUS",
+            status: "Permission Granted",
+            details: "Microphone permission granted by candidate",
+          });
+        } catch {
+          await recordMonitoringEventAction({
+            contestId,
+            eventType: "MIC_STATUS",
+            status: "Unavailable",
+            details: "Microphone access unavailable or declined",
+          });
+        }
+      }
+
+      // Fullscreen request if enabled
+      if (monitoringSettings.fullscreenEnabled && typeof document !== "undefined") {
+        try {
+          if (document.documentElement.requestFullscreen) {
+            await document.documentElement.requestFullscreen();
+          }
+        } catch {
+          // Browser may block automatic fullscreen without direct click or in testing
+        }
+        await recordMonitoringEventAction({
+          contestId,
+          eventType: "FULLSCREEN_ENTER",
+          status: "Compliant",
+          details: "Candidate entered fullscreen mode",
+        });
+      }
+
+      // Record session start
+      await recordMonitoringEventAction({
+        contestId,
+        eventType: "SESSION_START",
+        status: "Active",
+        details: "Candidate acknowledged proctoring disclosure and entered assessment",
+      });
+
+      setHasConsented(true);
+    } catch (err) {
+      console.error("Start assessment error:", err);
+      setHasConsented(true);
+    } finally {
+      setIsStartingAssessment(false);
+    }
+  };
+
+  // Attach telemetry listeners for tab switches and fullscreen exits
+  useEffect(() => {
+    if (!hasConsented || submitted || !data?.task.contestId) return;
+    const contestId = data.task.contestId;
+
+    const handleVisibility = () => {
+      if (document.hidden && monitoringSettings.tabSwitchEnabled) {
+        recordMonitoringEventAction({
+          contestId,
+          eventType: "TAB_SWITCH",
+          status: "Tab switch detected",
+          details: `Window blur / tab switch detected at ${new Date().toLocaleTimeString()}`,
+        });
+      }
+    };
+
+    const handleFullscreen = () => {
+      if (!document.fullscreenElement && monitoringSettings.fullscreenEnabled) {
+        recordMonitoringEventAction({
+          contestId,
+          eventType: "FULLSCREEN_EXIT",
+          status: "Fullscreen exit recorded",
+          details: `Fullscreen exited at ${new Date().toLocaleTimeString()}`,
+        });
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibility);
+    document.addEventListener("fullscreenchange", handleFullscreen);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+      document.removeEventListener("fullscreenchange", handleFullscreen);
+    };
+  }, [hasConsented, submitted, data?.task.contestId, monitoringSettings]);
 
   // Format timer
   const formatTimer = (totalSecs: number) => {
@@ -303,12 +440,145 @@ export default function AssessmentInterfacePage() {
     );
   }
 
-  const mcqQuestion = data?.questions.find((q) => q.type === "MCQ");
-  const writtenQuestion = data?.questions.find((q) => q.type === "WRITTEN");
+  if (!data) {
+    return (
+      <div className="min-h-screen bg-surface flex flex-col justify-between">
+        <ParticipantHeader />
+        <main className="w-full pt-28 pb-32 flex flex-col items-center justify-center px-4">
+          <div className="max-w-md w-full bg-surface-container-lowest p-8 rounded-lg border border-[#e2e8f0] text-center shadow-2xs">
+            <div className="w-12 h-12 rounded-full bg-surface-container flex items-center justify-center text-secondary mx-auto mb-3">
+              <span className="material-symbols-outlined text-[24px]">assignment_late</span>
+            </div>
+            <h2 className="font-headline-sm font-semibold text-on-surface">No Active Assessment Assigned</h2>
+            <p className="font-body-sm text-secondary mt-2">
+              You do not have any open task assessments assigned to your account. When an administrator creates and assigns a contest, it will appear here.
+            </p>
+            <Link
+              href="/dashboard"
+              className="mt-6 inline-flex items-center gap-1.5 px-4 py-2 rounded bg-primary-container hover:bg-[#166534] text-on-primary font-label-md font-medium shadow-2xs"
+            >
+              <span className="material-symbols-outlined text-[18px]">arrow_back</span>
+              <span>Back to Dashboard</span>
+            </Link>
+          </div>
+        </main>
+        <ParticipantFooter />
+      </div>
+    );
+  }
+
+  const mcqQuestion = data.questions.find((q) => q.type === "MCQ");
+  const writtenQuestion = data.questions.find((q) => q.type === "WRITTEN");
 
   return (
     <div className="min-h-screen bg-surface flex flex-col justify-between">
       <ParticipantHeader />
+
+      {/* Pre-Assessment Proctoring Policy & Consent Modal */}
+      {!hasConsented && !submitted && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-surface-container-lowest max-w-lg w-full rounded-lg border border-[#e2e8f0] shadow-2xl p-6 flex flex-col gap-4">
+            <div className="flex items-center gap-3 pb-3 border-b border-[#e2e8f0]">
+              <div className="w-10 h-10 rounded-full bg-primary-fixed/40 text-primary-container flex items-center justify-center shrink-0">
+                <span className="material-symbols-outlined text-[22px]">sensors</span>
+              </div>
+              <div className="flex flex-col">
+                <span className="font-label-xs uppercase tracking-wider text-secondary">
+                  Assessment Integrity Protocol
+                </span>
+                <h3 className="font-headline-sm font-semibold text-on-surface">
+                  Proctoring & Telemetry Disclosure
+                </h3>
+              </div>
+            </div>
+
+            <p className="text-xs text-secondary leading-relaxed">
+              To guarantee competitive fairness and institutional credential integrity, this assessment session logs discrete browser telemetry events.
+            </p>
+
+            <div className="flex flex-col gap-2 bg-surface-container-low p-3.5 rounded border border-[#e2e8f0] text-xs">
+              <span className="font-semibold text-on-surface uppercase tracking-wider text-[10px]">
+                Active Telemetry Policies for this Benchmark:
+              </span>
+
+              <div className="flex items-center justify-between py-1 border-b border-[#e2e8f0]/60">
+                <span className="flex items-center gap-1.5 text-on-surface">
+                  <span className="material-symbols-outlined text-[16px] text-secondary">videocam</span>
+                  Camera / Webcam:
+                </span>
+                <span className="font-semibold text-secondary">
+                  {monitoringSettings.cameraEnabled ? "Required (identity check prompt)" : "Not required"}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between py-1 border-b border-[#e2e8f0]/60">
+                <span className="flex items-center gap-1.5 text-on-surface">
+                  <span className="material-symbols-outlined text-[16px] text-secondary">mic</span>
+                  Microphone:
+                </span>
+                <span className="font-semibold text-secondary">
+                  {monitoringSettings.micEnabled ? "Required (acoustic level prompt)" : "Not required"}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between py-1 border-b border-[#e2e8f0]/60">
+                <span className="flex items-center gap-1.5 text-on-surface">
+                  <span className="material-symbols-outlined text-[16px] text-secondary">fullscreen</span>
+                  Fullscreen Mode:
+                </span>
+                <span className="font-semibold text-secondary">
+                  {monitoringSettings.fullscreenEnabled ? "Required (exits will be logged)" : "Optional"}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between py-1 border-b border-[#e2e8f0]/60">
+                <span className="flex items-center gap-1.5 text-on-surface">
+                  <span className="material-symbols-outlined text-[16px] text-secondary">tab</span>
+                  Browser Focus Tracking:
+                </span>
+                <span className="font-semibold text-secondary">
+                  {monitoringSettings.tabSwitchEnabled ? "Active (tab switches logged)" : "Disabled"}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between py-1">
+                <span className="flex items-center gap-1.5 text-secondary">
+                  <span className="material-symbols-outlined text-[16px]">screen_share</span>
+                  Live Media Broadcast:
+                </span>
+                <span className="text-[11px] text-secondary italic">
+                  Not available (discrete telemetry only)
+                </span>
+              </div>
+            </div>
+
+            <div className="text-[11px] text-secondary">
+              <span>Notice: Telemetry logging begins upon entering the assessment and ceases automatically when you submit. Data is visible only to authorized evaluators and platform administrators.</span>
+            </div>
+
+            <div className="pt-3 flex items-center justify-between border-t border-[#e2e8f0]">
+              <Link
+                href="/dashboard"
+                className="px-3 py-1.5 rounded text-secondary hover:text-on-surface font-label-sm"
+              >
+                Return to Dashboard
+              </Link>
+
+              <button
+                type="button"
+                disabled={isStartingAssessment}
+                onClick={handleAcknowledgeAndStart}
+                className="px-4 py-2 rounded bg-primary-container hover:bg-[#166534] text-on-primary font-label-md font-semibold shadow-2xs flex items-center gap-1.5 cursor-pointer"
+              >
+                {isStartingAssessment && (
+                  <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                )}
+                <span>I Acknowledge & Start Assessment</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <main className="w-full pt-16 bg-surface min-h-[calc(100vh-80px)] pb-32">
         {/* Sticky Sub-Header with Diagnostic Progress */}

@@ -73,102 +73,13 @@ function LoginContent() {
             </div>
           )}
 
-          {/* Quick Demo Role Cards */}
-          <div className="flex flex-col gap-2.5">
-            <span className="font-label-xs uppercase tracking-wider text-secondary font-semibold">
-              Quick Demo Access
-            </span>
-
-            {/* Admin Profile */}
-            <button
-              type="button"
-              disabled={isLoading}
-              onClick={() => {
-                setEmail("admin.demo@example.com");
-                handleLogin("admin.demo@example.com");
-              }}
-              className="p-3 rounded-lg border border-[#e2e8f0] bg-surface-container-low hover:bg-surface-container-high text-left transition-colors flex items-center justify-between group cursor-pointer"
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="w-8 h-8 rounded bg-secondary-fixed/50 text-secondary flex items-center justify-center shrink-0">
-                  <span className="material-symbols-outlined text-[18px]">admin_panel_settings</span>
-                </div>
-                <div className="flex flex-col min-w-0">
-                  <span className="font-label-sm font-semibold text-on-surface truncate">
-                    Platform Administrator
-                  </span>
-                  <span className="font-label-xs text-secondary truncate">
-                    admin.demo@example.com → /admin
-                  </span>
-                </div>
-              </div>
-              <span className="material-symbols-outlined text-[16px] text-secondary group-hover:text-primary-container group-hover:translate-x-0.5 transition-transform">
-                arrow_forward
-              </span>
-            </button>
-
-            {/* Evaluator Profile */}
-            <button
-              type="button"
-              disabled={isLoading}
-              onClick={() => {
-                setEmail("evaluator.demo@example.com");
-                handleLogin("evaluator.demo@example.com");
-              }}
-              className="p-3 rounded-lg border border-[#e2e8f0] bg-surface-container-low hover:bg-surface-container-high text-left transition-colors flex items-center justify-between group cursor-pointer"
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="w-8 h-8 rounded bg-primary-fixed/50 text-primary-container flex items-center justify-center shrink-0">
-                  <span className="material-symbols-outlined text-[18px]">rate_review</span>
-                </div>
-                <div className="flex flex-col min-w-0">
-                  <span className="font-label-sm font-semibold text-on-surface truncate">
-                    Academic Evaluator
-                  </span>
-                  <span className="font-label-xs text-secondary truncate">
-                    evaluator.demo@example.com → /evaluator
-                  </span>
-                </div>
-              </div>
-              <span className="material-symbols-outlined text-[16px] text-secondary group-hover:text-primary-container group-hover:translate-x-0.5 transition-transform">
-                arrow_forward
-              </span>
-            </button>
-
-            {/* Candidate Profile */}
-            <button
-              type="button"
-              disabled={isLoading}
-              onClick={() => {
-                setEmail("candidate.demo@example.com");
-                handleLogin("candidate.demo@example.com");
-              }}
-              className="p-3 rounded-lg border border-[#e2e8f0] bg-surface-container-low hover:bg-surface-container-high text-left transition-colors flex items-center justify-between group cursor-pointer"
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="w-8 h-8 rounded bg-tertiary-fixed/50 text-on-tertiary-fixed flex items-center justify-center shrink-0">
-                  <span className="material-symbols-outlined text-[18px]">person</span>
-                </div>
-                <div className="flex flex-col min-w-0">
-                  <span className="font-label-sm font-semibold text-on-surface truncate">
-                    Candidate Participant
-                  </span>
-                  <span className="font-label-xs text-secondary truncate">
-                    candidate.demo@example.com → /dashboard
-                  </span>
-                </div>
-              </div>
-              <span className="material-symbols-outlined text-[16px] text-secondary group-hover:text-primary-container group-hover:translate-x-0.5 transition-transform">
-                arrow_forward
-              </span>
-            </button>
-          </div>
-
-          <div className="relative flex items-center justify-center">
-            <div className="border-t border-[#e2e8f0] w-full"></div>
-            <span className="bg-surface-container-lowest px-3 text-[11px] font-label-xs uppercase text-secondary shrink-0">
-              Or Custom Sign In
-            </span>
+          {/* Closed-Access Notice */}
+          <div className="p-3.5 rounded-lg bg-surface-container-low border border-[#e2e8f0] text-secondary font-label-xs flex items-start gap-2.5">
+            <span className="material-symbols-outlined text-[18px] text-primary-container shrink-0 mt-0.5">lock</span>
+            <div className="flex flex-col gap-0.5">
+              <span className="font-semibold text-on-surface">Closed-Access Platform</span>
+              <span>Self-registration is disabled. Evaluator and Candidate accounts are provisioned exclusively by authorized platform administrators.</span>
+            </div>
           </div>
 
           {/* Custom Form */}
@@ -189,7 +100,7 @@ function LoginContent() {
 
             <div>
               <label className="font-label-xs text-secondary uppercase font-semibold block mb-1">
-                Password / Passcode (Optional for Demo)
+                Password / Passcode
               </label>
               <input
                 type="password"
