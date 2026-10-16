@@ -10,6 +10,11 @@ import {
   submitAssessmentAction,
   type TaskAssessmentData,
 } from "@/app/actions/assessment-actions";
+import {
+  uploadSubmissionAttachmentAction,
+  deleteSubmissionAttachmentAction,
+  getFileDownloadUrlAction,
+} from "@/app/actions/file-actions";
 
 export default function AssessmentInterfacePage() {
   const [data, setData] = useState<TaskAssessmentData | null>(null);
@@ -26,12 +31,12 @@ export default function AssessmentInterfacePage() {
     size: string;
     time: string;
     hash: string;
-  } | null>({
-    name: "Campus_ESG_PitchDeck_Strategy.pdf",
-    size: "4.8 MB",
-    time: "14:18:22",
-    hash: "SHA-256 Verified",
-  });
+    fileKey: string;
+    downloadUrl?: string;
+  } | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [isSubmitModalOpen, setIsSubmitModalOpen] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [readerModalOpen, setReaderModalOpen] = useState(false);
@@ -65,6 +70,28 @@ export default function AssessmentInterfacePage() {
 
         if (res.submission.status === "SUBMITTED") {
           setSubmitted(true);
+        }
+
+        // Check for attached PDF deliverable
+        const fileAns = res.submission.answers.find((a) => a.fileKey);
+        if (fileAns && fileAns.fileKey && fileAns.fileName) {
+          const sizeFormatted = fileAns.fileSizeBytes
+            ? (fileAns.fileSizeBytes / (1024 * 1024)).toFixed(1) + " MB"
+            : "PDF Document";
+          const shortHash = fileAns.fileSha256
+            ? `SHA-256: ${fileAns.fileSha256.substring(0, 8)}...${fileAns.fileSha256.substring(fileAns.fileSha256.length - 8)}`
+            : "Verified Document";
+
+          setUploadedFile({
+            name: fileAns.fileName,
+            size: sizeFormatted,
+            time: "Synced with Database",
+            hash: shortHash,
+            fileKey: fileAns.fileKey,
+            downloadUrl: `/api/files/${fileAns.fileKey}`,
+          });
+        } else {
+          setUploadedFile(null);
         }
 
         const savedTime = new Date(res.submission.autoSavedAt).toLocaleTimeString("en-US", {
@@ -148,6 +175,85 @@ export default function AssessmentInterfacePage() {
       console.error("Save draft error:", err);
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !data) return;
+
+    setUploadError(null);
+    setIsUploading(true);
+
+    try {
+      const fileQ =
+        data.questions.find((q) => q.type === "FILE_UPLOAD") ||
+        data.questions.find((q) => q.questionNumber === 4);
+
+      if (!fileQ) {
+        throw new Error("File upload question not found in current assessment.");
+      }
+
+      const formData = new FormData();
+      formData.append("submissionId", data.submission.id);
+      formData.append("questionId", fileQ.id);
+      formData.append("file", file);
+
+      const res = await uploadSubmissionAttachmentAction(formData);
+
+      if (res.success && res.file) {
+        setUploadedFile({
+          name: res.file.name,
+          size: res.file.size,
+          time: res.file.time,
+          hash: res.file.hash,
+          fileKey: res.file.fileKey,
+          downloadUrl: res.file.downloadUrl,
+        });
+        setLastSaved(new Date().toLocaleTimeString("en-US", { hour12: false }));
+      } else {
+        setUploadError(res.error || "File upload failed.");
+      }
+    } catch (err) {
+      console.error("File upload error:", err);
+      setUploadError(err instanceof Error ? err.message : "Failed to upload file.");
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    }
+  };
+
+  const handleFileRemove = async () => {
+    if (!data || !uploadedFile || submitted) return;
+    if (!window.confirm("Are you sure you want to remove this uploaded PDF attachment?")) return;
+
+    try {
+      const fileQ =
+        data.questions.find((q) => q.type === "FILE_UPLOAD") ||
+        data.questions.find((q) => q.questionNumber === 4);
+
+      if (fileQ) {
+        await deleteSubmissionAttachmentAction(data.submission.id, fileQ.id);
+      }
+      setUploadedFile(null);
+      setUploadError(null);
+    } catch (err) {
+      console.error("Remove file error:", err);
+    }
+  };
+
+  const handleOpenFile = async (fileKey: string) => {
+    try {
+      const res = await getFileDownloadUrlAction(fileKey);
+      if (res.success && res.downloadUrl) {
+        window.open(res.downloadUrl, "_blank", "noopener,noreferrer");
+      } else {
+        window.open(`/api/files/${fileKey}`, "_blank", "noopener,noreferrer");
+      }
+    } catch {
+      window.open(`/api/files/${fileKey}`, "_blank", "noopener,noreferrer");
     }
   };
 
@@ -485,6 +591,14 @@ export default function AssessmentInterfacePage() {
               <div className="flex items-center gap-2 w-full sm:w-auto shrink-0">
                 <button
                   type="button"
+                  onClick={() => handleOpenFile("references/sample_case_brief_campus_esg.pdf")}
+                  className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded bg-surface-container-lowest hover:bg-surface-container text-on-surface font-label-sm border border-[#e2e8f0] shadow-2xs transition-colors"
+                >
+                  <span className="material-symbols-outlined text-[16px]">download</span>
+                  Download PDF
+                </button>
+                <button
+                  type="button"
                   onClick={() => setReaderModalOpen(true)}
                   className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded bg-surface-container-lowest hover:bg-surface-container text-on-surface font-label-sm border border-[#e2e8f0] shadow-2xs transition-colors"
                 >
@@ -507,7 +621,7 @@ export default function AssessmentInterfacePage() {
                 </span>
               </div>
               <span className="font-label-sm text-secondary font-medium">
-                Max 25 MB · PDF / PPTX
+                Max 25 MB · PDF Only
               </span>
             </div>
 
@@ -520,12 +634,33 @@ export default function AssessmentInterfacePage() {
               </p>
             </div>
 
+            {/* Hidden real file input */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="application/pdf,.pdf"
+              className="hidden"
+              onChange={handleFileUpload}
+              disabled={isUploading || submitted}
+            />
+
+            {/* Error Banner */}
+            {uploadError && (
+              <div className="p-3.5 rounded-lg bg-error-container/20 border border-error/30 text-error font-body-sm flex items-start gap-2.5">
+                <span className="material-symbols-outlined text-[20px] shrink-0">error</span>
+                <div className="flex-1">
+                  <span className="font-semibold block font-label-sm">Upload Rejected</span>
+                  <span>{uploadError}</span>
+                </div>
+              </div>
+            )}
+
             {/* Uploaded Deliverable Item */}
-            {uploadedFile && (
-              <div className="flex items-center justify-between p-4 rounded-lg bg-[#f0fdf4] border border-primary-container/30 shadow-2xs">
+            {uploadedFile ? (
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 rounded-lg bg-[#f0fdf4] border border-primary-container/30 shadow-2xs gap-3">
                 <div className="flex items-center gap-3.5 min-w-0">
                   <div className="w-10 h-10 rounded bg-primary-container/15 text-primary-container flex items-center justify-center shrink-0">
-                    <span className="material-symbols-outlined text-[24px]">task</span>
+                    <span className="material-symbols-outlined text-[24px]">picture_as_pdf</span>
                   </div>
                   <div className="flex flex-col min-w-0">
                     <div className="flex items-center gap-2">
@@ -533,14 +668,76 @@ export default function AssessmentInterfacePage() {
                         {uploadedFile.name}
                       </span>
                       <span className="px-2 py-0.5 rounded-full bg-primary-container text-on-primary font-label-xs font-medium shrink-0">
-                        Ready
+                        Verified
                       </span>
                     </div>
                     <span className="font-label-xs text-secondary mt-0.5 tabular-nums">
-                      {uploadedFile.size} · Uploaded at {uploadedFile.time} · {uploadedFile.hash}
+                      {uploadedFile.size} · {uploadedFile.time} · {uploadedFile.hash}
                     </span>
                   </div>
                 </div>
+
+                <div className="flex items-center gap-2 w-full sm:w-auto shrink-0 justify-end">
+                  <button
+                    type="button"
+                    onClick={() => handleOpenFile(uploadedFile.fileKey)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-surface-container-lowest hover:bg-surface-container text-on-surface font-label-sm border border-[#e2e8f0] shadow-2xs transition-colors"
+                  >
+                    <span className="material-symbols-outlined text-[16px]">visibility</span>
+                    View PDF
+                  </button>
+                  {!submitted && (
+                    <button
+                      type="button"
+                      onClick={handleFileRemove}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded hover:bg-error-container/30 text-error font-label-sm transition-colors"
+                      title="Remove attachment"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">delete</span>
+                      Remove
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div
+                onClick={() => !isUploading && !submitted && fileInputRef.current?.click()}
+                className={`p-6 border-2 border-dashed rounded-lg flex flex-col items-center justify-center text-center cursor-pointer transition-colors ${
+                  isUploading
+                    ? "border-primary-container/50 bg-primary-container/5 cursor-wait"
+                    : "border-[#cbd5e1] hover:border-primary-container bg-surface-container-low hover:bg-surface-container"
+                } ${submitted ? "opacity-60 pointer-events-none" : ""}`}
+              >
+                {isUploading ? (
+                  <div className="flex flex-col items-center gap-2 py-2">
+                    <span className="w-8 h-8 border-3 border-primary-container border-t-transparent rounded-full animate-spin"></span>
+                    <span className="font-label-md text-on-surface font-semibold">
+                      Verifying SHA-256 and uploading to secure storage...
+                    </span>
+                    <span className="font-body-xs text-secondary">
+                      Enforcing 25 MB limit & magic byte validation
+                    </span>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center gap-2 py-2">
+                    <div className="w-12 h-12 rounded-full bg-surface-container-high flex items-center justify-center text-primary-container mb-1">
+                      <span className="material-symbols-outlined text-[28px]">upload_file</span>
+                    </div>
+                    <div className="font-label-md text-on-surface font-semibold">
+                      Click to browse and upload Strategic Pitch Deck
+                    </div>
+                    <p className="font-body-xs text-secondary max-w-sm">
+                      Standard PDF documents only (.pdf) • Maximum file size 25 MB. Server verifies SHA-256 integrity and %PDF magic bytes.
+                    </p>
+                    <button
+                      type="button"
+                      disabled={submitted}
+                      className="mt-2 px-4 py-2 rounded bg-primary-container hover:bg-[#166534] text-on-primary font-label-sm font-medium shadow-2xs transition-colors"
+                    >
+                      Select PDF File
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>

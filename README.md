@@ -1,6 +1,6 @@
-# ACI Career EDGE Assessment (EDGE-Arena)
+# EDGE-Arena
 
-Enterprise assessment and competition evaluation platform for ACI Career EDGE.
+Enterprise assessment, skill verification, and contest evaluation platform for ACI Career EDGE.
 
 ## Getting Started
 

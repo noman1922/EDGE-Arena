@@ -188,6 +188,14 @@ export interface TaskAssessmentData {
     deadline: string;
     deadlineFormatted: string;
     secondsLeft: number;
+    references?: Array<{
+      id: string;
+      title: string;
+      fileKey: string;
+      fileSizeBytes: number;
+      mimeType: string;
+      version: string | null;
+    }>;
   };
   questions: Array<{
     id: string;
@@ -217,6 +225,8 @@ export interface TaskAssessmentData {
       writtenText: string | null;
       fileName: string | null;
       fileKey: string | null;
+      fileSizeBytes?: number | null;
+      fileSha256?: string | null;
       wordCount: number | null;
     }>;
   };
@@ -267,6 +277,7 @@ export async function getTaskAssessmentData(
                         },
                       },
                     },
+                    references: true,
                   },
                 },
               },
@@ -345,6 +356,14 @@ export async function getTaskAssessmentData(
           minute: "2-digit",
         }),
         secondsLeft,
+        references: (task.references || []).map((r) => ({
+          id: r.id,
+          title: r.title,
+          fileKey: r.fileKey,
+          fileSizeBytes: Number(r.fileSizeBytes),
+          mimeType: r.mimeType,
+          version: r.version,
+        })),
       },
       questions: sanitizedQuestions.map((q) => ({
         id: q.id,
@@ -374,6 +393,8 @@ export async function getTaskAssessmentData(
           writtenText: a.writtenText,
           fileName: a.fileName,
           fileKey: a.fileKey,
+          fileSizeBytes: a.fileSizeBytes ? Number(a.fileSizeBytes) : null,
+          fileSha256: a.fileSha256 || null,
           wordCount: a.wordCount,
         })) : [],
       },

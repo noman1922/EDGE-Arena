@@ -7,6 +7,7 @@ import {
   type AdminSubmissionsOverview,
   type AdminSubmissionDetail,
 } from "@/app/actions/results-actions";
+import { getFileDownloadUrlAction } from "@/app/actions/file-actions";
 
 export default function AdminSubmissionsPage() {
   const [data, setData] = useState<AdminSubmissionsOverview | null>(null);
@@ -347,18 +348,44 @@ export default function AdminSubmissionsPage() {
 
                     {ans.questionType === "FILE_UPLOAD" && (
                       <div className="p-3 bg-surface-container-lowest rounded border border-[#e2e8f0] text-xs flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <span className="material-symbols-outlined text-primary-container text-[20px]">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="material-symbols-outlined text-primary-container text-[20px] shrink-0">
                             picture_as_pdf
                           </span>
-                          <div>
-                            <span className="font-medium text-on-surface block">{ans.fileName || "Submitted PDF Document"}</span>
-                            <span className="text-[11px] text-secondary font-mono">{ans.fileKey || "PDF Archive"}</span>
+                          <div className="min-w-0">
+                            <span className="font-medium text-on-surface block truncate">
+                              {ans.fileName || "Submitted PDF Document"}
+                            </span>
+                            <span className="text-[11px] text-secondary font-mono truncate block">
+                              {ans.fileKey || "PDF Archive"}
+                            </span>
                           </div>
                         </div>
-                        <span className="px-2 py-0.5 rounded bg-surface-container text-secondary text-[10px] font-semibold">
-                          Verified PDF
-                        </span>
+                        {ans.fileKey ? (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              try {
+                                const res = await getFileDownloadUrlAction(ans.fileKey!);
+                                if (res.success && res.downloadUrl) {
+                                  window.open(res.downloadUrl, "_blank", "noopener,noreferrer");
+                                } else {
+                                  window.open(`/api/files/${ans.fileKey}`, "_blank", "noopener,noreferrer");
+                                }
+                              } catch {
+                                window.open(`/api/files/${ans.fileKey}`, "_blank", "noopener,noreferrer");
+                              }
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-surface-container hover:bg-surface-container-high text-on-surface text-[11px] font-semibold border border-[#e2e8f0] transition-colors shrink-0"
+                          >
+                            <span className="material-symbols-outlined text-[14px]">visibility</span>
+                            View PDF
+                          </button>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded bg-surface-container text-secondary text-[10px] font-semibold">
+                            Verified PDF
+                          </span>
+                        )}
                       </div>
                     )}
                   </div>

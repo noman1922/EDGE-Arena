@@ -31,7 +31,7 @@ export function BrandLogo({
       )}
       <div className="flex flex-col">
         <span className="font-headline-sm text-on-surface leading-none font-semibold">
-          Assess
+          EDGE-Arena
         </span>
         {showSubtitle && (
           <span className="font-label-xs text-secondary leading-tight mt-0.5">

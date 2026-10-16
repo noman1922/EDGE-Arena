@@ -9,6 +9,7 @@ import {
   type SubmissionToGrade,
 } from "@/app/actions/evaluator-actions";
 import { logoutAction, getCurrentUserSession } from "@/app/actions/auth-actions";
+import { getFileDownloadUrlAction } from "@/app/actions/file-actions";
 import { SessionPayload } from "@/lib/auth";
 
 export default function EvaluatorConsolePage() {
@@ -395,6 +396,43 @@ export default function EvaluatorConsolePage() {
                         <div className="text-secondary font-label-xs mt-1 not-italic">
                           Word Count: {ans.wordCount ?? 0} words
                         </div>
+                      </div>
+                    )}
+
+                    {ans.fileKey && (
+                      <div className="p-3 bg-surface-container-low rounded border border-[#e2e8f0] text-xs flex items-center justify-between mt-2">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <span className="material-symbols-outlined text-error text-[24px] shrink-0">
+                            picture_as_pdf
+                          </span>
+                          <div className="min-w-0">
+                            <span className="font-semibold text-on-surface block truncate">
+                              {ans.fileName || "Candidate_Deliverable.pdf"}
+                            </span>
+                            <span className="text-[11px] text-secondary font-mono">
+                              Verified PDF Attachment
+                            </span>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              const res = await getFileDownloadUrlAction(ans.fileKey!);
+                              if (res.success && res.downloadUrl) {
+                                window.open(res.downloadUrl, "_blank", "noopener,noreferrer");
+                              } else {
+                                window.open(`/api/files/${ans.fileKey}`, "_blank", "noopener,noreferrer");
+                              }
+                            } catch {
+                              window.open(`/api/files/${ans.fileKey}`, "_blank", "noopener,noreferrer");
+                            }
+                          }}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded bg-surface-container-lowest hover:bg-surface-container text-on-surface font-label-xs font-medium border border-[#e2e8f0] shadow-2xs transition-colors shrink-0"
+                        >
+                          <span className="material-symbols-outlined text-[15px]">visibility</span>
+                          Open PDF
+                        </button>
                       </div>
                     )}
                   </div>
