@@ -8,11 +8,15 @@ import {
   createTaskAction,
   createQuestionAction,
   deleteQuestionAction,
+  deletePhaseAction,
+  deleteTaskAction,
+  updatePhaseDeadlineAction,
   type TaskBuilderPhase,
   type TaskBuilderTask,
   type TaskBuilderQuestion,
 } from "@/app/actions/task-builder-actions";
 import { getAdminContestOptions, type AdminContestOption } from "@/app/actions/contest-actions";
+import { DeleteConfirmationModal } from "@/components/modals/delete-confirmation-modal";
 
 export default function AdminTasksPage() {
   const [contests, setContests] = useState<AdminContestOption[]>([]);
@@ -26,8 +30,30 @@ export default function AdminTasksPage() {
   const [isPhaseModalOpen, setIsPhaseModalOpen] = useState(false);
   const [phaseTitle, setPhaseTitle] = useState("");
   const [phaseDesc, setPhaseDesc] = useState("");
-  const [phaseDeadline, setPhaseDeadline] = useState("2025-04-15T23:59");
+  const [phaseDeadline, setPhaseDeadline] = useState("");
   const [isSubmittingPhase, setIsSubmittingPhase] = useState(false);
+
+  // Edit Phase Deadline Modal
+  const [isEditPhaseModalOpen, setIsEditPhaseModalOpen] = useState(false);
+  const [editPhaseId, setEditPhaseId] = useState("");
+  const [editPhaseTitle, setEditPhaseTitle] = useState("");
+  const [editPhaseDeadline, setEditPhaseDeadline] = useState("");
+  const [isUpdatingPhaseDeadline, setIsUpdatingPhaseDeadline] = useState(false);
+
+  // Universal Delete Confirmation Modal State
+  const [deleteModalState, setDeleteModalState] = useState<{
+    isOpen: boolean;
+    title: string;
+    itemDescription: string;
+    warningDetails?: string;
+    onConfirm: () => Promise<void>;
+  }>({
+    isOpen: false,
+    title: "",
+    itemDescription: "",
+    onConfirm: async () => {},
+  });
+  const [isDeletingItem, setIsDeletingItem] = useState(false);
 
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
   const [selectedPhaseIdForTask, setSelectedPhaseIdForTask] = useState("");
@@ -60,6 +86,7 @@ export default function AdminTasksPage() {
     async function loadContests() {
       try {
         setIsLoading(true);
+        setPhaseDeadline(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 16));
         const data = await getAdminContestOptions();
         setContests(data);
         if (data.length > 0) {
@@ -79,6 +106,9 @@ export default function AdminTasksPage() {
     if (!contestId) return;
     try {
       setIsLoading(true);
+      // Clear stale state immediately so switching contests never shows previous content
+      setPhases([]);
+      setActiveTask(null);
       const res = await getContestPhasesAndTasks(contestId);
       setContestTitle(res.contestTitle);
       setPhases(res.phases);
@@ -219,18 +249,106 @@ export default function AdminTasksPage() {
     }
   };
 
-  const handleDeleteQuestion = async (questionId: string) => {
-    if (!confirm("Are you sure you want to delete this question?")) return;
+  const handleDeleteQuestion = (questionId: string, qPromptText?: string) => {
+    setDeleteModalState({
+      isOpen: true,
+      title: "Delete Question",
+      itemDescription: qPromptText || "Question",
+      warningDetails: "This will permanently remove this question from the task. Any student draft responses for this question will be cleared.",
+      onConfirm: async () => {
+        try {
+          setIsDeletingItem(true);
+          const res = await deleteQuestionAction(questionId);
+          if (res.success) {
+            setFeedbackMsg({ type: "success", text: "Question removed." });
+            setDeleteModalState((prev) => ({ ...prev, isOpen: false }));
+            await loadPhasesAndTasks(selectedContestId);
+          } else {
+            setFeedbackMsg({ type: "error", text: res.error || "Failed to delete question" });
+          }
+        } catch {
+          setFeedbackMsg({ type: "error", text: "Error deleting question" });
+        } finally {
+          setIsDeletingItem(false);
+        }
+      },
+    });
+  };
+
+  const handleDeletePhase = (phaseId: string, phaseTitleText?: string) => {
+    setDeleteModalState({
+      isOpen: true,
+      title: "Delete Phase",
+      itemDescription: phaseTitleText || "Phase",
+      warningDetails: "This will permanently delete this phase, all child tasks, questions, and associated student submissions. This action cannot be reversed.",
+      onConfirm: async () => {
+        try {
+          setIsDeletingItem(true);
+          const res = await deletePhaseAction(phaseId);
+          if (res.success) {
+            setFeedbackMsg({ type: "success", text: "Phase and its tasks removed." });
+            setDeleteModalState((prev) => ({ ...prev, isOpen: false }));
+            await loadPhasesAndTasks(selectedContestId);
+          } else {
+            setFeedbackMsg({ type: "error", text: res.error || "Failed to delete phase" });
+          }
+        } catch {
+          setFeedbackMsg({ type: "error", text: "Error deleting phase" });
+        } finally {
+          setIsDeletingItem(false);
+        }
+      },
+    });
+  };
+
+  const handleDeleteTask = (taskId: string, taskTitleText?: string) => {
+    setDeleteModalState({
+      isOpen: true,
+      title: "Delete Task",
+      itemDescription: taskTitleText || "Task",
+      warningDetails: "This will permanently remove this task, all questions, references, and rubrics under it.",
+      onConfirm: async () => {
+        try {
+          setIsDeletingItem(true);
+          const res = await deleteTaskAction(taskId);
+          if (res.success) {
+            setFeedbackMsg({ type: "success", text: "Task removed." });
+            setDeleteModalState((prev) => ({ ...prev, isOpen: false }));
+            if (activeTask?.id === taskId) setActiveTask(null);
+            await loadPhasesAndTasks(selectedContestId);
+          } else {
+            setFeedbackMsg({ type: "error", text: res.error || "Failed to delete task" });
+          }
+        } catch {
+          setFeedbackMsg({ type: "error", text: "Error deleting task" });
+        } finally {
+          setIsDeletingItem(false);
+        }
+      },
+    });
+  };
+
+  const handleUpdatePhaseDeadline = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editPhaseId || !editPhaseDeadline) return;
+
     try {
-      const res = await deleteQuestionAction(questionId);
+      setIsUpdatingPhaseDeadline(true);
+      const res = await updatePhaseDeadlineAction(editPhaseId, editPhaseDeadline);
       if (res.success) {
-        setFeedbackMsg({ type: "success", text: "Question removed." });
+        setIsEditPhaseModalOpen(false);
+        setFeedbackMsg({
+          type: "success",
+          text: `Phase deadline updated to ${res.formattedDeadline || editPhaseDeadline} (Asia/Dhaka).`,
+        });
         await loadPhasesAndTasks(selectedContestId);
       } else {
-        setFeedbackMsg({ type: "error", text: res.error || "Failed to delete question" });
+        setFeedbackMsg({ type: "error", text: res.error || "Failed to update phase deadline" });
       }
     } catch {
-      setFeedbackMsg({ type: "error", text: "Error deleting question" });
+      setFeedbackMsg({ type: "error", text: "Network error updating deadline" });
+    } finally {
+      setIsUpdatingPhaseDeadline(false);
     }
   };
 
@@ -330,16 +448,53 @@ export default function AdminTasksPage() {
                           {phase.title}
                         </span>
                       </div>
-                      <button
-                        onClick={() => {
-                          setSelectedPhaseIdForTask(phase.id);
-                          setIsTaskModalOpen(true);
-                        }}
-                        className="px-2 py-0.5 text-[11px] bg-surface-container-high hover:bg-surface-container text-on-surface font-medium rounded border border-[#e2e8f0]"
-                        title="Add Task to this phase"
-                      >
-                        + Task
-                      </button>
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => {
+                            setEditPhaseId(phase.id);
+                            setEditPhaseTitle(`Phase ${phase.phaseNumber}: ${phase.title}`);
+                            try {
+                              const d = new Date(phase.deadline);
+                              const isoDhaka = new Intl.DateTimeFormat("en-CA", {
+                                timeZone: "Asia/Dhaka",
+                                year: "numeric",
+                                month: "2-digit",
+                                day: "2-digit",
+                                hour: "2-digit",
+                                minute: "2-digit",
+                                hour12: false,
+                              }).formatToParts(d);
+                              const getP = (t: string) => isoDhaka.find((p) => p.type === t)?.value || "";
+                              setEditPhaseDeadline(`${getP("year")}-${getP("month")}-${getP("day")}T${getP("hour")}:${getP("minute")}`);
+                            } catch {
+                              setEditPhaseDeadline("");
+                            }
+                            setIsEditPhaseModalOpen(true);
+                          }}
+                          className="px-2 py-0.5 text-[11px] bg-surface-container-high hover:bg-surface-container text-on-surface font-medium rounded border border-[#e2e8f0] cursor-pointer flex items-center gap-1"
+                          title="Edit Phase Deadline (Asia/Dhaka)"
+                        >
+                          <span className="material-symbols-outlined text-[13px]">calendar_clock</span>
+                          <span>Deadline</span>
+                        </button>
+                        <button
+                          onClick={() => {
+                            setSelectedPhaseIdForTask(phase.id);
+                            setIsTaskModalOpen(true);
+                          }}
+                          className="px-2 py-0.5 text-[11px] bg-surface-container-high hover:bg-surface-container text-on-surface font-medium rounded border border-[#e2e8f0] cursor-pointer"
+                          title="Add Task to this phase"
+                        >
+                          + Task
+                        </button>
+                        <button
+                          onClick={() => handleDeletePhase(phase.id, phase.title)}
+                          className="p-1 text-secondary hover:text-error hover:bg-error/10 rounded transition-colors cursor-pointer"
+                          title="Delete Phase"
+                        >
+                          <span className="material-symbols-outlined text-[14px]">delete</span>
+                        </button>
+                      </div>
                     </div>
 
                     {/* Tasks in this phase */}
@@ -416,11 +571,19 @@ export default function AdminTasksPage() {
                       Total: {activeTask.totalPoints} pts
                     </span>
                     <button
+                      onClick={() => handleDeleteTask(activeTask.id, activeTask.title)}
+                      className="px-2.5 py-1.5 text-error hover:bg-error/10 font-label-xs font-medium rounded border border-error/20 flex items-center gap-1 transition-colors cursor-pointer"
+                      title="Delete this task"
+                    >
+                      <span className="material-symbols-outlined text-[14px]">delete</span>
+                      Delete Task
+                    </button>
+                    <button
                       onClick={() => {
                         setSelectedTaskIdForQ(activeTask.id);
                         setIsQuestionModalOpen(true);
                       }}
-                      className="px-3 py-1.5 bg-primary-container hover:bg-[#166534] text-on-primary font-label-xs font-medium rounded shadow-2xs flex items-center gap-1"
+                      className="px-3 py-1.5 bg-primary-container hover:bg-[#166534] text-on-primary font-label-xs font-medium rounded shadow-2xs flex items-center gap-1 cursor-pointer"
                     >
                       <span className="material-symbols-outlined text-[14px]">add</span>
                       Add Question
@@ -526,8 +689,8 @@ export default function AdminTasksPage() {
                             </div>
 
                             <button
-                              onClick={() => handleDeleteQuestion(q.id)}
-                              className="p-1 rounded text-secondary hover:text-error hover:bg-error/10 transition-colors"
+                              onClick={() => handleDeleteQuestion(q.id, q.prompt)}
+                              className="p-1 rounded text-secondary hover:text-error hover:bg-error/10 transition-colors cursor-pointer"
                               title="Delete Question"
                             >
                               <span className="material-symbols-outlined text-[18px]">delete</span>
@@ -877,6 +1040,88 @@ export default function AdminTasksPage() {
           </div>
         </div>
       )}
+
+      {/* Edit Phase Deadline Modal */}
+      {isEditPhaseModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-surface-container-lowest max-w-md w-full rounded-xl border border-[#e2e8f0] shadow-2xl p-6 flex flex-col gap-4">
+            <div className="flex items-center justify-between pb-3 border-b border-[#e2e8f0]">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-[20px] text-primary-container">calendar_clock</span>
+                <h3 className="font-headline-sm font-semibold text-on-surface">Update Phase Deadline</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsEditPhaseModalOpen(false)}
+                className="text-secondary hover:text-on-surface font-bold text-lg"
+              >
+                ×
+              </button>
+            </div>
+
+            <form onSubmit={handleUpdatePhaseDeadline} className="flex flex-col gap-4">
+              <div>
+                <span className="font-label-xs text-secondary uppercase font-semibold block mb-1">
+                  Target Stage
+                </span>
+                <p className="text-sm font-medium text-on-surface">{editPhaseTitle}</p>
+              </div>
+
+              <div>
+                <label className="font-label-xs text-secondary font-semibold uppercase block mb-1">
+                  New Phase Deadline (Asia/Dhaka UTC+06:00) *
+                </label>
+                <input
+                  type="datetime-local"
+                  required
+                  value={editPhaseDeadline}
+                  onChange={(e) => setEditPhaseDeadline(e.target.value)}
+                  className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface font-label-md"
+                />
+                <p className="text-[11px] text-secondary mt-1">
+                  Active candidate countdown timers will automatically re-synchronize and recalculate smoothly without interrupting candidate drafts.
+                </p>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#e2e8f0]">
+                <button
+                  type="button"
+                  onClick={() => setIsEditPhaseModalOpen(false)}
+                  disabled={isUpdatingPhaseDeadline}
+                  className="px-4 py-2 rounded bg-surface-container-high text-on-surface font-label-md font-medium"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isUpdatingPhaseDeadline}
+                  className="px-4 py-2 rounded bg-primary-container hover:bg-[#166534] text-on-primary font-label-md font-medium flex items-center gap-1.5"
+                >
+                  {isUpdatingPhaseDeadline ? (
+                    <>
+                      <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                      <span>Saving...</span>
+                    </>
+                  ) : (
+                    <span>Save Deadline</span>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Universal Delete Confirmation Modal */}
+      <DeleteConfirmationModal
+        isOpen={deleteModalState.isOpen}
+        title={deleteModalState.title}
+        itemDescription={deleteModalState.itemDescription}
+        warningDetails={deleteModalState.warningDetails}
+        isDeleting={isDeletingItem}
+        onConfirm={deleteModalState.onConfirm}
+        onClose={() => setDeleteModalState((prev) => ({ ...prev, isOpen: false }))}
+      />
     </div>
   );
 }

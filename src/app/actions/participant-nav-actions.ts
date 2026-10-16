@@ -3,6 +3,12 @@
 import { prisma } from "@/lib/prisma";
 import { ContestStatus, PhaseStatus } from "@prisma/client";
 import { requireRole } from "@/lib/auth";
+import {
+  getAuthoritativeContestDeadline,
+  isContestActive,
+  isContestConcluded,
+  normalizeContestStatus,
+} from "@/lib/contest-lifecycle";
 
 export interface ParticipantContestCard {
   id: string;
@@ -63,14 +69,15 @@ export async function getParticipantContests(): Promise<{
     for (const enrollment of enrollments) {
       const c = enrollment.contest;
 
-      // Disallow drafts or contests before start time
-      if (c.status === ContestStatus.DRAFT) {
+      // Disallow drafts
+      if (normalizeContestStatus(c.status) === ContestStatus.DRAFT) {
         continue;
       }
 
       const activePhase = c.phases.find((p) => p.status === PhaseStatus.OPEN) || c.phases[0];
       const stageTitle = activePhase ? `Phase ${activePhase.phaseNumber}: ${activePhase.title}` : "Diagnostic Stage";
-      const deadline = activePhase ? activePhase.deadline : c.endDate;
+      const { effectiveDeadline, isConcluded: isEnded } = getAuthoritativeContestDeadline(c, activePhase, now);
+      const isLiveTime = isContestActive(c, now);
 
       const task = activePhase?.tasks[0];
       const existingSubmission = task?.submissions[0];
@@ -86,12 +93,9 @@ export async function getParticipantContests(): Promise<{
         }
       }
 
-      const isLiveTime = now >= c.startDate && now <= c.endDate;
-      const isEnded = now > c.endDate || c.status === ContestStatus.COMPLETED || c.status === ContestStatus.ARCHIVED;
-
       let lifecycleState: "LIVE" | "UPCOMING" | "COMPLETED" = "UPCOMING";
       if (isEnded) lifecycleState = "COMPLETED";
-      else if (isLiveTime && c.status === ContestStatus.LIVE) lifecycleState = "LIVE";
+      else if (isLiveTime) lifecycleState = "LIVE";
 
       const card: ParticipantContestCard = {
         id: c.id,
@@ -103,14 +107,15 @@ export async function getParticipantContests(): Promise<{
         stageTitle,
         startDateFormatted: c.startDate.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "Asia/Dhaka" }),
         endDateFormatted: c.endDate.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "Asia/Dhaka" }),
-        deadlineIso: deadline.toISOString(),
-        deadlineFormatted: deadline.toLocaleDateString("en-US", {
-          month: "short",
-          day: "numeric",
-          hour: "2-digit",
-          minute: "2-digit",
-          timeZone: "Asia/Dhaka",
-        }) + " BST",
+        deadlineIso: effectiveDeadline.toISOString(),
+        deadlineFormatted:
+          effectiveDeadline.toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+            timeZone: "Asia/Dhaka",
+          }) + " (BST)",
         submissionStatus,
         isPublished: c.isPublished,
         canStartOrContinue: lifecycleState === "LIVE" && submissionStatus !== "SUBMITTED" && submissionStatus !== "GRADED",

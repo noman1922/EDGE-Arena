@@ -170,10 +170,11 @@ export function checkUserPermission(
  * Strips private answer keys and scoring guides from question payloads
  * before returning them to participant clients.
  */
-export function sanitizeQuestionForParticipant<T extends Record<string, any>>(
+export function sanitizeQuestionForParticipant<T extends Record<string, unknown>>(
   question: T
 ): Omit<T, "answerKey"> {
-  const { answerKey: _stripped, ...safeQuestion } = question;
+  const safeQuestion = { ...question };
+  delete safeQuestion["answerKey"];
   return safeQuestion as Omit<T, "answerKey">;
 }
 

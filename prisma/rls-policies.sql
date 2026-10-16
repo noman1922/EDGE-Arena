@@ -116,6 +116,8 @@ CREATE TRIGGER trg_protect_answer_scoring
 CREATE OR REPLACE FUNCTION public.validate_submission_eligibility()
 RETURNS TRIGGER AS $$
 DECLARE
+  v_contest_status public."ContestStatus";
+  v_contest_end_date TIMESTAMPTZ;
   v_phase_deadline TIMESTAMPTZ;
   v_phase_status public."PhaseStatus";
   v_participant_status public."ParticipantStatus";
@@ -125,20 +127,34 @@ BEGIN
     FROM public."ContestParticipant" cp
     WHERE cp."contestId" = NEW."contestId" AND cp."userId" = NEW."userId";
 
-    IF v_participant_status IS NULL OR v_participant_status <> 'ACTIVE' THEN
+    IF v_participant_status IS NULL OR v_participant_status NOT IN ('ACTIVE', 'ENROLLED') THEN
       RAISE EXCEPTION 'User is not actively enrolled in this contest.';
+    END IF;
+
+    SELECT c.status, c."endDate" INTO v_contest_status, v_contest_end_date
+    FROM public."Contest" c
+    WHERE c.id = NEW."contestId";
+
+    IF v_contest_status <> 'LIVE' THEN
+      RAISE EXCEPTION 'Submissions are rejected: contest is not currently LIVE.';
+    END IF;
+
+    IF v_contest_end_date IS NOT NULL AND NOW() > v_contest_end_date THEN
+      RAISE EXCEPTION 'Submissions are rejected: contest schedule has ended.';
     END IF;
 
     SELECT p.status, p.deadline INTO v_phase_status, v_phase_deadline
     FROM public."Phase" p
     WHERE p.id = NEW."phaseId";
 
-    IF v_phase_status <> 'OPEN' THEN
+    IF v_phase_status IS NOT NULL AND v_phase_status NOT IN ('OPEN', 'UPCOMING') THEN
       RAISE EXCEPTION 'Submissions are rejected: assessment phase is not currently OPEN.';
     END IF;
 
-    IF NOW() > v_phase_deadline THEN
-      RAISE EXCEPTION 'Submissions are rejected: phase deadline has elapsed.';
+    IF v_phase_deadline IS NOT NULL AND NOW() > v_phase_deadline THEN
+      IF v_contest_end_date IS NULL OR NOW() > v_contest_end_date THEN
+        RAISE EXCEPTION 'Submissions are rejected: phase deadline has elapsed.';
+      END IF;
     END IF;
   END IF;
   RETURN NEW;

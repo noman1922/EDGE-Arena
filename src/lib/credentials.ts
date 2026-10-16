@@ -109,8 +109,8 @@ export async function getUserCredentials(userId: string): Promise<StoredCredenti
     return null;
   }
 
-  const meta = record.metadata as any;
-  if (!meta.passwordHash || !meta.salt) {
+  const meta = record.metadata as Record<string, unknown>;
+  if (typeof meta.passwordHash !== "string" || typeof meta.salt !== "string") {
     return null;
   }
 
@@ -119,7 +119,7 @@ export async function getUserCredentials(userId: string): Promise<StoredCredenti
     passwordHash: meta.passwordHash,
     salt: meta.salt,
     mustChangePassword: Boolean(meta.mustChangePassword),
-    createdAt: meta.createdAt || record.createdAt.toISOString(),
-    updatedAt: meta.updatedAt || record.createdAt.toISOString(),
+    createdAt: (meta.createdAt as string) || record.createdAt.toISOString(),
+    updatedAt: (meta.updatedAt as string) || record.createdAt.toISOString(),
   };
 }

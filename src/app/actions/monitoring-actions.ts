@@ -1,6 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { ContestStatus } from "@prisma/client";
 import { requireRole, requireSession } from "@/lib/auth";
 import {
   getContestMonitoringSettings,
@@ -11,6 +12,10 @@ import {
   type ParticipantMonitoringSession,
   type MonitoringEventItem,
 } from "@/lib/monitoring";
+import {
+  formatContestStatusForUi,
+  isContestConcluded,
+} from "@/lib/contest-lifecycle";
 import { revalidatePath } from "next/cache";
 
 /**
@@ -149,26 +154,55 @@ export async function getContestMonitoringDashboardAction(
       return { success: false, contests: [], error: "Forbidden: Access denied." };
     }
 
-    // 1. Fetch accessible contests
+    // 1. Fetch accessible contests using shared lifecycle logic
     let accessibleContests: Array<{ id: string; title: string; track: string; status: string }> = [];
 
     if (session.role === "ADMIN") {
-      accessibleContests = await prisma.contest.findMany({
-        select: { id: true, title: true, track: true, status: true },
+      const all = await prisma.contest.findMany({
+        select: { id: true, title: true, track: true, status: true, startDate: true, endDate: true },
         orderBy: { createdAt: "desc" },
       });
+      const now = new Date();
+      accessibleContests = all.map((c) => ({
+        id: c.id,
+        title: c.title,
+        track: c.track,
+        status: isContestConcluded(c, now) ? "Completed" : formatContestStatusForUi(c.status),
+      }));
     } else {
-      // EVALUATOR: find contests containing submissions or phases assigned to this evaluator
-      accessibleContests = await prisma.contest.findMany({
-        where: {
-          OR: [
-            { isPublished: true },
-            { status: { in: ["LIVE", "COMPLETED"] } },
-          ],
+      // EVALUATOR: find contests assigned to this evaluator
+      const user = await prisma.user.findUnique({
+        where: { id: session.userId },
+        include: {
+          participants: { select: { contestId: true } },
         },
-        select: { id: true, title: true, track: true, status: true },
+      });
+
+      const assignedContestIds = new Set(user?.participants.map((p) => p.contestId) || []);
+
+      let contests = await prisma.contest.findMany({
+        where: {
+          status: { not: ContestStatus.DRAFT },
+        },
+        select: { id: true, title: true, track: true, status: true, cohortId: true, startDate: true, endDate: true },
         orderBy: { createdAt: "desc" },
       });
+
+      if (user?.cohortId || assignedContestIds.size > 0) {
+        contests = contests.filter(
+          (c) =>
+            (user?.cohortId && c.cohortId === user.cohortId) ||
+            assignedContestIds.has(c.id)
+        );
+      }
+
+      const now = new Date();
+      accessibleContests = contests.map((c) => ({
+        id: c.id,
+        title: c.title,
+        track: c.track,
+        status: isContestConcluded(c, now) ? "Completed" : formatContestStatusForUi(c.status),
+      }));
     }
 
     if (accessibleContests.length === 0) {

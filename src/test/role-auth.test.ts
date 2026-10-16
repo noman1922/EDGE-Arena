@@ -23,6 +23,10 @@ import {
   submitAssessmentAction,
   getParticipantDashboard,
 } from "../app/actions/assessment-actions";
+import {
+  createPhaseAction,
+  createTaskAction,
+} from "../app/actions/task-builder-actions";
 
 describe("Role-Based Authentication, Routing, and Authorization Guard Tests", () => {
   const adminEmail = "admin.demo@example.com";
@@ -123,19 +127,26 @@ describe("Role-Based Authentication, Routing, and Authorization Guard Tests", ()
     await assignParticipantAction(createdContestId, candidateAEmail, "Candidate A");
     await assignParticipantAction(createdContestId, candidateBEmail, "Candidate B");
 
-    // Fetch the task for submission setup
-    const phase = await prisma.phase.findFirst({
-      where: { contestId: createdContestId },
-      include: { tasks: true },
+    // Create Phase and Task for submission setup
+    const phaseRes = await createPhaseAction({
+      contestId: createdContestId,
+      phaseNumber: 1,
+      title: "Guard Phase 1",
+      deadline: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString(),
     });
-    const task = phase!.tasks[0];
+    const taskRes = await createTaskAction({
+      phaseId: phaseRes.phaseId!,
+      taskNumber: 1,
+      title: "Guard Task 1",
+      totalPoints: 100,
+    });
 
     // Create Candidate A submission
     const subA = await prisma.submission.create({
       data: {
         contestId: createdContestId,
-        phaseId: phase!.id,
-        taskId: task.id,
+        phaseId: phaseRes.phaseId!,
+        taskId: taskRes.taskId!,
         userId: candidateAUserId,
         status: "DRAFT",
       },
@@ -146,8 +157,8 @@ describe("Role-Based Authentication, Routing, and Authorization Guard Tests", ()
     const subB = await prisma.submission.create({
       data: {
         contestId: createdContestId,
-        phaseId: phase!.id,
-        taskId: task.id,
+        phaseId: phaseRes.phaseId!,
+        taskId: taskRes.taskId!,
         userId: candidateBUserId,
         status: "DRAFT",
       },

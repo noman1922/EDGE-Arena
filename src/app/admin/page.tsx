@@ -16,6 +16,7 @@ export default function AdminOverviewPage() {
   const [submissions, setSubmissions] = useState<SubmissionToGrade[]>([]);
   const [contests, setContests] = useState<AdminContestOption[]>([]);
   const [enrolledCount, setEnrolledCount] = useState<number>(0);
+  const [activeContestsCount, setActiveContestsCount] = useState<number>(0);
   const [isLoading, setIsLoading] = useState(true);
 
   // Grading Drawer State
@@ -39,6 +40,7 @@ export default function AdminOverviewPage() {
       ]);
       setSubmissions(subs);
       setEnrolledCount(summary.totalEnrolled);
+      setActiveContestsCount(summary.activeContests);
       setContests(contestList);
     } catch (err) {
       console.error("Failed to load admin overview data:", err);
@@ -211,7 +213,9 @@ export default function AdminOverviewPage() {
           </div>
           <div>
             <div className="font-display-lg text-on-surface tracking-tight leading-none mb-2 tabular-nums">
-              {contests.filter((c) => c.status === "Live").length}{" "}
+              {activeContestsCount !== undefined
+                ? activeContestsCount
+                : contests.filter((c) => c.status.toUpperCase() === "LIVE").length}{" "}
               <span className="font-headline-sm font-normal text-secondary">
                 / {contests.length}
               </span>

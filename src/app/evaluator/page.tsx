@@ -4,9 +4,10 @@ import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { BrandLogo } from "@/components/ui/brand-logo";
 import {
-  getSubmissionsForGrading,
+  getEvaluatorDashboardDataAction,
   saveRubricScoreAction,
   type SubmissionToGrade,
+  type EvaluatorContestItem,
 } from "@/app/actions/evaluator-actions";
 import { logoutAction, getCurrentUserSession } from "@/app/actions/auth-actions";
 import { getFileDownloadUrlAction } from "@/app/actions/file-actions";
@@ -15,6 +16,9 @@ import { SessionPayload } from "@/lib/auth";
 export default function EvaluatorConsolePage() {
   const [submissions, setSubmissions] = useState<SubmissionToGrade[]>([]);
   const [session, setSession] = useState<SessionPayload | null>(null);
+  const [activeContestsCount, setActiveContestsCount] = useState(0);
+  const [assignedContests, setAssignedContests] = useState<EvaluatorContestItem[]>([]);
+  const [selectedContestFilter, setSelectedContestFilter] = useState<string>("ALL");
   const [filterTab, setFilterTab] = useState<"All" | "Pending" | "Graded">("All");
   const [searchTerm, setSearchTerm] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -26,17 +30,20 @@ export default function EvaluatorConsolePage() {
   const [isSavingGrade, setIsSavingGrade] = useState(false);
   const [gradeSuccessMsg, setGradeSuccessMsg] = useState<string | null>(null);
 
-  const loadData = async () => {
+  const loadData = async (contestId?: string) => {
     try {
       setIsLoading(true);
-      const [subs, userSession] = await Promise.all([
-        getSubmissionsForGrading(),
+      const activeFilter = contestId !== undefined ? contestId : selectedContestFilter;
+      const [dashData, userSession] = await Promise.all([
+        getEvaluatorDashboardDataAction(activeFilter !== "ALL" ? activeFilter : undefined),
         getCurrentUserSession(),
       ]);
-      setSubmissions(subs);
+      setSubmissions(dashData.submissions);
+      setActiveContestsCount(dashData.activeContestsCount);
+      setAssignedContests(dashData.assignedContests);
       setSession(userSession);
     } catch (err) {
-      console.error("Failed to load evaluator submissions:", err);
+      console.error("Failed to load evaluator dashboard:", err);
     } finally {
       setIsLoading(false);
     }
@@ -187,7 +194,24 @@ export default function EvaluatorConsolePage() {
         </div>
 
         {/* Stats Strip */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-space-md">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-space-md">
+          <div className="p-4 bg-surface-container-lowest rounded-lg border border-[#e2e8f0] shadow-2xs flex justify-between items-center">
+            <div>
+              <span className="font-label-xs uppercase tracking-wider text-secondary block">
+                Active Contests
+              </span>
+              <span className="font-display-lg text-on-surface tabular-nums">
+                {activeContestsCount}
+              </span>
+              <span className="font-label-xs text-secondary mt-0.5 block">
+                {assignedContests.length} assigned challenge{assignedContests.length === 1 ? "" : "s"}
+              </span>
+            </div>
+            <div className="w-10 h-10 rounded bg-surface-container-low flex items-center justify-center text-primary-container">
+              <span className="material-symbols-outlined text-[20px]">workspace_premium</span>
+            </div>
+          </div>
+
           <div className="p-4 bg-surface-container-lowest rounded-lg border border-[#e2e8f0] shadow-2xs flex justify-between items-center">
             <div>
               <span className="font-label-xs uppercase tracking-wider text-secondary block">
@@ -195,6 +219,9 @@ export default function EvaluatorConsolePage() {
               </span>
               <span className="font-display-lg text-on-surface tabular-nums">
                 {submissions.length}
+              </span>
+              <span className="font-label-xs text-secondary mt-0.5 block">
+                {pendingCount} pending review
               </span>
             </div>
             <div className="w-10 h-10 rounded bg-surface-container-low flex items-center justify-center text-secondary">
@@ -210,6 +237,9 @@ export default function EvaluatorConsolePage() {
               <span className="font-display-lg text-amber-600 tabular-nums">
                 {pendingCount}
               </span>
+              <span className="font-label-xs text-amber-700/80 mt-0.5 block">
+                Awaiting rubric scoring
+              </span>
             </div>
             <div className="w-10 h-10 rounded bg-amber-50 flex items-center justify-center text-amber-600">
               <span className="material-symbols-outlined text-[20px]">pending_actions</span>
@@ -223,6 +253,9 @@ export default function EvaluatorConsolePage() {
               </span>
               <span className="font-display-lg text-primary-container tabular-nums">
                 {gradedCount}
+              </span>
+              <span className="font-label-xs text-secondary mt-0.5 block">
+                Standardized scores locked
               </span>
             </div>
             <div className="w-10 h-10 rounded bg-on-tertiary-container flex items-center justify-center text-primary-container">
@@ -244,22 +277,43 @@ export default function EvaluatorConsolePage() {
             />
           </div>
 
-          <div className="flex items-center bg-surface-container-low p-0.5 rounded border border-[#e2e8f0]">
-            {(["All", "Pending", "Graded"] as const).map((tab) => (
-              <button
-                key={tab}
-                onClick={() => setFilterTab(tab)}
-                className={`px-3 py-1 rounded font-label-xs transition-colors ${
-                  filterTab === tab
-                    ? "bg-surface-container-lowest text-on-surface font-semibold shadow-2xs"
-                    : "text-secondary hover:text-on-surface"
-                }`}
+          <div className="flex items-center gap-2 flex-wrap">
+            {assignedContests.length > 0 && (
+              <select
+                value={selectedContestFilter}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setSelectedContestFilter(val);
+                  loadData(val);
+                }}
+                className="px-3 py-1 rounded bg-surface-container-low border border-[#e2e8f0] font-label-xs text-on-surface focus:outline-none focus:border-primary-container"
               >
-                {tab}{" "}
-                {tab === "Pending" && `(${pendingCount})`}
-                {tab === "Graded" && `(${gradedCount})`}
-              </button>
-            ))}
+                <option value="ALL">All Contests ({assignedContests.length})</option>
+                {assignedContests.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.title} ({c.uiStatus})
+                  </option>
+                ))}
+              </select>
+            )}
+
+            <div className="flex items-center bg-surface-container-low p-0.5 rounded border border-[#e2e8f0]">
+              {(["All", "Pending", "Graded"] as const).map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setFilterTab(tab)}
+                  className={`px-3 py-1 rounded font-label-xs transition-colors ${
+                    filterTab === tab
+                      ? "bg-surface-container-lowest text-on-surface font-semibold shadow-2xs"
+                      : "text-secondary hover:text-on-surface"
+                  }`}
+                >
+                  {tab}{" "}
+                  {tab === "Pending" && `(${pendingCount})`}
+                  {tab === "Graded" && `(${gradedCount})`}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 

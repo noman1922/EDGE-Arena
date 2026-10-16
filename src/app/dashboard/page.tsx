@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { ParticipantHeader } from "@/components/layout/participant-header";
 import { ParticipantFooter } from "@/components/layout/participant-footer";
@@ -22,7 +22,7 @@ export default function ParticipantDashboardPage() {
   const [contests, setContests] = useState<ParticipantDashboardContest[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  const loadDashboard = async () => {
+  const loadDashboard = useCallback(async () => {
     try {
       setIsLoading(true);
       const data = await getParticipantDashboard();
@@ -33,11 +33,11 @@ export default function ParticipantDashboardPage() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     loadDashboard();
-  }, []);
+  }, [loadDashboard]);
 
   return (
     <div className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-space-lg sm:py-space-xl flex flex-col gap-space-xl">
@@ -176,6 +176,90 @@ export default function ParticipantDashboardPage() {
                       </div>
                     </div>
 
+                    {/* Curriculum Breakdown: Phases & Tasks */}
+                    {c.phases && c.phases.length > 0 && (
+                      <div className="flex flex-col gap-2.5 bg-surface-container-low/60 p-space-md rounded border border-[#e2e8f0] ml-1">
+                        <div className="flex items-center justify-between">
+                          <span className="font-label-xs font-semibold text-secondary uppercase tracking-wider flex items-center gap-1.5">
+                            <span className="material-symbols-outlined text-[15px] text-primary-container">
+                              account_tree
+                            </span>
+                            Curriculum Breakdown ({c.phases.length} Phases · {c.totalTasks || 0} Tasks)
+                          </span>
+                          <span className="font-label-xs text-secondary">
+                            {c.completedTasks || 0}/{c.totalTasks || 0} Tasks Completed
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+                          {c.phases.map((ph) => (
+                            <div
+                              key={ph.id}
+                              className="bg-surface-container-lowest p-3 rounded border border-[#e2e8f0] flex flex-col gap-2"
+                            >
+                              <div className="flex items-center justify-between border-b border-[#e2e8f0]/60 pb-1.5">
+                                <span className="font-label-sm font-semibold text-on-surface flex items-center gap-1.5 truncate">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-primary-container shrink-0"></span>
+                                  Phase {ph.phaseNumber}: {ph.title}
+                                </span>
+                                <span className="font-label-xs text-secondary shrink-0">
+                                  {ph.tasks.length} {ph.tasks.length === 1 ? "task" : "tasks"}
+                                </span>
+                              </div>
+
+                              <div className="flex flex-col gap-1">
+                                {ph.tasks.map((task) => (
+                                  <Link
+                                    key={task.id}
+                                    href={`/assessment?contestId=${c.contestId}&taskId=${task.id}`}
+                                    className="group flex items-center justify-between p-2 rounded hover:bg-surface-container-low border border-transparent hover:border-[#e2e8f0] transition-colors"
+                                  >
+                                    <div className="flex items-center gap-2 min-w-0">
+                                      {task.isSubmitted ? (
+                                        <span className="material-symbols-outlined text-[16px] text-primary-container shrink-0">
+                                          check_circle
+                                        </span>
+                                      ) : task.hasDraft ? (
+                                        <span className="material-symbols-outlined text-[16px] text-amber-600 shrink-0">
+                                          edit_note
+                                        </span>
+                                      ) : (
+                                        <span className="w-2 h-2 rounded-full bg-slate-300 shrink-0 mx-1"></span>
+                                      )}
+                                      <span className="font-label-sm text-on-surface group-hover:text-primary-container font-medium truncate">
+                                        {task.phaseNumber}.{task.taskNumber} {task.title}
+                                      </span>
+                                    </div>
+
+                                    <div className="flex items-center gap-1.5 shrink-0 pl-2">
+                                      <span
+                                        className={`font-label-xs px-1.5 py-0.5 rounded text-[10px] uppercase font-semibold ${
+                                          task.questionTypes.includes("FILE_UPLOAD")
+                                            ? "bg-indigo-50 text-indigo-700 border border-indigo-200"
+                                            : task.questionTypes.includes("WRITTEN")
+                                            ? "bg-blue-50 text-blue-700 border border-blue-200"
+                                            : "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                                        }`}
+                                      >
+                                        {task.questionTypes.includes("FILE_UPLOAD")
+                                          ? "PDF"
+                                          : task.questionTypes.includes("WRITTEN")
+                                          ? "Essay"
+                                          : "MCQ"}
+                                      </span>
+                                      <span className="font-label-xs text-secondary text-[11px] tabular-nums">
+                                        {task.totalPoints}pts
+                                      </span>
+                                    </div>
+                                  </Link>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     {/* Actions Row */}
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-space-md pt-space-xs ml-1">
                       <div className="text-secondary font-label-sm flex items-center gap-1">
@@ -184,7 +268,7 @@ export default function ParticipantDashboardPage() {
                       </div>
                       {c.canContinue ? (
                         <Link
-                          href="/assessment"
+                          href={`/assessment?contestId=${c.contestId}${c.taskId ? `&taskId=${c.taskId}` : ""}`}
                           className="inline-flex items-center justify-center gap-space-sm px-space-lg py-2.5 rounded bg-primary-container hover:bg-[#166534] text-on-primary font-label-md transition-colors shadow-2xs text-center font-medium active:scale-[0.98]"
                         >
                           <span>{c.progressPercent > 0 ? "Continue Assessment" : "Start Assessment"}</span>
@@ -194,13 +278,15 @@ export default function ParticipantDashboardPage() {
                         </Link>
                       ) : (
                         <Link
-                          href="/assessment"
+                          href={`/assessment?contestId=${c.contestId}${c.taskId ? `&taskId=${c.taskId}` : ""}`}
                           className="inline-flex items-center justify-center gap-space-sm px-space-lg py-2 rounded bg-surface-container-high hover:bg-surface-container text-on-surface font-label-md transition-colors border border-[#e2e8f0]"
                         >
                           <span className="material-symbols-outlined text-[18px] text-primary-container">
                             verified
                           </span>
-                          <span>View Submitted Record</span>
+                          <span>
+                            {c.status === "SUBMITTED" ? "View Submitted Record" : "View Assessment"}
+                          </span>
                         </Link>
                       )}
                     </div>

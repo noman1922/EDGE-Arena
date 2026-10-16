@@ -9,8 +9,9 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "EDGE-Arena — Enterprise Diagnostic Assessment Platform",
-  description: "High-stakes skills verification, diagnostic benchmarks, and cohort evaluations for leadership programmes.",
+  title: "EDGE-Arena | ACI Career EDGE Assessment Platform",
+  description:
+    "High-stakes skills verification, diagnostic benchmarks, and cohort evaluations for leadership programmes by ACI Career EDGE.",
 };
 
 export const viewport: Viewport = {

@@ -7,6 +7,11 @@ import {
 } from "./lib/auth";
 
 export async function middleware(request: NextRequest) {
+  // Gracefully discard already aborted client requests
+  if (request.signal?.aborted) {
+    return new NextResponse(null, { status: 499 });
+  }
+
   const { pathname } = request.nextUrl;
 
   // Extract session token from cookie

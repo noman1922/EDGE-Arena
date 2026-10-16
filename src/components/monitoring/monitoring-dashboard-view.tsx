@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useTransition } from "react";
+import React, { useState, useEffect, useTransition, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   getContestMonitoringDashboardAction,
@@ -34,33 +34,36 @@ export function MonitoringDashboardView({ role }: MonitoringDashboardViewProps) 
   const [selectedParticipant, setSelectedParticipant] = useState<ParticipantMonitoringSession | null>(null);
   const [isExporting, startExportTransition] = useTransition();
 
-  const loadDashboard = async (targetContestId?: string) => {
-    try {
-      setIsLoading(true);
-      setErrorMessage(null);
-      const res = await getContestMonitoringDashboardAction(targetContestId || selectedContestId || undefined);
+  const loadDashboard = useCallback(
+    async (targetContestId?: string) => {
+      try {
+        setIsLoading(true);
+        setErrorMessage(null);
+        const res = await getContestMonitoringDashboardAction(targetContestId || selectedContestId || undefined);
 
-      if (!res.success) {
-        setErrorMessage(res.error || "Failed to load monitoring dashboard.");
-        return;
-      }
+        if (!res.success) {
+          setErrorMessage(res.error || "Failed to load monitoring dashboard.");
+          return;
+        }
 
-      setContests(res.contests);
-      if (res.selectedContestId) {
-        setSelectedContestId(res.selectedContestId);
+        setContests(res.contests);
+        if (res.selectedContestId) {
+          setSelectedContestId(res.selectedContestId);
+        }
+        setDashboardData(res.dashboard || null);
+      } catch (err) {
+        console.error("Monitoring load error:", err);
+        setErrorMessage("Unexpected error loading proctoring telemetry.");
+      } finally {
+        setIsLoading(false);
       }
-      setDashboardData(res.dashboard || null);
-    } catch (err) {
-      console.error("Monitoring load error:", err);
-      setErrorMessage("Unexpected error loading proctoring telemetry.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
+    },
+    [selectedContestId]
+  );
 
   useEffect(() => {
     loadDashboard(initialContestId);
-  }, []);
+  }, [initialContestId, loadDashboard]);
 
   const handleContestChange = (contestId: string) => {
     setSelectedContestId(contestId);

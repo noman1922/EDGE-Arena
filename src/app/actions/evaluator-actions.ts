@@ -1,11 +1,18 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { ContestStatus } from "@prisma/client";
 import {
   calculateWeightedRubricScore,
   checkUserPermission,
   type RubricScoreInput,
 } from "@/lib/scoring";
+import {
+  isContestActive,
+  isContestConcluded,
+  normalizeContestStatus,
+  formatContestStatusForUi,
+} from "@/lib/contest-lifecycle";
 import { revalidatePath } from "next/cache";
 import { requireRole } from "@/lib/auth";
 
@@ -59,6 +66,122 @@ export interface SubmissionToGrade {
     currentScoreAwarded?: number;
     currentComments?: string;
   }>;
+}
+
+export interface EvaluatorContestItem {
+  id: string;
+  slug: string;
+  title: string;
+  track: string;
+  status: ContestStatus;
+  uiStatus: "Live" | "Draft" | "Completed" | "Archived";
+  isActive: boolean;
+  isConcluded: boolean;
+  startDateIso: string;
+  endDateIso: string;
+}
+
+export interface EvaluatorDashboardData {
+  activeContestsCount: number;
+  totalSubmissionsCount: number;
+  pendingCount: number;
+  gradedCount: number;
+  assignedContests: EvaluatorContestItem[];
+  submissions: SubmissionToGrade[];
+}
+
+export async function getEvaluatorDashboardDataAction(
+  selectedContestId?: string
+): Promise<EvaluatorDashboardData> {
+  try {
+    const session = await requireRole(["EVALUATOR", "ADMIN"]);
+    const now = new Date();
+
+    // 1. Resolve user to check explicit cohort / participant assignments
+    const user = await prisma.user.findUnique({
+      where: { id: session.userId },
+      include: {
+        participants: { select: { contestId: true } },
+      },
+    });
+
+    const explicitlyAssignedContestIds = new Set(user?.participants.map((p) => p.contestId) || []);
+
+    // 2. Fetch accessible contests for this evaluator (not DRAFT)
+    let contests = await prisma.contest.findMany({
+      where: {
+        status: { not: ContestStatus.DRAFT },
+      },
+      select: {
+        id: true,
+        slug: true,
+        title: true,
+        track: true,
+        status: true,
+        cohortId: true,
+        startDate: true,
+        endDate: true,
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    // If evaluator has explicit cohort or participant assignments, filter to assigned
+    if (user?.cohortId || explicitlyAssignedContestIds.size > 0) {
+      contests = contests.filter(
+        (c) =>
+          (user?.cohortId && c.cohortId === user.cohortId) ||
+          explicitlyAssignedContestIds.has(c.id)
+      );
+    }
+
+    const assignedContests: EvaluatorContestItem[] = contests.map((c) => {
+      const active = isContestActive(c, now);
+      const concluded = isContestConcluded(c, now);
+      let uiStatus = formatContestStatusForUi(c.status);
+      if (normalizeContestStatus(c.status) === ContestStatus.LIVE && concluded) {
+        uiStatus = "Completed";
+      }
+
+      return {
+        id: c.id,
+        slug: c.slug,
+        title: c.title,
+        track: c.track,
+        status: normalizeContestStatus(c.status),
+        uiStatus,
+        isActive: active,
+        isConcluded: concluded,
+        startDateIso: c.startDate.toISOString(),
+        endDateIso: c.endDate.toISOString(),
+      };
+    });
+
+    const activeContestsCount = assignedContests.filter((c) => c.isActive).length;
+
+    // 3. Submissions for grading (optionally scoped to selectedContestId)
+    const submissions = await getSubmissionsForGrading(selectedContestId);
+    const pendingCount = submissions.filter((s) => s.status === "SUBMITTED").length;
+    const gradedCount = submissions.filter((s) => s.status === "GRADED").length;
+
+    return {
+      activeContestsCount,
+      totalSubmissionsCount: submissions.length,
+      pendingCount,
+      gradedCount,
+      assignedContests,
+      submissions,
+    };
+  } catch (error) {
+    console.error("Error loading evaluator dashboard data:", error);
+    return {
+      activeContestsCount: 0,
+      totalSubmissionsCount: 0,
+      pendingCount: 0,
+      gradedCount: 0,
+      assignedContests: [],
+      submissions: [],
+    };
+  }
 }
 
 export async function getSubmissionsForGrading(
@@ -331,6 +454,9 @@ export async function saveRubricScoreAction(input: SaveRubricScoreInput) {
 
     safeRevalidatePath("/admin");
     safeRevalidatePath("/admin/contests");
+    safeRevalidatePath("/admin/submissions");
+    safeRevalidatePath("/evaluator");
+    safeRevalidatePath("/evaluator/monitoring");
     safeRevalidatePath("/dashboard");
 
     return {
@@ -429,7 +555,12 @@ export async function publishContestResultsAction(
 
     safeRevalidatePath("/admin");
     safeRevalidatePath("/admin/contests");
+    safeRevalidatePath("/admin/results");
+    safeRevalidatePath("/evaluator");
+    safeRevalidatePath("/evaluator/monitoring");
     safeRevalidatePath("/dashboard");
+    safeRevalidatePath("/dashboard/results");
+    safeRevalidatePath("/leaderboard");
 
     return {
       success: true,

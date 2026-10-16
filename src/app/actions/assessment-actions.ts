@@ -1,6 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { ContestStatus, PhaseStatus } from "@prisma/client";
 import {
   calculateMcqScore,
   checkSubmissionDeadline,
@@ -9,8 +10,43 @@ import {
   type McqAnswerKey,
   type ParticipantMcqAnswer,
 } from "@/lib/scoring";
+import {
+  getAuthoritativeContestDeadline,
+  isContestActive,
+  isContestConcluded,
+  isContestUpcoming,
+  normalizeContestStatus,
+} from "@/lib/contest-lifecycle";
 import { revalidatePath } from "next/cache";
 import { requireRole } from "@/lib/auth";
+
+export interface AssessmentTaskNavOption {
+  id: string;
+  taskNumber: number;
+  title: string;
+  totalPoints: number;
+  questionCount: number;
+  questionTypes: string[];
+  isSubmitted: boolean;
+  hasDraft: boolean;
+  isLocked: boolean;
+  unlockRequirementText?: string;
+  phaseId: string;
+  phaseNumber: number;
+  phaseTitle: string;
+}
+
+export interface AssessmentPhaseNavOption {
+  id: string;
+  phaseNumber: number;
+  title: string;
+  status: PhaseStatus;
+  isLocked: boolean;
+  unlockRequirementText?: string;
+  deadline: string;
+  deadlineFormatted: string;
+  tasks: AssessmentTaskNavOption[];
+}
 
 export interface ParticipantDashboardContest {
   contestId: string;
@@ -25,13 +61,19 @@ export interface ParticipantDashboardContest {
   daysRemainingText: string;
   progressPercent: number;
   progressText: string;
-  status: "IN_PROGRESS" | "SUBMITTED" | "NOT_STARTED";
+  status: "IN_PROGRESS" | "SUBMITTED" | "NOT_STARTED" | "COMPLETED";
   submittedAt?: string;
   canContinue: boolean;
+  isUpcoming?: boolean;
+  secondsUntilStart?: number;
+  enforceSequentialProgress?: boolean;
+  totalTasks?: number;
+  completedTasks?: number;
+  phases?: AssessmentPhaseNavOption[];
 }
 
 export async function getParticipantDashboard(
-  _userEmail?: string
+  userEmailParam?: string
 ): Promise<{
   candidate: {
     id: string;
@@ -45,7 +87,7 @@ export async function getParticipantDashboard(
 }> {
   try {
     const session = await requireRole(["PARTICIPANT"]);
-    const candidateEmail = session.email;
+    const candidateEmail = userEmailParam || session.email;
 
     // 1. Resolve candidate user
     const user = await prisma.user.findUnique({
@@ -95,34 +137,194 @@ export async function getParticipantDashboard(
     for (const enrollment of enrollments) {
       const c = enrollment.contest;
       const activePhase = c.phases.find((p) => p.status === "OPEN") || c.phases[0];
-      if (!activePhase) continue;
 
-      const activeTask = activePhase.tasks[0];
-      if (!activeTask) continue;
-
-      const existingSubmission = activeTask.submissions[0];
-      const isSubmitted = existingSubmission?.status === "SUBMITTED";
-      const totalQuestions = activeTask.questions.length;
-      const answeredCount = existingSubmission?.answers.length ?? 0;
-
-      let progressPercent = 0;
-      if (isSubmitted) {
-        progressPercent = 100;
-      } else if (totalQuestions > 0) {
-        progressPercent = Math.min(100, Math.round((answeredCount / totalQuestions) * 100));
+      if (!activePhase) {
+        const diffMs = c.endDate.getTime() - now.getTime();
+        const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+        contests.push({
+          contestId: c.id,
+          slug: c.slug,
+          title: c.title,
+          track: c.track,
+          stageTitle: "Curriculum Pending",
+          taskTitle: "Assessment tasks have not been published yet",
+          taskId: "",
+          deadlineDate: c.endDate.toISOString(),
+          deadlineFormatted: c.endDate.toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+            year: "numeric",
+          }),
+          daysRemainingText: diffDays > 0 ? `${diffDays} days remaining` : "Upcoming",
+          progressPercent: 0,
+          progressText: "Curriculum Pending",
+          status: "NOT_STARTED",
+          canContinue: false,
+        });
+        continue;
       }
 
-      // Deadline calculations
-      const diffMs = activePhase.deadline.getTime() - now.getTime();
+      const activeTask = activePhase.tasks[0];
+      if (!activeTask) {
+        const diffMs = activePhase.deadline.getTime() - now.getTime();
+        const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+        contests.push({
+          contestId: c.id,
+          slug: c.slug,
+          title: c.title,
+          track: c.track,
+          stageTitle: `Phase ${activePhase.phaseNumber} · ${activePhase.title}`,
+          taskTitle: "Tasks in this stage are currently being finalized",
+          taskId: "",
+          deadlineDate: activePhase.deadline.toISOString(),
+          deadlineFormatted: activePhase.deadline.toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+          }),
+          daysRemainingText: diffDays > 0 ? `${diffDays} days remaining` : "Upcoming",
+          progressPercent: 0,
+          progressText: "Tasks Pending",
+          status: "NOT_STARTED",
+          canContinue: false,
+        });
+        continue;
+      }
+
+      let totalTasks = 0;
+      let completedTasks = 0;
+      let firstUncompletedTaskId: string | null = null;
+      const enforce = c.enforceSequentialProgress !== false;
+      let prevPhaseCompleted = true;
+
+      const dashboardPhases: AssessmentPhaseNavOption[] = [];
+
+      for (let pIdx = 0; pIdx < (c.phases || []).length; pIdx++) {
+        const p = c.phases[pIdx];
+        const isPhaseLocked = enforce && pIdx > 0 && !prevPhaseCompleted;
+        const phaseUnlockText = isPhaseLocked
+          ? `Complete Module ${c.phases[pIdx - 1].phaseNumber} to unlock`
+          : undefined;
+
+        let prevTaskCompleted = true;
+        const tasks: AssessmentTaskNavOption[] = [];
+
+        for (let tIdx = 0; tIdx < (p.tasks || []).length; tIdx++) {
+          const t = p.tasks[tIdx];
+          totalTasks++;
+          const sub = t.submissions?.[0];
+
+          // Check if all questions have recorded answers/files
+          const hasAnswersForAllQuestions =
+            (t.questions?.length || 0) > 0 &&
+            (t.questions || []).every((q) => {
+              const a = (sub?.answers || []).find((ans) => ans.questionId === q.id);
+              if (!a) return false;
+              if (q.type === "MCQ") return Boolean(a.selectedOption);
+              if (q.type === "WRITTEN") return Boolean(a.writtenText?.trim());
+              return Boolean(a.fileKey || a.fileName);
+            });
+
+          const isSub =
+            sub?.status === "SUBMITTED" ||
+            sub?.status === "GRADED" ||
+            sub?.status === "PUBLISHED" ||
+            hasAnswersForAllQuestions;
+
+          // Auto-finalize draft in database if all questions are answered
+          if (sub?.status === "DRAFT" && hasAnswersForAllQuestions) {
+            await prisma.submission.update({
+              where: { id: sub.id },
+              data: { status: "SUBMITTED", submittedAt: new Date() },
+            }).catch(() => {});
+          }
+
+          if (isSub) {
+            completedTasks++;
+          } else if (!firstUncompletedTaskId) {
+            firstUncompletedTaskId = t.id;
+          }
+
+          let isTaskLocked = false;
+          let taskUnlockText: string | undefined = undefined;
+
+          if (enforce) {
+            if (isPhaseLocked) {
+              isTaskLocked = true;
+              taskUnlockText = phaseUnlockText;
+            } else if (tIdx > 0 && !prevTaskCompleted) {
+              isTaskLocked = true;
+              const prevT = p.tasks[tIdx - 1];
+              taskUnlockText = `Complete Unit ${p.phaseNumber}.${prevT.taskNumber} to unlock`;
+            }
+          }
+
+          prevTaskCompleted = isSub;
+
+          const qTypes = Array.from(new Set((t.questions || []).map((q) => q.type)));
+
+          tasks.push({
+            id: t.id,
+            taskNumber: t.taskNumber,
+            title: t.title,
+            totalPoints: t.totalPoints,
+            questionCount: (t.questions || []).length,
+            questionTypes: qTypes,
+            isSubmitted: isSub,
+            hasDraft: (sub?.status === "DRAFT" && (sub.answers?.length || 0) > 0 && !isSub) || false,
+            isLocked: isTaskLocked,
+            unlockRequirementText: taskUnlockText,
+            phaseId: p.id,
+            phaseNumber: p.phaseNumber,
+            phaseTitle: p.title,
+          });
+        }
+
+        prevPhaseCompleted = tasks.every((t) => t.isSubmitted);
+
+        dashboardPhases.push({
+          id: p.id,
+          phaseNumber: p.phaseNumber,
+          title: p.title,
+          status: p.status,
+          isLocked: isPhaseLocked,
+          unlockRequirementText: phaseUnlockText,
+          deadline: p.deadline.toISOString(),
+          deadlineFormatted: p.deadline.toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+          }),
+          tasks,
+        });
+      }
+
+      const allTasksCompleted = totalTasks > 0 && completedTasks === totalTasks;
+      let progressPercent = 0;
+      if (allTasksCompleted) {
+        progressPercent = 100;
+      } else if (totalTasks > 0) {
+        progressPercent = Math.min(100, Math.round((completedTasks / totalTasks) * 100));
+      }
+
+      // Authoritative effective deadline calculation using shared lifecycle rules
+      const { effectiveDeadline, isConcluded: isContestEnded, secondsLeft } =
+        getAuthoritativeContestDeadline(c, activePhase, now);
+
+      const diffMs = effectiveDeadline.getTime() - now.getTime();
       const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
       let daysRemainingText = `${diffDays} days remaining`;
-      if (diffMs <= 0) {
-        daysRemainingText = "Deadline passed";
+      if (isContestEnded) {
+        daysRemainingText = "Contest Concluded";
+      } else if (diffDays <= 0 || secondsLeft <= 0) {
+        daysRemainingText = "Due today";
       } else if (diffDays === 1) {
         daysRemainingText = "Due today";
       }
 
-      const deadlineFormatted = activePhase.deadline.toLocaleDateString("en-US", {
+      const deadlineFormatted = effectiveDeadline.toLocaleDateString("en-US", {
         weekday: "short",
         month: "short",
         day: "numeric",
@@ -130,33 +332,43 @@ export async function getParticipantDashboard(
         minute: "2-digit",
       });
 
-      let status: "IN_PROGRESS" | "SUBMITTED" | "NOT_STARTED" = "NOT_STARTED";
-      let progressText = "Not Started";
+      let status: "IN_PROGRESS" | "SUBMITTED" | "NOT_STARTED" | "COMPLETED" = "NOT_STARTED";
+      let progressText = `${completedTasks} of ${totalTasks} Tasks Completed`;
 
-      if (isSubmitted) {
+      if (allTasksCompleted) {
         status = "SUBMITTED";
-        progressText = `Submitted on ${existingSubmission.submittedAt?.toLocaleDateString() ?? "Recorded"}`;
-      } else if (answeredCount > 0) {
+        progressText = `All ${totalTasks} Tasks Submitted`;
+      } else if (isContestEnded) {
+        status = "COMPLETED";
+        progressText = "Concluded · Time Expired";
+      } else if (completedTasks > 0) {
         status = "IN_PROGRESS";
-        progressText = `Question ${answeredCount} of ${totalQuestions} In Progress`;
+        progressText = `${completedTasks} of ${totalTasks} Tasks Completed`;
+      } else {
+        progressText = `Ready to Begin · ${totalTasks} Tasks`;
       }
+
+      const chosenTaskId = firstUncompletedTaskId || activeTask.id;
 
       contests.push({
         contestId: c.id,
         slug: c.slug,
         title: c.title,
         track: c.track,
-        stageTitle: `Phase ${activePhase.phaseNumber} · ${activePhase.title}`,
+        stageTitle: `${c.phases.length} Phases · ${totalTasks} Tasks`,
         taskTitle: activeTask.title,
-        taskId: activeTask.id,
-        deadlineDate: activePhase.deadline.toISOString(),
+        taskId: chosenTaskId,
+        deadlineDate: effectiveDeadline.toISOString(),
         deadlineFormatted,
         daysRemainingText,
         progressPercent,
         progressText,
         status,
-        submittedAt: existingSubmission?.submittedAt?.toISOString(),
-        canContinue: !isSubmitted,
+        submittedAt: allTasksCompleted ? new Date().toISOString() : undefined,
+        canContinue: !allTasksCompleted && !isContestEnded && diffMs > 0,
+        totalTasks,
+        completedTasks,
+        phases: dashboardPhases,
       });
     }
 
@@ -178,8 +390,41 @@ export async function getParticipantDashboard(
 }
 
 export interface TaskAssessmentData {
+  state?: "READY" | "NO_ENROLLMENT" | "NO_PHASES" | "NO_TASKS" | "CONTEST_NOT_STARTED" | "UPCOMING";
+  emptyState?: string;
+  message?: string;
+  isContestEnded?: boolean;
+  isContestUpcoming?: boolean;
+  secondsUntilStart?: number;
+  isRedirectedFromLocked?: boolean;
+  redirectTargetTaskId?: string;
+  lockedRedirectMessage?: string;
+  canSubmit?: boolean;
+  contestStatus?: ContestStatus;
+  contest?: {
+    id: string;
+    title: string;
+    slug: string;
+    track?: string;
+    description?: string | null;
+    status?: ContestStatus;
+    startDate?: string;
+    endDate?: string;
+    endDateFormatted?: string;
+    enforceSequentialProgress?: boolean;
+  };
+  phase?: {
+    id: string;
+    phaseNumber: number;
+    title: string;
+    status?: PhaseStatus;
+    deadline?: string;
+  };
+  phases?: AssessmentPhaseNavOption[];
+  allTasks?: AssessmentTaskNavOption[];
   task: {
     id: string;
+    taskNumber?: number;
     contestId: string;
     title: string;
     instructions: string | null;
@@ -239,7 +484,8 @@ export interface TaskAssessmentData {
 }
 
 export async function getTaskAssessmentData(
-  _userEmail?: string
+  contestId?: string,
+  taskId?: string
 ): Promise<TaskAssessmentData> {
   try {
     const session = await requireRole(["PARTICIPANT"]);
@@ -254,63 +500,463 @@ export async function getTaskAssessmentData(
       throw new Error(`Participant user not found: ${candidateEmail}`);
     }
 
-    // 2. Find participant's active enrolled contest and open task
-    const enrollment = await prisma.contestParticipant.findFirst({
-      where: {
-        userId: user.id,
-        status: { in: ["ACTIVE", "ENROLLED"] },
-      },
-      include: {
-        contest: {
-          include: {
-            phases: {
-              where: { status: "OPEN" },
-              orderBy: { phaseNumber: "asc" },
-              include: {
-                tasks: {
-                  orderBy: { taskNumber: "asc" },
-                  include: {
-                    questions: {
-                      orderBy: { questionNumber: "asc" },
-                      include: {
-                        options: {
-                          orderBy: { optionKey: "asc" },
+    // 2. Find participant's active enrolled contest
+    let enrollment = null;
+    if (contestId) {
+      enrollment = await prisma.contestParticipant.findFirst({
+        where: {
+          userId: user.id,
+          contestId,
+          status: { in: ["ACTIVE", "ENROLLED"] },
+        },
+        include: {
+          contest: {
+            include: {
+              phases: {
+                orderBy: { phaseNumber: "asc" },
+                include: {
+                  tasks: {
+                    orderBy: { taskNumber: "asc" },
+                    include: {
+                      questions: {
+                        orderBy: { questionNumber: "asc" },
+                        include: {
+                          options: {
+                            orderBy: { optionKey: "asc" },
+                          },
                         },
                       },
+                      references: true,
                     },
-                    references: true,
                   },
                 },
               },
             },
           },
         },
-      },
-    });
+      });
+    } else {
+      const allEnrollments = await prisma.contestParticipant.findMany({
+        where: {
+          userId: user.id,
+          status: { in: ["ACTIVE", "ENROLLED"] },
+        },
+        orderBy: { enrolledAt: "desc" },
+        include: {
+          contest: {
+            include: {
+              phases: {
+                orderBy: { phaseNumber: "asc" },
+                include: {
+                  tasks: {
+                    orderBy: { taskNumber: "asc" },
+                    include: {
+                      questions: {
+                        orderBy: { questionNumber: "asc" },
+                        include: {
+                          options: {
+                            orderBy: { optionKey: "asc" },
+                          },
+                        },
+                      },
+                      references: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
 
+      const now = new Date();
+      enrollment =
+        allEnrollments.find((e) => e.contest && isContestActive(e.contest, now)) ||
+        allEnrollments.find(
+          (e) => e.contest && normalizeContestStatus(e.contest.status) !== ContestStatus.DRAFT
+        ) ||
+        allEnrollments[0] ||
+        null;
+    }
+
+    // 3. Graceful empty state when no active enrollment exists
     if (!enrollment || !enrollment.contest) {
-      throw new Error("No active contest assignment found for this participant.");
+      return {
+        state: "NO_ENROLLMENT",
+        emptyState: "NO_ENROLLMENT",
+        message: "No active contest assignment found for this participant.",
+        task: {
+          id: "",
+          contestId: "",
+          title: "No Active Assignment",
+          instructions: null,
+          totalPoints: 0,
+          phaseTitle: "Unassigned",
+          contestTitle: "Unassigned Contest",
+          deadline: new Date().toISOString(),
+          deadlineFormatted: "N/A",
+          secondsLeft: 0,
+        },
+        questions: [],
+        submission: {
+          id: "",
+          status: "DRAFT",
+          submittedAt: null,
+          autoSavedAt: new Date().toISOString(),
+          answers: [],
+        },
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+        },
+      };
     }
 
     const contest = enrollment.contest;
-    const phase = contest.phases[0] || (await prisma.phase.findFirst({ where: { contestId: contest.id }, include: { tasks: { include: { questions: { include: { options: true } } } } } }));
-    if (!phase) {
-      throw new Error("No phases configured for this contest.");
+    const now2 = new Date();
+
+    // 4. Graceful pre-contest gate when contest has not started yet
+    const isUpcoming = isContestUpcoming(contest, now2);
+    if (normalizeContestStatus(contest.status) === ContestStatus.DRAFT || isUpcoming) {
+      const secondsUntilStart = Math.max(0, Math.floor((new Date(contest.startDate).getTime() - now2.getTime()) / 1000));
+      return {
+        state: "CONTEST_NOT_STARTED",
+        emptyState: "CONTEST_NOT_STARTED",
+        message: "This assessment benchmark has not started yet.",
+        isContestUpcoming: true,
+        secondsUntilStart,
+        contestStatus: contest.status,
+        contest: {
+          id: contest.id,
+          title: contest.title,
+          slug: contest.slug,
+          track: contest.track,
+          description: contest.description,
+          status: contest.status,
+          startDate: contest.startDate.toISOString(),
+          endDate: contest.endDate.toISOString(),
+          endDateFormatted: contest.endDate.toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }),
+          enforceSequentialProgress: contest.enforceSequentialProgress ?? true,
+        },
+        task: {
+          id: "",
+          contestId: contest.id,
+          title: "Assessment Scheduled",
+          instructions: `Session opens at ${contest.startDate.toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}.`,
+          totalPoints: 0,
+          phaseTitle: "Scheduled",
+          contestTitle: contest.title,
+          deadline: contest.endDate.toISOString(),
+          deadlineFormatted: contest.endDate.toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }),
+          secondsLeft: 0,
+        },
+        questions: [],
+        submission: {
+          id: "",
+          status: "DRAFT",
+          submittedAt: null,
+          autoSavedAt: now2.toISOString(),
+          answers: [],
+        },
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+        },
+        phases: [],
+        allTasks: [],
+      };
     }
 
-    const task = phase.tasks[0];
-    if (!task) {
-      throw new Error("No tasks configured in this phase.");
+    // 5. Graceful empty state when contest has no phases
+    if (!contest.phases || contest.phases.length === 0) {
+      return {
+        state: "NO_PHASES",
+        emptyState: "NO_PHASES",
+        message: `Tasks for contest "${contest.title}" have not been published yet.`,
+        contestStatus: contest.status,
+        contest: {
+          id: contest.id,
+          title: contest.title,
+          slug: contest.slug,
+          status: contest.status,
+          startDate: contest.startDate.toISOString(),
+          endDate: contest.endDate.toISOString(),
+          endDateFormatted: contest.endDate.toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }),
+        },
+        task: {
+          id: "",
+          contestId: contest.id,
+          title: "Curriculum Pending",
+          instructions: "Assessment curriculum has not been published yet.",
+          totalPoints: 0,
+          phaseTitle: "Curriculum Pending",
+          contestTitle: contest.title,
+          deadline: contest.endDate.toISOString(),
+          deadlineFormatted: contest.endDate.toLocaleDateString(),
+          secondsLeft: 0,
+        },
+        questions: [],
+        submission: {
+          id: "",
+          status: "DRAFT",
+          submittedAt: null,
+          autoSavedAt: now2.toISOString(),
+          answers: [],
+        },
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+        },
+        phases: [],
+        allTasks: [],
+      };
     }
 
-    // 3. Strict security: Strip answerKey from questions using sanitizeQuestionForParticipant
-    const sanitizedQuestions = task.questions.map((q) => sanitizeQuestionForParticipant(q));
+    // Query user submissions across all tasks in this contest for navigation badges
+    const userContestSubmissions = await prisma.submission.findMany({
+      where: {
+        contestId: contest.id,
+        userId: user.id,
+      },
+      include: {
+        answers: true,
+      },
+    });
 
-    // 4. Ensure or fetch submission record
+    type SubAnswerRecord = {
+      questionId: string;
+      selectedOption?: string | null;
+      writtenText?: string | null;
+      fileName?: string | null;
+      fileKey?: string | null;
+    };
+    const userSubMap = new Map<string, { id: string; status: string; answers: SubAnswerRecord[] }>();
+    for (const s of userContestSubmissions) {
+      userSubMap.set(s.taskId, {
+        id: s.id,
+        status: s.status,
+        answers: (s.answers || []) as SubAnswerRecord[],
+      });
+    }
+
+    const enforce = contest.enforceSequentialProgress !== false;
+    let prevPhaseCompleted = true;
+    const allTasks: AssessmentTaskNavOption[] = [];
+    const allPhases: AssessmentPhaseNavOption[] = [];
+
+    for (let pIdx = 0; pIdx < (contest.phases || []).length; pIdx++) {
+      const p = contest.phases[pIdx];
+      const isPhaseLocked = enforce && pIdx > 0 && !prevPhaseCompleted;
+      const phaseUnlockText = isPhaseLocked
+        ? `Complete Module ${contest.phases[pIdx - 1].phaseNumber} to unlock`
+        : undefined;
+
+      let prevTaskCompleted = true;
+      const phaseTasks: AssessmentTaskNavOption[] = [];
+
+      for (let tIdx = 0; tIdx < (p.tasks || []).length; tIdx++) {
+        const t = p.tasks[tIdx];
+        const sub = userSubMap.get(t.id);
+
+        // Check if all questions have recorded answers/files
+        const hasAnswersForAllQuestions =
+          (t.questions?.length || 0) > 0 &&
+          (t.questions || []).every((q) => {
+            const a = (sub?.answers || []).find((ans) => ans.questionId === q.id);
+            if (!a) return false;
+            if (q.type === "MCQ") return Boolean(a.selectedOption);
+            if (q.type === "WRITTEN") return Boolean(a.writtenText?.trim());
+            return Boolean(a.fileKey || a.fileName);
+          });
+
+        const isSub =
+          sub?.status === "SUBMITTED" ||
+          sub?.status === "GRADED" ||
+          sub?.status === "PUBLISHED" ||
+          hasAnswersForAllQuestions;
+
+        // Auto-finalize draft in database if all questions are answered
+        if (sub?.status === "DRAFT" && hasAnswersForAllQuestions) {
+          await prisma.submission.update({
+            where: { id: sub.id },
+            data: { status: "SUBMITTED", submittedAt: new Date() },
+          }).catch(() => {});
+        }
+
+        let isTaskLocked = false;
+        let taskUnlockText: string | undefined = undefined;
+
+        if (enforce) {
+          if (isPhaseLocked) {
+            isTaskLocked = true;
+            taskUnlockText = phaseUnlockText;
+          } else if (tIdx > 0 && !prevTaskCompleted) {
+            isTaskLocked = true;
+            const prevT = p.tasks[tIdx - 1];
+            taskUnlockText = `Complete Unit ${p.phaseNumber}.${prevT.taskNumber} to unlock`;
+          }
+        }
+
+        prevTaskCompleted = isSub;
+
+        const hasDraft = (sub?.status === "DRAFT" && (sub.answers?.length || 0) > 0 && !isSub) || false;
+        const qTypes = Array.from(new Set((t.questions || []).map((q) => q.type)));
+
+        const taskOpt: AssessmentTaskNavOption = {
+          id: t.id,
+          taskNumber: t.taskNumber,
+          title: t.title,
+          totalPoints: t.totalPoints,
+          questionCount: (t.questions || []).length,
+          questionTypes: qTypes,
+          isSubmitted: Boolean(isSub),
+          hasDraft,
+          isLocked: isTaskLocked,
+          unlockRequirementText: taskUnlockText,
+          phaseId: p.id,
+          phaseNumber: p.phaseNumber,
+          phaseTitle: p.title,
+        };
+
+        phaseTasks.push(taskOpt);
+        allTasks.push(taskOpt);
+      }
+
+      prevPhaseCompleted = phaseTasks.every((t) => t.isSubmitted);
+
+      allPhases.push({
+        id: p.id,
+        phaseNumber: p.phaseNumber,
+        title: p.title,
+        status: p.status,
+        isLocked: isPhaseLocked,
+        unlockRequirementText: phaseUnlockText,
+        deadline: p.deadline.toISOString(),
+        deadlineFormatted: p.deadline.toLocaleDateString("en-US", {
+          month: "short",
+          day: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+        }),
+        tasks: phaseTasks,
+      });
+    }
+
+    // 6. Resolve target phase and target task with Sequential Locking Guard
+    // Find active unit: first unlocked & unsubmitted task, or first unlocked task
+    const firstActiveTaskOpt =
+      allTasks.find((t) => !t.isLocked && !t.isSubmitted) ||
+      allTasks.find((t) => !t.isLocked) ||
+      allTasks[0];
+
+    let targetPhase = contest.phases.find((p) => p.id === firstActiveTaskOpt?.phaseId) || contest.phases[0];
+    let targetTask = targetPhase?.tasks?.find((t) => t.id === firstActiveTaskOpt?.id) || targetPhase?.tasks?.[0];
+    let isRedirectedFromLocked = false;
+    let redirectTargetTaskId: string | undefined = undefined;
+    let lockedRedirectMessage: string | undefined = undefined;
+
+    if (taskId) {
+      const requestedTaskOpt = allTasks.find((t) => t.id === taskId);
+      if (requestedTaskOpt && requestedTaskOpt.isLocked) {
+        // SERVER-SIDE GUARD: Participant tried to access a locked unit directly via URL!
+        // Redirect back to the current active unit
+        isRedirectedFromLocked = true;
+        redirectTargetTaskId = firstActiveTaskOpt?.id;
+        lockedRedirectMessage = `Unit ${requestedTaskOpt.phaseNumber}.${requestedTaskOpt.taskNumber} is locked. Redirected to your active unit.`;
+
+        if (firstActiveTaskOpt) {
+          for (const p of contest.phases) {
+            const found = p.tasks.find((t) => t.id === firstActiveTaskOpt.id);
+            if (found) {
+              targetPhase = p;
+              targetTask = found;
+              break;
+            }
+          }
+        }
+      } else {
+        for (const p of contest.phases) {
+          const found = p.tasks.find((t) => t.id === taskId);
+          if (found) {
+            targetPhase = p;
+            targetTask = found;
+            break;
+          }
+        }
+      }
+    }
+
+    // 7. Graceful empty state when phase has no tasks
+    if (!targetTask) {
+      return {
+        state: "NO_TASKS",
+        emptyState: "NO_TASKS",
+        message: `No active tasks found in phase "${targetPhase.title}".`,
+        contestStatus: contest.status,
+        contest: {
+          id: contest.id,
+          title: contest.title,
+          slug: contest.slug,
+          status: contest.status,
+          startDate: contest.startDate.toISOString(),
+          endDate: contest.endDate.toISOString(),
+          endDateFormatted: contest.endDate.toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }),
+        },
+        phase: {
+          id: targetPhase.id,
+          phaseNumber: targetPhase.phaseNumber,
+          title: targetPhase.title,
+          status: targetPhase.status,
+          deadline: targetPhase.deadline.toISOString(),
+        },
+        task: {
+          id: "",
+          contestId: contest.id,
+          title: "No Tasks Configured",
+          instructions: "Tasks for this stage are currently being finalized.",
+          totalPoints: 0,
+          phaseTitle: `Phase ${targetPhase.phaseNumber}: ${targetPhase.title}`,
+          contestTitle: contest.title,
+          deadline: targetPhase.deadline.toISOString(),
+          deadlineFormatted: targetPhase.deadline.toLocaleDateString(),
+          secondsLeft: 0,
+        },
+        questions: [],
+        submission: {
+          id: "",
+          status: "DRAFT",
+          submittedAt: null,
+          autoSavedAt: now2.toISOString(),
+          answers: [],
+        },
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+        },
+        phases: allPhases,
+        allTasks: allTasks,
+      };
+    }
+
+    // Authoritative effective deadline bounded by shared contest lifecycle rules
+    const {
+      effectiveDeadline,
+      isConcluded: isContestEnded,
+      secondsLeft,
+    } = getAuthoritativeContestDeadline(contest, targetPhase, now2);
+
+    // 8. Strict security: Strip answerKey from questions using sanitizeQuestionForParticipant
+    const sanitizedQuestions = targetTask.questions.map((q) => sanitizeQuestionForParticipant(q));
+
+    // 9. Ensure or fetch submission record
     let submission = await prisma.submission.findUnique({
       where: {
         taskId_userId: {
-          taskId: task.id,
+          taskId: targetTask.id,
           userId: user.id,
         },
       },
@@ -319,12 +965,12 @@ export async function getTaskAssessmentData(
       },
     });
 
-    if (!submission) {
+    if (!submission && !isContestEnded) {
       submission = await prisma.submission.create({
         data: {
           contestId: contest.id,
-          phaseId: phase.id,
-          taskId: task.id,
+          phaseId: targetPhase.id,
+          taskId: targetTask.id,
           userId: user.id,
           status: "DRAFT",
         },
@@ -334,31 +980,74 @@ export async function getTaskAssessmentData(
       });
     }
 
-    // 5. Sanitize submission for participant (strips scores while contest is unpublished)
-    const sanitizedSubmission = sanitizeSubmissionForParticipant(submission, contest.isPublished);
+    // 10. Sanitize submission for participant (strips scores while contest is unpublished)
+    const sanitizedSubmission = submission
+      ? sanitizeSubmissionForParticipant(submission, contest.isPublished)
+      : {
+          id: "",
+          status: "DRAFT",
+          submittedAt: null,
+          autoSavedAt: now2,
+          answers: [],
+        };
 
-    // Calculate time left in seconds
-    const now = new Date();
-    const secondsLeft = Math.max(0, Math.floor((phase.deadline.getTime() - now.getTime()) / 1000));
+    const isSubmitted =
+      sanitizedSubmission.status === "SUBMITTED" ||
+      sanitizedSubmission.status === "GRADED" ||
+      sanitizedSubmission.status === "PUBLISHED";
+
+    const canSubmit = !isContestEnded && !isSubmitted && secondsLeft > 0;
 
     return {
+      state: "READY",
+      isContestEnded,
+      canSubmit,
+      contestStatus: contest.status,
+      isRedirectedFromLocked,
+      redirectTargetTaskId,
+      lockedRedirectMessage,
+      contest: {
+        id: contest.id,
+        title: contest.title,
+        slug: contest.slug,
+        track: contest.track,
+        description: contest.description,
+        status: contest.status,
+        startDate: contest.startDate.toISOString(),
+        endDate: contest.endDate.toISOString(),
+        endDateFormatted: contest.endDate.toLocaleDateString("en-US", {
+          month: "short",
+          day: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+        }),
+        enforceSequentialProgress: contest.enforceSequentialProgress ?? true,
+      },
+      phase: {
+        id: targetPhase.id,
+        phaseNumber: targetPhase.phaseNumber,
+        title: targetPhase.title,
+        status: targetPhase.status,
+        deadline: effectiveDeadline.toISOString(),
+      },
       task: {
-        id: task.id,
+        id: targetTask.id,
+        taskNumber: targetTask.taskNumber,
         contestId: contest.id,
-        title: task.title,
-        instructions: task.instructions,
-        totalPoints: task.totalPoints,
-        phaseTitle: `Phase ${phase.phaseNumber}: ${phase.title}`,
+        title: targetTask.title,
+        instructions: targetTask.instructions,
+        totalPoints: targetTask.totalPoints,
+        phaseTitle: `Phase ${targetPhase.phaseNumber}: ${targetPhase.title}`,
         contestTitle: contest.title,
-        deadline: phase.deadline.toISOString(),
-        deadlineFormatted: phase.deadline.toLocaleDateString("en-US", {
+        deadline: effectiveDeadline.toISOString(),
+        deadlineFormatted: effectiveDeadline.toLocaleDateString("en-US", {
           month: "short",
           day: "numeric",
           hour: "numeric",
           minute: "2-digit",
         }),
         secondsLeft,
-        references: (task.references || []).map((r) => ({
+        references: (targetTask.references || []).map((r) => ({
           id: r.id,
           title: r.title,
           fileKey: r.fileKey,
@@ -387,28 +1076,109 @@ export async function getTaskAssessmentData(
       submission: {
         id: sanitizedSubmission.id,
         status: sanitizedSubmission.status,
-        submittedAt: sanitizedSubmission.submittedAt?.toISOString() || null,
-        autoSavedAt: sanitizedSubmission.autoSavedAt.toISOString(),
-        answers: sanitizedSubmission.answers ? sanitizedSubmission.answers.map((a) => ({
-          questionId: a.questionId,
-          selectedOption: a.selectedOption,
-          writtenText: a.writtenText,
-          fileName: a.fileName,
-          fileKey: a.fileKey,
-          fileSizeBytes: a.fileSizeBytes ? Number(a.fileSizeBytes) : null,
-          fileSha256: a.fileSha256 || null,
-          wordCount: a.wordCount,
-        })) : [],
+        submittedAt: (sanitizedSubmission as unknown as { submittedAt?: Date | string | null }).submittedAt
+          ? new Date(
+              (sanitizedSubmission as unknown as { submittedAt?: Date | string }).submittedAt!
+            ).toISOString()
+          : null,
+        autoSavedAt: (sanitizedSubmission as unknown as { autoSavedAt?: Date | string | null }).autoSavedAt
+          ? new Date(
+              (sanitizedSubmission as unknown as { autoSavedAt?: Date | string }).autoSavedAt!
+            ).toISOString()
+          : now2.toISOString(),
+        answers: sanitizedSubmission.answers
+          ? (
+              sanitizedSubmission.answers as Array<{
+                questionId: string;
+                selectedOption?: string | null;
+                writtenText?: string | null;
+                fileName?: string | null;
+                fileKey?: string | null;
+                fileSizeBytes?: number | bigint | null;
+                fileSha256?: string | null;
+                wordCount?: number | null;
+              }>
+            ).map((a) => ({
+              questionId: a.questionId,
+              selectedOption: a.selectedOption ?? null,
+              writtenText: a.writtenText ?? null,
+              fileName: a.fileName ?? null,
+              fileKey: a.fileKey ?? null,
+              fileSizeBytes: a.fileSizeBytes ? Number(a.fileSizeBytes) : null,
+              fileSha256: a.fileSha256 || null,
+              wordCount: a.wordCount ?? null,
+            }))
+          : [],
       },
       user: {
         id: user.id,
         name: user.name,
         email: user.email,
       },
+      phases: allPhases,
+      allTasks: allTasks,
     };
   } catch (error) {
     console.error("Error getting task assessment data:", error);
     throw error;
+  }
+}
+
+/**
+ * Lightweight heartbeat query for real-time timer synchronization.
+ * Computes authoritative Asia/Dhaka deadline and secondsLeft without payload bloat.
+ */
+export async function getContestDeadlineAction(contestId: string, phaseId?: string) {
+  try {
+    const contest = await prisma.contest.findUnique({
+      where: { id: contestId },
+      include: {
+        phases: { orderBy: { phaseNumber: "asc" } },
+      },
+    });
+
+    if (!contest) {
+      return { success: false, error: "Contest not found." };
+    }
+
+    const targetPhase = phaseId
+      ? contest.phases.find((p) => p.id === phaseId)
+      : contest.phases.find((p) => p.status === "OPEN") || contest.phases[0];
+
+    const now = new Date();
+    const {
+      effectiveDeadline,
+      effectiveDeadlineMs,
+      isConcluded,
+      secondsLeft,
+      controllingSource,
+    } = getAuthoritativeContestDeadline(contest, targetPhase, now);
+
+    return {
+      success: true,
+      contestId: contest.id,
+      phaseId: targetPhase?.id,
+      deadline: effectiveDeadline.toISOString(),
+      deadlineMs: effectiveDeadlineMs,
+      secondsLeft,
+      isConcluded,
+      contestStatus: contest.status,
+      controllingSource,
+      formattedDhaka: effectiveDeadline.toLocaleString("en-US", {
+        timeZone: "Asia/Dhaka",
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      }),
+    };
+  } catch (error) {
+    console.error("Error getting contest deadline:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to get deadline",
+    };
   }
 }
 
@@ -432,6 +1202,7 @@ export async function saveAnswerDraftAction(
       include: {
         user: true,
         phase: true,
+        contest: true,
       },
     });
 
@@ -439,16 +1210,33 @@ export async function saveAnswerDraftAction(
       return { success: false, error: "Submission session not found." };
     }
 
-    if (submission.userId !== session.userId && submission.user.email !== session.email) {
+    const userEmail = _userEmail || session.email;
+
+    if (submission.userId !== session.userId && submission.user.email !== userEmail) {
       return { success: false, error: "Unauthorized access: Cross-user submission modification is blocked." };
     }
 
-    if (submission.status === "SUBMITTED") {
+    const isSubmitted =
+      submission.status === "SUBMITTED" ||
+      submission.status === "GRADED" ||
+      submission.status === "PUBLISHED";
+    if (isSubmitted) {
       return { success: false, error: "Assessment has already been finalized and locked." };
     }
 
+    const now = new Date();
+    // Check contest lifecycle status
+    if (isContestConcluded(submission.contest, now)) {
+      return { success: false, error: "Contest has concluded. Edits and submissions are locked." };
+    }
+
     // 2. Server-side deadline check (60s network grace period)
-    const deadlineCheck = checkSubmissionDeadline(submission.phase.deadline, new Date(), 60);
+    const { effectiveDeadline } = getAuthoritativeContestDeadline(
+      submission.contest,
+      submission.phase,
+      now
+    );
+    const deadlineCheck = checkSubmissionDeadline(effectiveDeadline, now, 60);
     if (!deadlineCheck.isEligible) {
       return { success: false, error: "Cut-off deadline has elapsed. Edits are locked." };
     }
@@ -489,7 +1277,6 @@ export async function saveAnswerDraftAction(
     });
 
     // 5. Update submission autoSavedAt timestamp
-    const now = new Date();
     await prisma.submission.update({
       where: { id: submissionId },
       data: { autoSavedAt: now },
@@ -518,6 +1305,7 @@ export async function submitAssessmentAction(
       include: {
         user: true,
         phase: true,
+        contest: true,
         task: {
           include: {
             questions: {
@@ -535,16 +1323,33 @@ export async function submitAssessmentAction(
       return { success: false, error: "Submission not found." };
     }
 
-    if (submission.userId !== session.userId && submission.user.email !== session.email) {
+    const userEmail = _userEmail || session.email;
+
+    if (submission.userId !== session.userId && submission.user.email !== userEmail) {
       return { success: false, error: "Unauthorized access: Cross-user submission finalization is blocked." };
     }
 
-    if (submission.status === "SUBMITTED") {
+    const isSubmitted =
+      submission.status === "SUBMITTED" ||
+      submission.status === "GRADED" ||
+      submission.status === "PUBLISHED";
+    if (isSubmitted) {
       return { success: true, message: "Already submitted." };
     }
 
+    const now = new Date();
+    // Check contest lifecycle status
+    if (isContestConcluded(submission.contest, now)) {
+      return { success: false, error: "Contest has concluded. Further submissions are closed." };
+    }
+
     // 2. Server-side deadline check
-    const deadlineCheck = checkSubmissionDeadline(submission.phase.deadline, new Date(), 60);
+    const { effectiveDeadline } = getAuthoritativeContestDeadline(
+      submission.contest,
+      submission.phase,
+      now
+    );
+    const deadlineCheck = checkSubmissionDeadline(effectiveDeadline, now, 60);
     const isLate = !deadlineCheck.isEligible;
 
     // 3. Server-side MCQ auto-grading

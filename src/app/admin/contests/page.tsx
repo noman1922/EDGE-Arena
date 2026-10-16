@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { DEMO_METRICS } from "@/lib/demo-data";
 import {
@@ -11,7 +11,14 @@ import {
   assignParticipantAction,
   removeParticipantAction,
   deleteContestAction,
+  getAvailableParticipantsAction,
+  batchEnrollParticipantsAction,
+  bulkEnrollParticipantsCsvAction,
+  previewEnrollmentCsvAction,
   type AdminContestListItem,
+  type AvailableParticipantOption,
+  type BulkEnrollSummary,
+  type BulkEnrollPreviewResult,
 } from "@/app/actions/contest-actions";
 import {
   getContestMonitoringSettingsAction,
@@ -21,6 +28,30 @@ import {
   type ContestMonitoringSettings,
   DEFAULT_MONITORING_SETTINGS,
 } from "@/lib/monitoring";
+import { DeleteConfirmationModal } from "@/components/modals/delete-confirmation-modal";
+
+/**
+ * Returns a YYYY-MM-DDTHH:mm string in Asia/Dhaka timezone (UTC+6)
+ */
+function getDhakaDateTimeString(d: Date = new Date()): string {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Dhaka",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const parts = formatter.formatToParts(d);
+  const getPart = (type: string) => parts.find((p) => p.type === type)?.value || "";
+  const year = getPart("year");
+  const month = getPart("month");
+  const day = getPart("day");
+  const hour = getPart("hour");
+  const minute = getPart("minute");
+  return `${year}-${month}-${day}T${hour}:${minute}`;
+}
 
 export default function ContestManagementPage() {
   const [contests, setContests] = useState<AdminContestListItem[]>([]);
@@ -31,17 +62,34 @@ export default function ContestManagementPage() {
   const [selectedRows, setSelectedRows] = useState<string[]>([]);
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
 
-  // Create Contest Modal State
+  // Create Contest Modal State (Runtime dynamic dates in Asia/Dhaka)
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [newTrack, setNewTrack] = useState("Track B · Operational Excellence & AI");
   const [newDescription, setNewDescription] = useState("");
-  const [newStartDate, setNewStartDate] = useState("2025-03-01T00:00");
-  const [newEndDate, setNewEndDate] = useState("2025-04-15T23:59");
+  const [newStartDate, setNewStartDate] = useState("");
+  const [newEndDate, setNewEndDate] = useState("");
   const [newStatus, setNewStatus] = useState<"LIVE" | "DRAFT">("LIVE");
+  const [newEnforceSequentialProgress, setNewEnforceSequentialProgress] = useState(true);
   const [isSubmittingContest, setIsSubmittingContest] = useState(false);
 
-  // Assign Participant Form State (inside drawer)
+  // Participant Enrollment State (inside drawer)
+  const [enrollTab, setEnrollTab] = useState<"SELECT" | "CSV" | "SINGLE">("SELECT");
+  const [availableParticipants, setAvailableParticipants] = useState<AvailableParticipantOption[]>([]);
+  const [selectedParticipantIds, setSelectedParticipantIds] = useState<string[]>([]);
+  const [participantSearch, setParticipantSearch] = useState("");
+  const [isEnrollingBatch, setIsEnrollingBatch] = useState(false);
+  const [enrollBatchMsg, setEnrollBatchMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  // CSV Enrollment State
+  const [csvText, setCsvText] = useState("");
+  const [isUploadingCsv, setIsUploadingCsv] = useState(false);
+  const [isPreviewingCsv, setIsPreviewingCsv] = useState(false);
+  const [bulkCsvResult, setBulkCsvResult] = useState<BulkEnrollSummary | null>(null);
+  const [csvPreview, setCsvPreview] = useState<BulkEnrollPreviewResult | null>(null);
+  const [previewDetailTab, setPreviewDetailTab] = useState<"READY" | "ALREADY_ENROLLED" | "INVALID">("READY");
+
+  // Single Quick Assign Form State
   const [assignEmail, setAssignEmail] = useState("");
   const [assignName, setAssignName] = useState("");
   const [isAssigning, setIsAssigning] = useState(false);
@@ -56,17 +104,55 @@ export default function ContestManagementPage() {
   const [editStartDate, setEditStartDate] = useState("");
   const [editEndDate, setEditEndDate] = useState("");
   const [editStatus, setEditStatus] = useState<"DRAFT" | "LIVE" | "COMPLETED" | "ARCHIVED">("LIVE");
+  const [editEnforceSequentialProgress, setEditEnforceSequentialProgress] = useState(true);
   const [isSubmittingEdit, setIsSubmittingEdit] = useState(false);
   const [monitoringSettings, setMonitoringSettings] = useState<ContestMonitoringSettings>(DEFAULT_MONITORING_SETTINGS);
   const [isSavingMonitoring, setIsSavingMonitoring] = useState(false);
   const [monitoringSaveSuccess, setMonitoringSaveSuccess] = useState(false);
 
+  // Universal Delete Confirmation Modal State
+  const [deleteModalState, setDeleteModalState] = useState<{
+    isOpen: boolean;
+    title: string;
+    itemDescription: string;
+    warningDetails?: string;
+    confirmLabel?: string;
+    onConfirm: () => Promise<void>;
+  }>({
+    isOpen: false,
+    title: "",
+    itemDescription: "",
+    confirmLabel: "Delete Permanently",
+    onConfirm: async () => {},
+  });
+  const [isDeletingContest, setIsDeletingContest] = useState(false);
+
+  // Load available participants when drawer contest changes
+  const loadAvailableParticipants = async (cId: string) => {
+    try {
+      const list = await getAvailableParticipantsAction(cId);
+      setAvailableParticipants(list);
+      setSelectedParticipantIds([]);
+      setEnrollBatchMsg(null);
+      setBulkCsvResult(null);
+    } catch (err) {
+      console.error("Failed to load available participants:", err);
+    }
+  };
+
   useEffect(() => {
     if (selectedContest?.id) {
+      let isMounted = true;
       getContestMonitoringSettingsAction(selectedContest.id).then((settings) => {
-        setMonitoringSettings(settings);
+        if (isMounted) {
+          setMonitoringSettings(settings);
+          setMonitoringSaveSuccess(false);
+        }
       });
-      setMonitoringSaveSuccess(false);
+      loadAvailableParticipants(selectedContest.id);
+      return () => {
+        isMounted = false;
+      };
     }
   }, [selectedContest?.id]);
 
@@ -88,26 +174,34 @@ export default function ContestManagementPage() {
     }
   };
 
-  const fetchContests = async () => {
+  const fetchContests = useCallback(async () => {
     try {
       setIsLoading(true);
       const data = await getAdminContests();
       setContests(data);
       // If a contest is currently selected in drawer, update its reference
-      if (selectedContest) {
-        const updated = data.find((c) => c.id === selectedContest.id);
-        if (updated) setSelectedContest(updated);
-      }
+      setSelectedContest((prev) => {
+        if (!prev) return null;
+        return data.find((c) => c.id === prev.id) || null;
+      });
     } catch (err) {
       console.error("Failed to load contests from database:", err);
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     fetchContests();
-  }, []);
+  }, [fetchContests]);
+
+  const openCreateModal = () => {
+    setNewTitle("");
+    setNewDescription("");
+    setNewStartDate(getDhakaDateTimeString(new Date()));
+    setNewEndDate(getDhakaDateTimeString(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)));
+    setIsCreateModalOpen(true);
+  };
 
   const filteredContests = contests.filter((c) => {
     const matchesFilter = statusFilter === "All" || c.status === statusFilter;
@@ -137,6 +231,11 @@ export default function ContestManagementPage() {
     e.preventDefault();
     if (!newTitle.trim()) return;
 
+    if (new Date(newEndDate) <= new Date(newStartDate)) {
+      alert("Contest end date and time must be after the start date and time.");
+      return;
+    }
+
     try {
       setIsSubmittingContest(true);
       const res = await createContestAction({
@@ -147,6 +246,7 @@ export default function ContestManagementPage() {
         endDate: new Date(newEndDate).toISOString(),
         status: newStatus,
         cohortCode: "CLP-2025",
+        enforceSequentialProgress: newEnforceSequentialProgress,
       });
 
       if (res.success) {
@@ -163,6 +263,120 @@ export default function ContestManagementPage() {
     } finally {
       setIsSubmittingContest(false);
     }
+  };
+
+  // Participant Checkbox selection handlers
+  const handleToggleParticipant = (id: string) => {
+    setSelectedParticipantIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
+
+  const eligibleUnenrolled = availableParticipants.filter(
+    (p) =>
+      !p.isEnrolled &&
+      (p.name.toLowerCase().includes(participantSearch.toLowerCase()) ||
+        p.email.toLowerCase().includes(participantSearch.toLowerCase()) ||
+        (p.candidateId && p.candidateId.toLowerCase().includes(participantSearch.toLowerCase())))
+  );
+
+  const handleSelectAllEligible = () => {
+    const allEligibleIds = eligibleUnenrolled.map((p) => p.id);
+    setSelectedParticipantIds(allEligibleIds);
+  };
+
+  const handleClearSelection = () => {
+    setSelectedParticipantIds([]);
+  };
+
+  const handleBatchEnroll = async () => {
+    if (!selectedContest || selectedParticipantIds.length === 0) return;
+
+    try {
+      setIsEnrollingBatch(true);
+      setEnrollBatchMsg(null);
+      const res = await batchEnrollParticipantsAction(selectedContest.id, selectedParticipantIds);
+
+      if (res.success) {
+        setEnrollBatchMsg({
+          type: "success",
+          text: `Enrolled ${res.enrolledCount} participant(s) successfully.${res.alreadyEnrolledCount ? ` (${res.alreadyEnrolledCount} already enrolled)` : ""}`,
+        });
+        setSelectedParticipantIds([]);
+        await fetchContests();
+        await loadAvailableParticipants(selectedContest.id);
+      } else {
+        setEnrollBatchMsg({ type: "error", text: res.error || "Batch enrollment failed." });
+      }
+    } catch (err) {
+      console.error(err);
+      setEnrollBatchMsg({ type: "error", text: "Unexpected network error during batch enrollment." });
+    } finally {
+      setIsEnrollingBatch(false);
+    }
+  };
+
+  // Bulk CSV Enrollment
+  const handlePreviewCsv = async () => {
+    if (!selectedContest || !csvText.trim()) return;
+
+    try {
+      setIsPreviewingCsv(true);
+      setBulkCsvResult(null);
+      const res = await previewEnrollmentCsvAction(selectedContest.id, csvText.trim());
+      setCsvPreview(res);
+      if (res.readyCount > 0) {
+        setPreviewDetailTab("READY");
+      } else if (res.invalidCount > 0) {
+        setPreviewDetailTab("INVALID");
+      } else {
+        setPreviewDetailTab("ALREADY_ENROLLED");
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsPreviewingCsv(false);
+    }
+  };
+
+  const handleProcessCsvEnrollment = async () => {
+    if (!selectedContest || !csvText.trim()) return;
+
+    try {
+      setIsUploadingCsv(true);
+      setBulkCsvResult(null);
+      const res = await bulkEnrollParticipantsCsvAction(selectedContest.id, csvText.trim());
+      setBulkCsvResult(res);
+      setCsvPreview(null);
+
+      if (res.success && res.enrolledCount > 0) {
+        await fetchContests();
+        await loadAvailableParticipants(selectedContest.id);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsUploadingCsv(false);
+    }
+  };
+
+  const handleDownloadCsvTemplate = () => {
+    const csvContent =
+      "# EDGE-Arena Contest Participant Enrollment Template\n" +
+      "# INSTRUCTION: Only existing PARTICIPANT accounts created by Admin (via Admin > Participants) can be enrolled.\n" +
+      "# COLUMNS: Email (required if no CandidateId), CandidateId (required if no Email), Notes (optional)\n" +
+      "# You may supply Email, CandidateId, or both (if both are provided, they must match the same account).\n" +
+      "# Replace this line with registered participant records:\n" +
+      "Email,CandidateId,Notes\n";
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "contest_participant_enrollment_template.csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   const handleAssignParticipant = async (e: React.FormEvent) => {
@@ -183,6 +397,7 @@ export default function ContestManagementPage() {
         setAssignName("");
         setAssignMessage(`Enrolled ${res.user?.name} (${res.user?.email}) successfully.`);
         await fetchContests();
+        await loadAvailableParticipants(selectedContest.id);
       } else {
         setAssignMessage(`Error: ${res.error}`);
       }
@@ -198,14 +413,30 @@ export default function ContestManagementPage() {
     setEditId(c.id);
     setEditTitle(c.name);
     setEditTrack(c.track);
-    setEditDescription("");
-    setEditStatus(c.status as any);
+    setEditDescription(c.description || "");
+    setEditStatus(c.status as "DRAFT" | "LIVE" | "COMPLETED" | "ARCHIVED");
+    setEditEnforceSequentialProgress(c.enforceSequentialProgress ?? true);
+    try {
+      if (c.startDateIso) {
+        setEditStartDate(getDhakaDateTimeString(new Date(c.startDateIso)));
+      }
+      if (c.endDateIso) {
+        setEditEndDate(getDhakaDateTimeString(new Date(c.endDateIso)));
+      }
+    } catch {
+      // fallback
+    }
     setIsEditModalOpen(true);
   };
 
   const handleUpdateContest = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editId || !editTitle.trim()) return;
+
+    if (editStartDate && editEndDate && new Date(editEndDate) <= new Date(editStartDate)) {
+      alert("Contest end date and time must be after the start date and time.");
+      return;
+    }
 
     try {
       setIsSubmittingEdit(true);
@@ -214,6 +445,7 @@ export default function ContestManagementPage() {
         track: editTrack.trim(),
         description: editDescription.trim() || undefined,
         status: editStatus,
+        enforceSequentialProgress: editEnforceSequentialProgress,
         ...(editStartDate ? { startDate: new Date(editStartDate).toISOString() } : {}),
         ...(editEndDate ? { endDate: new Date(editEndDate).toISOString() } : {}),
       });
@@ -246,35 +478,62 @@ export default function ContestManagementPage() {
     }
   };
 
-  const handleRemoveParticipant = async (contestId: string, userId: string) => {
-    if (!confirm("Are you sure you want to unenroll this participant from the contest?")) return;
-    try {
-      const res = await removeParticipantAction(contestId, userId);
-      if (res.success) {
-        await fetchContests();
-      } else {
-        alert(`Failed to remove participant: ${res.error}`);
-      }
-    } catch (err) {
-      console.error(err);
-      alert("Error removing participant.");
-    }
+  const handleRemoveParticipant = (contestId: string, participantRecordId: string, participantName?: string) => {
+    setDeleteModalState({
+      isOpen: true,
+      title: "Unenroll Participant",
+      itemDescription: participantName || "Participant Record",
+      warningDetails: "This will remove the candidate from this active contest cohort. Any existing draft answers for this contest will be unlinked.",
+      confirmLabel: "Unenroll Participant",
+      onConfirm: async () => {
+        try {
+          setIsDeletingContest(true);
+          const res = await removeParticipantAction(contestId, participantRecordId);
+          if (res.success) {
+            setDeleteModalState((prev) => ({ ...prev, isOpen: false }));
+            await fetchContests();
+            if (selectedContest?.id === contestId) {
+              await loadAvailableParticipants(contestId);
+            }
+          } else {
+            alert(`Failed to remove participant: ${res.error}`);
+          }
+        } catch (err) {
+          console.error(err);
+          alert("Error removing participant.");
+        } finally {
+          setIsDeletingContest(false);
+        }
+      },
+    });
   };
 
-  const handleDeleteContest = async (contestId: string) => {
-    if (!confirm("Are you sure you want to permanently delete this contest and its curriculum?")) return;
-    try {
-      const res = await deleteContestAction(contestId);
-      if (res.success) {
-        setSelectedContest(null);
-        await fetchContests();
-      } else {
-        alert(`Failed to delete contest: ${res.error}`);
-      }
-    } catch (err) {
-      console.error(err);
-      alert("Error deleting contest.");
-    }
+  const handleDeleteContest = (contestId: string, contestTitle?: string) => {
+    setDeleteModalState({
+      isOpen: true,
+      title: "Delete Contest & Curriculum",
+      itemDescription: contestTitle || "Contest Benchmark",
+      warningDetails: "This will permanently delete this contest, all assessment phases, tasks, questions, rubrics, and enrolled participant submissions. This action cannot be reversed.",
+      confirmLabel: "Delete Contest",
+      onConfirm: async () => {
+        try {
+          setIsDeletingContest(true);
+          const res = await deleteContestAction(contestId);
+          if (res.success) {
+            setDeleteModalState((prev) => ({ ...prev, isOpen: false }));
+            setSelectedContest(null);
+            await fetchContests();
+          } else {
+            alert(`Failed to delete contest: ${res.error}`);
+          }
+        } catch (err) {
+          console.error(err);
+          alert("Error deleting contest.");
+        } finally {
+          setIsDeletingContest(false);
+        }
+      },
+    });
   };
 
   return (
@@ -321,7 +580,7 @@ export default function ContestManagementPage() {
             <span>Refresh</span>
           </button>
           <button
-            onClick={() => setIsCreateModalOpen(true)}
+            onClick={openCreateModal}
             className="h-10 px-space-md bg-primary-container hover:bg-[#166534] text-on-primary rounded shadow-2xs flex items-center gap-space-xs font-label-md font-medium transition-all active:scale-[0.98]"
           >
             <span className="material-symbols-outlined text-[18px]">add</span>
@@ -691,25 +950,29 @@ export default function ContestManagementPage() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="font-label-xs text-secondary uppercase font-semibold block mb-1">
-                    Start Date
+                    Start Date & Time (Asia/Dhaka) *
                   </label>
                   <input
                     type="datetime-local"
+                    required
                     value={newStartDate}
                     onChange={(e) => setNewStartDate(e.target.value)}
                     className="w-full px-2.5 py-1.5 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface font-label-xs focus:outline-none focus:border-primary-container"
                   />
+                  <span className="text-[10px] text-secondary mt-0.5 block">Defaults to current time</span>
                 </div>
                 <div>
                   <label className="font-label-xs text-secondary uppercase font-semibold block mb-1">
-                    End Date / Deadline
+                    End Date & Time (Asia/Dhaka) *
                   </label>
                   <input
                     type="datetime-local"
+                    required
                     value={newEndDate}
                     onChange={(e) => setNewEndDate(e.target.value)}
                     className="w-full px-2.5 py-1.5 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface font-label-xs focus:outline-none focus:border-primary-container"
                   />
+                  <span className="text-[10px] text-secondary mt-0.5 block">Must be after start time</span>
                 </div>
               </div>
 
@@ -739,6 +1002,23 @@ export default function ContestManagementPage() {
                     <span>Draft</span>
                   </label>
                 </div>
+              </div>
+
+              <div className="p-3 rounded-lg bg-surface-container-low border border-[#e2e8f0] flex items-center justify-between gap-3">
+                <div className="flex flex-col">
+                  <span className="font-label-xs font-semibold uppercase text-secondary">
+                    Sequential Progression
+                  </span>
+                  <span className="text-xs text-on-surface">
+                    Enforce Sequential Progression (Lock upcoming units until current is completed)
+                  </span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={newEnforceSequentialProgress}
+                  onChange={(e) => setNewEnforceSequentialProgress(e.target.checked)}
+                  className="w-4 h-4 text-primary-container accent-[#15803d] rounded cursor-pointer shrink-0"
+                />
               </div>
 
               <div className="flex items-center justify-end gap-3 pt-4 border-t border-[#e2e8f0]">
@@ -781,7 +1061,12 @@ export default function ContestManagementPage() {
                 <div className="flex items-center gap-space-xs flex-wrap">
                   <select
                     value={selectedContest.status}
-                    onChange={(e) => handleChangeStatus(selectedContest.id, e.target.value as any)}
+                    onChange={(e) =>
+                      handleChangeStatus(
+                        selectedContest.id,
+                        e.target.value as "DRAFT" | "LIVE" | "COMPLETED" | "ARCHIVED"
+                      )
+                    }
                     className="px-2 py-0.5 rounded bg-surface-container font-label-xs font-semibold text-on-surface border border-[#e2e8f0] focus:outline-none"
                     title="Change Contest Lifecycle Status"
                   >
@@ -841,46 +1126,525 @@ export default function ContestManagementPage() {
                 </div>
               </div>
 
-              {/* Assign Participant Section */}
-              <div className="bg-surface-container-low p-4 rounded-lg border border-[#e2e8f0] my-2">
-                <span className="font-label-xs uppercase tracking-wider text-secondary font-semibold flex items-center gap-1.5 mb-2">
-                  <span className="material-symbols-outlined text-[16px] text-primary-container">person_add</span>
-                  Assign Participant to Contest
-                </span>
-                <form onSubmit={handleAssignParticipant} className="flex flex-col gap-2">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <input
-                      type="email"
-                      required
-                      value={assignEmail}
-                      onChange={(e) => setAssignEmail(e.target.value)}
-                      placeholder="Candidate Email (e.g. user@acme.edu)"
-                      className="px-2.5 py-1.5 rounded bg-surface-container-lowest border border-[#e2e8f0] font-label-xs text-on-surface focus:outline-none focus:border-primary-container"
-                    />
-                    <input
-                      type="text"
-                      value={assignName}
-                      onChange={(e) => setAssignName(e.target.value)}
-                      placeholder="Candidate Name (Optional)"
-                      className="px-2.5 py-1.5 rounded bg-surface-container-lowest border border-[#e2e8f0] font-label-xs text-on-surface focus:outline-none focus:border-primary-container"
-                    />
+              {/* Sequential Progression Quick Toggle */}
+              <div className="flex items-center justify-between p-3 rounded-lg bg-surface-container-low border border-[#e2e8f0] my-2">
+                <div className="flex items-center gap-2.5">
+                  <span className="material-symbols-outlined text-[18px] text-secondary">
+                    {selectedContest.enforceSequentialProgress ? "lock" : "lock_open"}
+                  </span>
+                  <div className="flex flex-col">
+                    <span className="text-xs font-semibold text-on-surface">
+                      {selectedContest.enforceSequentialProgress
+                        ? "Sequential Progression Enforced"
+                        : "Flexible Progression (All Units Open)"}
+                    </span>
+                    <span className="text-[10px] text-secondary">
+                      {selectedContest.enforceSequentialProgress
+                        ? "Upcoming units are locked until preceding units are completed"
+                        : "Candidates can jump freely between any phase and unit"}
+                    </span>
                   </div>
-                  <div className="flex items-center justify-between gap-2">
-                    {assignMessage && (
-                      <span className="font-label-xs text-primary-container truncate">{assignMessage}</span>
-                    )}
+                </div>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const nextVal = !selectedContest.enforceSequentialProgress;
+                    const res = await updateContestAction(selectedContest.id, { enforceSequentialProgress: nextVal });
+                    if (res.success) {
+                      await fetchContests();
+                    }
+                  }}
+                  className="px-2.5 py-1 rounded text-xs font-semibold border border-[#e2e8f0] bg-surface-container-high hover:bg-surface-container text-on-surface transition-colors cursor-pointer shrink-0"
+                >
+                  {selectedContest.enforceSequentialProgress ? "Disable Lock" : "Enable Lock"}
+                </button>
+              </div>
+
+              {/* Participant Enrollment Hub */}
+              <div className="bg-surface-container-low p-4 rounded-lg border border-[#e2e8f0] my-2">
+                <div className="flex items-center justify-between mb-3">
+                  <span className="font-label-xs uppercase tracking-wider text-secondary font-semibold flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-[16px] text-primary-container">group_add</span>
+                    Participant Enrollment
+                  </span>
+                  {/* Tab switcher */}
+                  <div className="flex items-center bg-surface-container p-0.5 rounded border border-[#e2e8f0]">
                     <button
-                      type="submit"
-                      disabled={isAssigning}
-                      className="ml-auto px-3 py-1.5 rounded bg-primary-container hover:bg-[#166534] text-on-primary font-label-xs font-medium transition-colors flex items-center gap-1"
+                      type="button"
+                      onClick={() => setEnrollTab("SELECT")}
+                      className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                        enrollTab === "SELECT"
+                          ? "bg-surface-container-lowest text-on-surface font-semibold shadow-2xs"
+                          : "text-secondary hover:text-on-surface"
+                      }`}
                     >
-                      {isAssigning && (
-                        <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
-                      )}
-                      <span>Enroll Candidate</span>
+                      Search & Select {selectedParticipantIds.length > 0 && `(${selectedParticipantIds.length})`}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEnrollTab("CSV")}
+                      className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                        enrollTab === "CSV"
+                          ? "bg-surface-container-lowest text-on-surface font-semibold shadow-2xs"
+                          : "text-secondary hover:text-on-surface"
+                      }`}
+                    >
+                      Bulk CSV
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEnrollTab("SINGLE")}
+                      className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                        enrollTab === "SINGLE"
+                          ? "bg-surface-container-lowest text-on-surface font-semibold shadow-2xs"
+                          : "text-secondary hover:text-on-surface"
+                      }`}
+                    >
+                      Single Account
                     </button>
                   </div>
-                </form>
+                </div>
+
+                {/* TAB 1: Search & Multi-Select */}
+                {enrollTab === "SELECT" && (
+                  <div className="flex flex-col gap-2.5">
+                    {/* Search and Quick Selection Actions */}
+                    <div className="flex items-center gap-2">
+                      <div className="relative flex-1">
+                        <span className="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-[16px] text-secondary">
+                          search
+                        </span>
+                        <input
+                          type="text"
+                          value={participantSearch}
+                          onChange={(e) => setParticipantSearch(e.target.value)}
+                          placeholder="Search participants by name, email, or candidate ID..."
+                          className="w-full pl-8 pr-2.5 py-1.5 rounded bg-surface-container-lowest border border-[#e2e8f0] font-label-xs text-on-surface focus:outline-none focus:border-primary-container"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleSelectAllEligible}
+                        className="px-2 py-1.5 rounded bg-surface-container hover:bg-surface-container-high border border-[#e2e8f0] text-secondary hover:text-on-surface text-[11px] font-medium whitespace-nowrap cursor-pointer"
+                        title="Select all unenrolled participants in the filtered list"
+                      >
+                        Select All
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleClearSelection}
+                        disabled={selectedParticipantIds.length === 0}
+                        className="px-2 py-1.5 rounded bg-surface-container hover:bg-surface-container-high border border-[#e2e8f0] text-secondary hover:text-on-surface text-[11px] font-medium whitespace-nowrap disabled:opacity-50 cursor-pointer"
+                      >
+                        Clear
+                      </button>
+                    </div>
+
+                    {/* Participant Checklist */}
+                    <div className="max-h-52 overflow-y-auto rounded border border-[#e2e8f0] bg-surface-container-lowest divide-y divide-[#f1f5f9]">
+                      {availableParticipants.length === 0 ? (
+                        <div className="p-3 text-center text-secondary text-xs">
+                          No participant accounts found in the database.
+                        </div>
+                      ) : (
+                        availableParticipants
+                          .filter((p) => {
+                            const query = participantSearch.toLowerCase();
+                            return (
+                              p.name.toLowerCase().includes(query) ||
+                              p.email.toLowerCase().includes(query) ||
+                              (p.candidateId && p.candidateId.toLowerCase().includes(query))
+                            );
+                          })
+                          .map((p) => {
+                            const isSelected = selectedParticipantIds.includes(p.id);
+                            return (
+                              <label
+                                key={p.id}
+                                className={`flex items-center justify-between p-2 text-xs transition-colors cursor-pointer ${
+                                  p.isEnrolled
+                                    ? "bg-surface-container-low/50 opacity-70 cursor-not-allowed"
+                                    : isSelected
+                                    ? "bg-primary-container/10"
+                                    : "hover:bg-surface-container-low"
+                                }`}
+                              >
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                  <input
+                                    type="checkbox"
+                                    disabled={p.isEnrolled}
+                                    checked={p.isEnrolled || isSelected}
+                                    onChange={() => !p.isEnrolled && handleToggleParticipant(p.id)}
+                                    className="w-4 h-4 rounded text-primary-container accent-primary-container cursor-pointer disabled:cursor-not-allowed"
+                                  />
+                                  <div className="flex flex-col min-w-0">
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="font-semibold text-on-surface truncate">{p.name}</span>
+                                      {p.candidateId && (
+                                        <span className="px-1.5 py-0.2 rounded bg-surface-container text-secondary text-[10px] font-mono">
+                                          {p.candidateId}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <span className="text-secondary text-[11px] truncate">{p.email}</span>
+                                  </div>
+                                </div>
+                                <div>
+                                  {p.isEnrolled ? (
+                                    <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold uppercase">
+                                      Enrolled
+                                    </span>
+                                  ) : isSelected ? (
+                                    <span className="px-2 py-0.5 rounded-full bg-primary-container/20 text-primary-container text-[10px] font-semibold">
+                                      Selected
+                                    </span>
+                                  ) : (
+                                    <span className="text-[10px] text-secondary">Eligible</span>
+                                  )}
+                                </div>
+                              </label>
+                            );
+                          })
+                      )}
+                    </div>
+
+                    {/* Feedback and Batch Enroll Action */}
+                    <div className="flex items-center justify-between pt-1">
+                      {enrollBatchMsg ? (
+                        <span
+                          className={`text-xs font-medium ${
+                            enrollBatchMsg.type === "success" ? "text-emerald-700" : "text-error"
+                          }`}
+                        >
+                          {enrollBatchMsg.text}
+                        </span>
+                      ) : (
+                        <span className="text-[11px] text-secondary">
+                          {selectedParticipantIds.length} candidate(s) selected
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        disabled={selectedParticipantIds.length === 0 || isEnrollingBatch}
+                        onClick={handleBatchEnroll}
+                        className="px-3.5 py-1.5 rounded bg-primary-container hover:bg-[#166534] text-on-primary font-label-xs font-semibold shadow-2xs flex items-center gap-1.5 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                      >
+                        {isEnrollingBatch && (
+                          <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                        )}
+                        <span>Enroll Selected ({selectedParticipantIds.length})</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* TAB 2: Bulk CSV Upload */}
+                {enrollTab === "CSV" && (
+                  <div className="flex flex-col gap-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex flex-col gap-1">
+                        <p className="text-[11px] text-secondary leading-tight">
+                          Upload or paste a CSV file to enroll participants. <strong className="text-on-surface">Only existing PARTICIPANT accounts</strong> created by Admin in the Participants Directory can be enrolled.
+                        </p>
+                        <p className="text-[10px] text-secondary">
+                          Columns: <code className="bg-surface-container-high px-1 py-0.5 rounded font-mono text-[10px]">Email</code>, <code className="bg-surface-container-high px-1 py-0.5 rounded font-mono text-[10px]">CandidateId</code>, <code className="bg-surface-container-high px-1 py-0.5 rounded font-mono text-[10px]">Notes</code> (optional). Supply Email, CandidateId, or both.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleDownloadCsvTemplate}
+                        className="px-2.5 py-1 rounded bg-surface-container hover:bg-surface-container-high border border-[#e2e8f0] text-secondary hover:text-on-surface text-[11px] font-medium flex items-center gap-1 whitespace-nowrap cursor-pointer shrink-0"
+                      >
+                        <span className="material-symbols-outlined text-[14px]">download</span>
+                        Template
+                      </button>
+                    </div>
+
+                    <textarea
+                      rows={4}
+                      value={csvText}
+                      onChange={(e) => {
+                        setCsvText(e.target.value);
+                        setCsvPreview(null);
+                        setBulkCsvResult(null);
+                      }}
+                      placeholder={`Email,CandidateId,Notes\n# Example with real accounts (replace with existing participants):\nalice@campus.edu,ACI-1001,Leadership Track\nbob@campus.edu,,Operations Track\n,ACI-2002,`}
+                      className="w-full px-3 py-2 rounded bg-surface-container-lowest border border-[#e2e8f0] text-on-surface font-mono text-xs focus:outline-none focus:border-primary-container resize-none"
+                    />
+
+                    {/* Action buttons bar */}
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="text-[11px] text-secondary flex items-center gap-1 cursor-pointer hover:text-on-surface">
+                        <span className="material-symbols-outlined text-[16px]">upload_file</span>
+                        <span>Choose CSV file</span>
+                        <input
+                          type="file"
+                          accept=".csv,text/csv"
+                          className="hidden"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) {
+                              const reader = new FileReader();
+                              reader.onload = (evt) => {
+                                const content = evt.target?.result;
+                                if (typeof content === "string") {
+                                  setCsvText(content);
+                                  setCsvPreview(null);
+                                  setBulkCsvResult(null);
+                                }
+                              };
+                              reader.readAsText(file);
+                            }
+                          }}
+                        />
+                      </label>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={!csvText.trim() || isPreviewingCsv || isUploadingCsv}
+                          onClick={handlePreviewCsv}
+                          className="px-3 py-1.5 rounded bg-surface-container hover:bg-surface-container-high border border-[#e2e8f0] text-on-surface font-label-xs font-semibold shadow-2xs flex items-center gap-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                        >
+                          {isPreviewingCsv ? (
+                            <span className="w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin"></span>
+                          ) : (
+                            <span className="material-symbols-outlined text-[14px]">preview</span>
+                          )}
+                          <span>Preview CSV</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={!csvText.trim() || isUploadingCsv || isPreviewingCsv}
+                          onClick={handleProcessCsvEnrollment}
+                          className="px-3.5 py-1.5 rounded bg-primary-container hover:bg-[#166534] text-on-primary font-label-xs font-semibold shadow-2xs flex items-center gap-1.5 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                        >
+                          {isUploadingCsv && (
+                            <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                          )}
+                          <span>Enroll CSV</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* CSV Pre-Enrollment Preview Card */}
+                    {csvPreview && (
+                      <div className="p-3 rounded border border-primary/20 bg-primary/5 flex flex-col gap-2.5 text-xs">
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-on-surface text-xs flex items-center gap-1">
+                            <span className="material-symbols-outlined text-[15px] text-primary">fact_check</span>
+                            Enrollment Preview
+                          </span>
+                          {csvPreview.readyCount > 0 && (
+                            <button
+                              type="button"
+                              disabled={isUploadingCsv}
+                              onClick={handleProcessCsvEnrollment}
+                              className="px-2.5 py-1 rounded bg-primary-container hover:bg-[#166534] text-on-primary font-label-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
+                            >
+                              {isUploadingCsv && (
+                                <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                              )}
+                              <span>Enroll Matched ({csvPreview.readyCount})</span>
+                            </button>
+                          )}
+                        </div>
+
+                        {csvPreview.error && (
+                          <div className="p-2 bg-rose-50 border border-rose-200 text-rose-700 rounded text-[11px]">
+                            {csvPreview.error}
+                          </div>
+                        )}
+
+                        <div className="grid grid-cols-4 gap-2 text-center">
+                          <div className="p-1.5 bg-surface-container-low rounded border border-[#e2e8f0]">
+                            <span className="text-[10px] text-secondary block">Total Rows</span>
+                            <span className="font-bold text-on-surface">{csvPreview.totalRows}</span>
+                          </div>
+                          <div
+                            onClick={() => setPreviewDetailTab("READY")}
+                            className={`p-1.5 rounded border cursor-pointer transition-all ${
+                              previewDetailTab === "READY"
+                                ? "bg-emerald-100 border-emerald-400 ring-1 ring-emerald-400"
+                                : "bg-emerald-50 border-emerald-200"
+                            }`}
+                          >
+                            <span className="text-[10px] text-emerald-800 block">Ready to Enroll</span>
+                            <span className="font-bold text-emerald-700">{csvPreview.readyCount}</span>
+                          </div>
+                          <div
+                            onClick={() => setPreviewDetailTab("ALREADY_ENROLLED")}
+                            className={`p-1.5 rounded border cursor-pointer transition-all ${
+                              previewDetailTab === "ALREADY_ENROLLED"
+                                ? "bg-amber-100 border-amber-400 ring-1 ring-amber-400"
+                                : "bg-amber-50 border-amber-200"
+                            }`}
+                          >
+                            <span className="text-[10px] text-amber-800 block">Already Enrolled</span>
+                            <span className="font-bold text-amber-700">{csvPreview.alreadyEnrolledCount}</span>
+                          </div>
+                          <div
+                            onClick={() => setPreviewDetailTab("INVALID")}
+                            className={`p-1.5 rounded border cursor-pointer transition-all ${
+                              previewDetailTab === "INVALID"
+                                ? "bg-rose-100 border-rose-400 ring-1 ring-rose-400"
+                                : "bg-rose-50 border-rose-200"
+                            }`}
+                          >
+                            <span className="text-[10px] text-rose-800 block">Invalid</span>
+                            <span className="font-bold text-rose-700">{csvPreview.invalidCount}</span>
+                          </div>
+                        </div>
+
+                        {/* Interactive Preview Details List */}
+                        <div className="max-h-36 overflow-y-auto space-y-1 text-[11px] pt-1">
+                          {previewDetailTab === "READY" && (
+                            <>
+                              {csvPreview.ready.length === 0 ? (
+                                <p className="text-secondary italic text-center py-2 text-[11px]">No rows ready for new enrollment.</p>
+                              ) : (
+                                csvPreview.ready.map((r, idx) => (
+                                  <div key={`ready-${idx}`} className="flex items-center justify-between p-1 rounded bg-white border border-emerald-100 text-emerald-900">
+                                    <span className="font-medium">
+                                      Row {r.row}: {r.name || r.identifier}
+                                    </span>
+                                    <span className="text-[10px] text-secondary">
+                                      {r.email} {r.candidateId ? `· ${r.candidateId}` : ""}
+                                    </span>
+                                  </div>
+                                ))
+                              )}
+                            </>
+                          )}
+
+                          {previewDetailTab === "ALREADY_ENROLLED" && (
+                            <>
+                              {csvPreview.alreadyEnrolled.length === 0 ? (
+                                <p className="text-secondary italic text-center py-2 text-[11px]">No duplicate or already-enrolled participants.</p>
+                              ) : (
+                                csvPreview.alreadyEnrolled.map((s, idx) => (
+                                  <div key={`already-${idx}`} className="flex items-center justify-between p-1 rounded bg-white border border-amber-100 text-amber-800">
+                                    <span className="truncate">Row {s.row}: {s.name || s.identifier}</span>
+                                    <span className="text-[10px] font-medium shrink-0 ml-2">{s.reason}</span>
+                                  </div>
+                                ))
+                              )}
+                            </>
+                          )}
+
+                          {previewDetailTab === "INVALID" && (
+                            <>
+                              {csvPreview.invalid.length === 0 ? (
+                                <p className="text-secondary italic text-center py-2 text-[11px]">Zero invalid rows detected.</p>
+                              ) : (
+                                csvPreview.invalid.map((inv, idx) => (
+                                  <div key={`inv-${idx}`} className="flex items-start justify-between p-1 rounded bg-white border border-rose-100 text-rose-700 gap-2">
+                                    <span className="font-medium shrink-0">Row {inv.row}: {inv.identifier}</span>
+                                    <span className="text-[10px] text-right">{inv.reason}</span>
+                                  </div>
+                                ))
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* CSV Summary Report Card */}
+                    {bulkCsvResult && (
+                      <div className="p-3 rounded border border-[#e2e8f0] bg-surface-container-lowest flex flex-col gap-2 text-xs">
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-on-surface text-xs flex items-center gap-1">
+                            <span className="material-symbols-outlined text-[15px] text-primary-container">task_alt</span>
+                            Enrollment Results
+                          </span>
+                          <span className="text-[11px] text-secondary">
+                            {bulkCsvResult.enrolledCount > 0 ? "Enrollment completed" : "No new accounts enrolled"}
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-4 gap-2 text-center">
+                          <div className="p-1.5 bg-surface-container-low rounded border border-[#e2e8f0]">
+                            <span className="text-[10px] text-secondary block">Total Rows</span>
+                            <span className="font-bold text-on-surface">{bulkCsvResult.totalRows}</span>
+                          </div>
+                          <div className="p-1.5 bg-emerald-50 rounded border border-emerald-200">
+                            <span className="text-[10px] text-emerald-800 block">Enrolled</span>
+                            <span className="font-bold text-emerald-700">{bulkCsvResult.enrolledCount}</span>
+                          </div>
+                          <div className="p-1.5 bg-amber-50 rounded border border-amber-200">
+                            <span className="text-[10px] text-amber-800 block">Skipped</span>
+                            <span className="font-bold text-amber-700">{bulkCsvResult.skippedCount}</span>
+                          </div>
+                          <div className="p-1.5 bg-rose-50 rounded border border-rose-200">
+                            <span className="text-[10px] text-rose-800 block">Invalid</span>
+                            <span className="font-bold text-rose-700">{bulkCsvResult.invalidCount}</span>
+                          </div>
+                        </div>
+
+                        {/* Details of skipped / invalid rows */}
+                        {(bulkCsvResult.skipped.length > 0 || bulkCsvResult.invalid.length > 0) && (
+                          <div className="max-h-28 overflow-y-auto space-y-1 text-[11px] pt-1">
+                            {bulkCsvResult.skipped.map((s, idx) => (
+                              <div key={`skip-${idx}`} className="flex items-center justify-between text-amber-700">
+                                <span className="truncate">Row {s.row} ({s.identifier})</span>
+                                <span className="font-medium text-[10px]">{s.reason}</span>
+                              </div>
+                            ))}
+                            {bulkCsvResult.invalid.map((inv, idx) => (
+                              <div key={`inv-${idx}`} className="flex items-center justify-between text-rose-700">
+                                <span className="truncate">Row {inv.row} ({inv.identifier})</span>
+                                <span className="font-medium text-[10px]">{inv.reason}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* TAB 3: Single Quick Assign */}
+                {enrollTab === "SINGLE" && (
+                  <form onSubmit={handleAssignParticipant} className="flex flex-col gap-2">
+                    <p className="text-[11px] text-secondary">
+                      Enroll an existing participant account directly by entering their registered email.
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <input
+                        type="email"
+                        required
+                        value={assignEmail}
+                        onChange={(e) => setAssignEmail(e.target.value)}
+                        placeholder="Candidate Email (e.g. user@acme.edu)"
+                        className="px-2.5 py-1.5 rounded bg-surface-container-lowest border border-[#e2e8f0] font-label-xs text-on-surface focus:outline-none focus:border-primary-container"
+                      />
+                      <input
+                        type="text"
+                        value={assignName}
+                        onChange={(e) => setAssignName(e.target.value)}
+                        placeholder="Candidate Name (Optional)"
+                        className="px-2.5 py-1.5 rounded bg-surface-container-lowest border border-[#e2e8f0] font-label-xs text-on-surface focus:outline-none focus:border-primary-container"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      {assignMessage && (
+                        <span className="font-label-xs text-primary-container truncate">{assignMessage}</span>
+                      )}
+                      <button
+                        type="submit"
+                        disabled={isAssigning}
+                        className="ml-auto px-3.5 py-1.5 rounded bg-primary-container hover:bg-[#166534] text-on-primary font-label-xs font-semibold transition-colors flex items-center gap-1 cursor-pointer"
+                      >
+                        {isAssigning && (
+                          <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                        )}
+                        <span>Enroll Candidate</span>
+                      </button>
+                    </div>
+                  </form>
+                )}
               </div>
 
               {/* Enrolled Participants List */}
@@ -906,8 +1670,8 @@ export default function ContestManagementPage() {
                             {p.status}
                           </span>
                           <button
-                            onClick={() => handleRemoveParticipant(selectedContest.id, p.id)}
-                            className="p-1 text-secondary hover:text-error hover:bg-error/10 rounded transition-colors"
+                            onClick={() => handleRemoveParticipant(selectedContest.id, p.id, p.name)}
+                            className="p-1 text-secondary hover:text-error hover:bg-error/10 rounded transition-colors cursor-pointer"
                             title="Unenroll participant"
                           >
                             <span className="material-symbols-outlined text-[16px]">person_remove</span>
@@ -1092,7 +1856,7 @@ export default function ContestManagementPage() {
             {/* Drawer Footer Actions */}
             <div className="pt-space-md flex items-center justify-between border-t border-[#f1f5f9]">
               <button
-                onClick={() => handleDeleteContest(selectedContest.id)}
+                onClick={() => handleDeleteContest(selectedContest.id, selectedContest.name)}
                 className="px-3 py-1.5 rounded text-error hover:bg-error/10 font-label-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
               >
                 <span className="material-symbols-outlined text-[16px]">delete</span>
@@ -1177,7 +1941,9 @@ export default function ContestManagementPage() {
                 </label>
                 <select
                   value={editStatus}
-                  onChange={(e) => setEditStatus(e.target.value as any)}
+                  onChange={(e) =>
+                    setEditStatus(e.target.value as "DRAFT" | "LIVE" | "COMPLETED" | "ARCHIVED")
+                  }
                   className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface font-body-sm focus:outline-none"
                 >
                   <option value="DRAFT">DRAFT</option>
@@ -1186,6 +1952,51 @@ export default function ContestManagementPage() {
                   <option value="ARCHIVED">ARCHIVED</option>
                 </select>
               </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-label-xs text-secondary uppercase font-semibold block mb-1">
+                    Start Date & Time (Asia/Dhaka)
+                  </label>
+                  <input
+                    type="datetime-local"
+                    value={editStartDate}
+                    onChange={(e) => setEditStartDate(e.target.value)}
+                    className="w-full px-2.5 py-1.5 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface font-label-xs focus:outline-none focus:border-primary-container"
+                  />
+                  <span className="text-[10px] text-secondary mt-0.5 block">Asia/Dhaka time (UTC+6)</span>
+                </div>
+                <div>
+                  <label className="font-label-xs text-secondary uppercase font-semibold block mb-1">
+                    End Date & Time (Asia/Dhaka)
+                  </label>
+                  <input
+                    type="datetime-local"
+                    value={editEndDate}
+                    onChange={(e) => setEditEndDate(e.target.value)}
+                    className="w-full px-2.5 py-1.5 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface font-label-xs focus:outline-none focus:border-primary-container"
+                  />
+                  <span className="text-[10px] text-secondary mt-0.5 block">Participant timers auto-adjust</span>
+                </div>
+              </div>
+
+              <div className="p-3 rounded-lg bg-surface-container-low border border-[#e2e8f0] flex items-center justify-between gap-3">
+                <div className="flex flex-col">
+                  <span className="font-label-xs font-semibold uppercase text-secondary">
+                    Sequential Progression
+                  </span>
+                  <span className="text-xs text-on-surface">
+                    Enforce Sequential Progression (Lock upcoming units until current is completed)
+                  </span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={editEnforceSequentialProgress}
+                  onChange={(e) => setEditEnforceSequentialProgress(e.target.checked)}
+                  className="w-4 h-4 text-primary-container accent-[#15803d] rounded cursor-pointer shrink-0"
+                />
+              </div>
+
               <div className="flex items-center justify-end gap-3 pt-4 border-t border-[#e2e8f0]">
                 <button
                   type="button"
@@ -1206,6 +2017,18 @@ export default function ContestManagementPage() {
           </div>
         </div>
       )}
+
+      {/* Universal Delete Confirmation Modal */}
+      <DeleteConfirmationModal
+        isOpen={deleteModalState.isOpen}
+        title={deleteModalState.title}
+        itemDescription={deleteModalState.itemDescription}
+        warningDetails={deleteModalState.warningDetails}
+        confirmLabel={deleteModalState.confirmLabel}
+        isDeleting={isDeletingContest}
+        onConfirm={deleteModalState.onConfirm}
+        onClose={() => setDeleteModalState((prev) => ({ ...prev, isOpen: false }))}
+      />
     </div>
   );
 }

@@ -11,7 +11,7 @@
  */
 
 import { prisma } from "@/lib/prisma";
-import { requireRole, requireSession } from "@/lib/auth";
+import { Prisma } from "@prisma/client";
 
 export interface ContestMonitoringSettings {
   cameraEnabled: boolean;
@@ -91,7 +91,7 @@ export async function getContestMonitoringSettings(
       return { ...DEFAULT_MONITORING_SETTINGS };
     }
 
-    const meta = record.metadata as any;
+    const meta = record.metadata as Record<string, unknown>;
     return {
       cameraEnabled: Boolean(meta.cameraEnabled),
       micEnabled: Boolean(meta.micEnabled),
@@ -99,7 +99,7 @@ export async function getContestMonitoringSettings(
       tabSwitchEnabled: meta.tabSwitchEnabled !== undefined ? Boolean(meta.tabSwitchEnabled) : true,
       liveScreenShareEnabled: Boolean(meta.liveScreenShareEnabled),
       liveWebcamEnabled: Boolean(meta.liveWebcamEnabled),
-      noticeText: meta.noticeText || DEFAULT_MONITORING_SETTINGS.noticeText,
+      noticeText: (meta.noticeText as string) || DEFAULT_MONITORING_SETTINGS.noticeText,
       updatedAt: record.createdAt.toISOString(),
     };
   } catch (err) {
@@ -130,12 +130,14 @@ export async function saveContestMonitoringSettings(
     },
   });
 
+  const jsonMetadata = updated as unknown as Prisma.InputJsonValue;
+
   if (existing) {
     await prisma.auditLog.update({
       where: { id: existing.id },
       data: {
         actorId: adminUserId,
-        metadata: updated as any,
+        metadata: jsonMetadata,
       },
     });
   } else {
@@ -145,7 +147,7 @@ export async function saveContestMonitoringSettings(
         targetType: "CONTEST_MONITORING_SETTINGS",
         targetId: contestId,
         actorId: adminUserId,
-        metadata: updated as any,
+        metadata: jsonMetadata,
       },
     });
   }

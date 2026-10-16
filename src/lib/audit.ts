@@ -1,11 +1,12 @@
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@prisma/client";
 
 export interface LogAuditInput {
   actorId?: string;
   action: string;
   targetType: string;
   targetId: string;
-  metadata?: Record<string, any>;
+  metadata?: Prisma.InputJsonValue;
   ipAddress?: string;
 }
 

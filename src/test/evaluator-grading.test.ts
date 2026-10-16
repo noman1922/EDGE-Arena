@@ -17,6 +17,12 @@ import {
   publishContestResultsAction,
 } from "../app/actions/evaluator-actions";
 
+import {
+  createPhaseAction,
+  createTaskAction,
+  createQuestionAction,
+} from "../app/actions/task-builder-actions";
+
 describe("Evaluator Rubric Scoring & Admin Publishing Tests", () => {
   const testCandidateEmail = "candidate.eval.test@example.com";
   const testEvaluatorEmail = "evaluator.panel.test@example.com";
@@ -29,7 +35,7 @@ describe("Evaluator Rubric Scoring & Admin Publishing Tests", () => {
   let candidateSession: SessionPayload;
 
   before(async () => {
-    // 1. Setup Admin & Evaluator accounts in DB
+    // 1. Setup Admin, Evaluator, and Candidate accounts in DB
     const adminUser = await prisma.user.upsert({
       where: { email: testAdminEmail },
       update: {},
@@ -52,6 +58,18 @@ describe("Evaluator Rubric Scoring & Admin Publishing Tests", () => {
       },
     });
 
+    const candidateUser = await prisma.user.upsert({
+      where: { email: testCandidateEmail },
+      update: {},
+      create: {
+        id: crypto.randomUUID(),
+        email: testCandidateEmail,
+        name: "Rubric Test Candidate",
+        role: "PARTICIPANT",
+        candidateId: "CAND-EVAL-001",
+      },
+    });
+
     adminSession = {
       userId: adminUser.id,
       email: adminUser.email,
@@ -70,7 +88,16 @@ describe("Evaluator Rubric Scoring & Admin Publishing Tests", () => {
       expiresAt: Date.now() + 3600000,
     };
 
-    // 2. Admin creates contest and assigns candidate
+    candidateSession = {
+      userId: candidateUser.id,
+      email: testCandidateEmail,
+      role: "PARTICIPANT",
+      name: "Rubric Test Candidate",
+      issuedAt: Date.now(),
+      expiresAt: Date.now() + 3600000,
+    };
+
+    // 2. Admin creates contest
     setTestSession(adminSession);
     const contestRes = await createContestAction({
       title: "Evaluator Rubric Verification Contest",
@@ -82,20 +109,68 @@ describe("Evaluator Rubric Scoring & Admin Publishing Tests", () => {
 
     contestId = contestRes.contestId!;
 
-    const assignRes = await assignParticipantAction(contestId, testCandidateEmail, "Rubric Test Candidate");
+    // Create Phase & Task & Questions
+    const phaseRes = await createPhaseAction({
+      contestId,
+      phaseNumber: 1,
+      title: "Phase 1: Operational Diagnostic",
+      deadline: new Date(Date.now() + 5 * 24 * 3600 * 1000).toISOString(),
+    });
+    const taskRes = await createTaskAction({
+      phaseId: phaseRes.phaseId!,
+      taskNumber: 1,
+      title: "Operational Proposal",
+      totalPoints: 100,
+    });
+    const mcqRes = await createQuestionAction({
+      taskId: taskRes.taskId!,
+      type: "MCQ",
+      questionNumber: 1,
+      prompt: "What is the primary optimization goal?",
+      points: 20,
+      options: [
+        { optionKey: "A", text: "Cost Reduction" },
+        { optionKey: "B", text: "Latency Improvement" },
+      ],
+      correctOptionKey: "A",
+      explanation: "Cost reduction is primary.",
+    });
+    const writtenRes = await createQuestionAction({
+      taskId: taskRes.taskId!,
+      type: "WRITTEN",
+      questionNumber: 2,
+      prompt: "Detail your sustainability proposal.",
+      points: 80,
+      minWords: 50,
+      maxWords: 500,
+    });
 
-    candidateSession = {
-      userId: assignRes.user!.id,
-      email: testCandidateEmail,
-      role: "PARTICIPANT",
-      name: "Rubric Test Candidate",
-      issuedAt: Date.now(),
-      expiresAt: Date.now() + 3600000,
-    };
+    // Create Rubric Criteria for evaluator scoring
+    await prisma.rubricCriterion.create({
+      data: {
+        taskId: taskRes.taskId!,
+        name: "Strategic Depth & Analysis",
+        description: "Analytical Rigour",
+        maxPoints: 50,
+        weightPercentage: 50,
+      },
+    });
+    await prisma.rubricCriterion.create({
+      data: {
+        taskId: taskRes.taskId!,
+        name: "Implementation Feasibility",
+        description: "Operational Execution",
+        maxPoints: 50,
+        weightPercentage: 50,
+      },
+    });
+
+    // Assign candidate
+    await assignParticipantAction(contestId, testCandidateEmail, "Rubric Test Candidate");
 
     // 3. Candidate creates and submits answers
     setTestSession(candidateSession);
-    const assessment = await getTaskAssessmentData();
+    const assessment = await getTaskAssessmentData(contestId, taskRes.taskId!);
     submissionId = assessment.submission.id;
     const mcq = assessment.questions.find((q) => q.type === "MCQ")!;
     const written = assessment.questions.find((q) => q.type === "WRITTEN")!;

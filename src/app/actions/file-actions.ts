@@ -1,6 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { ContestStatus } from "@prisma/client";
 import { requireRole, requireSession } from "@/lib/auth";
 import { checkSubmissionDeadline } from "@/lib/scoring";
 import {
@@ -70,6 +71,7 @@ export async function uploadSubmissionAttachmentAction(
       include: {
         user: true,
         phase: true,
+        contest: true,
       },
     });
 
@@ -84,12 +86,28 @@ export async function uploadSubmissionAttachmentAction(
       };
     }
 
-    if (submission.status === "SUBMITTED") {
+    const isSubmitted =
+      submission.status === "SUBMITTED" ||
+      submission.status === "GRADED" ||
+      submission.status === "PUBLISHED";
+    if (isSubmitted) {
       return { success: false, error: "Assessment has already been finalized and locked." };
     }
 
+    const now = new Date();
+    if (
+      submission.contest.status === ContestStatus.COMPLETED ||
+      submission.contest.status === ContestStatus.ARCHIVED ||
+      now > submission.contest.endDate
+    ) {
+      return { success: false, error: "Contest has concluded. File uploads are locked." };
+    }
+
     // 2. Server-side deadline check (60s network grace period)
-    const deadlineCheck = checkSubmissionDeadline(submission.phase.deadline, new Date(), 60);
+    const effectiveDeadline = new Date(
+      Math.min(submission.phase.deadline.getTime(), submission.contest.endDate.getTime())
+    );
+    const deadlineCheck = checkSubmissionDeadline(effectiveDeadline, now, 60);
     if (!deadlineCheck.isEligible) {
       return { success: false, error: "Assessment cut-off deadline has elapsed. Uploads are locked." };
     }
@@ -145,7 +163,6 @@ export async function uploadSubmissionAttachmentAction(
     uploadedFileKey = uploadResult.fileKey;
 
     // 7. Persist file metadata in database
-    const now = new Date();
     await prisma.submissionAnswer.upsert({
       where: {
         submissionId_questionId: {
@@ -231,7 +248,7 @@ export async function deleteSubmissionAttachmentAction(
 
     const submission = await prisma.submission.findUnique({
       where: { id: submissionId },
-      include: { user: true, phase: true },
+      include: { user: true, phase: true, contest: true },
     });
 
     if (!submission) {
@@ -242,8 +259,21 @@ export async function deleteSubmissionAttachmentAction(
       return { success: false, error: "Forbidden: You cannot modify another candidate's submission." };
     }
 
-    if (submission.status === "SUBMITTED") {
+    const isSubmitted =
+      submission.status === "SUBMITTED" ||
+      submission.status === "GRADED" ||
+      submission.status === "PUBLISHED";
+    if (isSubmitted) {
       return { success: false, error: "Submission has already been finalized." };
+    }
+
+    const now = new Date();
+    if (
+      submission.contest.status === ContestStatus.COMPLETED ||
+      submission.contest.status === ContestStatus.ARCHIVED ||
+      now > submission.contest.endDate
+    ) {
+      return { success: false, error: "Contest has concluded. File modifications are locked." };
     }
 
     const answer = await prisma.submissionAnswer.findUnique({

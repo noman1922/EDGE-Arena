@@ -144,6 +144,7 @@ describe("EDGE-Arena File Handling, Storage Engine & Security Tests", () => {
     let testSubmission: { id: string; taskId: string };
     let testQuestion: { id: string };
     let testFileKey: string | null = null;
+    let testContestId: string | null = null;
 
     before(async () => {
       // 1. Resolve users from DB
@@ -178,41 +179,36 @@ describe("EDGE-Arena File Handling, Storage Engine & Security Tests", () => {
       assert.ok(admin);
       adminUser = { id: admin.id, email: admin.email };
 
-      // 2. Find or create task and update phase deadline to future
-      let task = await prisma.task.findFirst({
+      // 2. Create isolated test contest, phase, and task with future dates
+      const isolatedContest = await prisma.contest.create({
+        data: {
+          title: "File Storage Test Contest",
+          slug: `file-storage-test-${Date.now()}`,
+          track: "Track A",
+          status: "LIVE",
+          startDate: new Date(),
+          endDate: new Date(Date.now() + 86400000),
+        },
+      });
+      testContestId = isolatedContest.id;
+      const phase = await prisma.phase.create({
+        data: {
+          contestId: isolatedContest.id,
+          phaseNumber: 1,
+          title: "Phase 1",
+          status: "OPEN",
+          deadline: new Date(Date.now() + 7 * 24 * 3600 * 1000),
+          weightPercentage: 50.0,
+        },
+      });
+      const task = await prisma.task.create({
+        data: {
+          phaseId: phase.id,
+          taskNumber: 1,
+          title: "File Storage Test Task",
+        },
         include: { phase: true },
       });
-
-      if (!task) {
-        const contest = await prisma.contest.create({
-          data: {
-            title: "File Storage Test Contest",
-            slug: `file-test-${Date.now()}`,
-            track: "Track A",
-            status: "LIVE",
-            startDate: new Date(),
-            endDate: new Date(Date.now() + 86400000),
-          },
-        });
-        const phase = await prisma.phase.create({
-          data: {
-            contestId: contest.id,
-            phaseNumber: 1,
-            title: "Phase 1",
-            status: "OPEN",
-            deadline: new Date(Date.now() + 7 * 24 * 3600 * 1000),
-            weightPercentage: 50.0,
-          },
-        });
-        task = await prisma.task.create({
-          data: {
-            phaseId: phase.id,
-            taskNumber: 1,
-            title: "File Storage Test Task",
-          },
-          include: { phase: true },
-        });
-      }
 
       assert.ok(task);
 
@@ -282,6 +278,9 @@ describe("EDGE-Arena File Handling, Storage Engine & Security Tests", () => {
       setTestSession(undefined);
       if (testFileKey) {
         await deleteFromStorage(testFileKey);
+      }
+      if (testContestId) {
+        await prisma.contest.delete({ where: { id: testContestId } }).catch(() => {});
       }
     });
 

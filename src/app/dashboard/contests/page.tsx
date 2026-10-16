@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import {
   getParticipantContests,
@@ -20,7 +20,7 @@ export default function ParticipantContestsPage() {
   const [activeTab, setActiveTab] = useState<"LIVE" | "UPCOMING" | "COMPLETED">("LIVE");
   const [isLoading, setIsLoading] = useState(true);
 
-  const loadContests = async () => {
+  const loadContests = useCallback(async () => {
     try {
       setIsLoading(true);
       const data = await getParticipantContests();
@@ -35,11 +35,11 @@ export default function ParticipantContestsPage() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     loadContests();
-  }, []);
+  }, [loadContests]);
 
   const currentList =
     activeTab === "LIVE"
@@ -211,7 +211,7 @@ export default function ParticipantContestsPage() {
               <div className="flex flex-col sm:flex-row md:flex-col items-start md:items-end gap-2 shrink-0">
                 {contest.canStartOrContinue ? (
                   <Link
-                    href="/assessment"
+                    href={`/dashboard/contests/${contest.id}`}
                     className="px-5 py-2.5 rounded bg-primary-container hover:bg-[#166534] text-on-primary font-label-md font-medium shadow-2xs flex items-center gap-1.5 transition-colors"
                   >
                     <span>
@@ -231,16 +231,18 @@ export default function ParticipantContestsPage() {
                 ) : (
                   <div className="flex items-center gap-2">
                     <Link
-                      href="/dashboard/results"
+                      href={`/dashboard/contests/${contest.id}`}
                       className="px-4 py-2 rounded bg-surface-container-high hover:bg-surface-container text-on-surface font-label-sm font-medium border border-[#e2e8f0]"
                     >
-                      View Results
+                      {contest.submissionStatus === "SUBMITTED" || contest.submissionStatus === "GRADED"
+                        ? "View Curriculum"
+                        : "View Curriculum"}
                     </Link>
                     <Link
-                      href="/dashboard/leaderboard"
+                      href="/dashboard/results"
                       className="px-4 py-2 rounded bg-surface-container-low hover:bg-surface-container text-on-surface font-label-sm font-medium border border-[#e2e8f0]"
                     >
-                      Leaderboard
+                      Results
                     </Link>
                   </div>
                 )}

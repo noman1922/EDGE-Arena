@@ -1,5 +1,4 @@
 import { cookies } from "next/headers";
-import { UserRole } from "@prisma/client";
 
 export const SESSION_COOKIE_NAME = "edge_session";
 const SESSION_SECRET =
@@ -118,11 +117,21 @@ export async function verifySessionToken(token: string): Promise<SessionPayload 
 
 let currentTestSession: SessionPayload | null | undefined = undefined;
 
-/**
- * Programmatic test harness helper to simulate authenticated sessions in tests.
- */
-export function setTestSession(session: SessionPayload | null | undefined) {
-  currentTestSession = session;
+export function setTestSession(
+  session:
+    | (Omit<SessionPayload, "issuedAt" | "expiresAt"> & Partial<Pick<SessionPayload, "issuedAt" | "expiresAt">>)
+    | null
+    | undefined
+) {
+  if (session) {
+    currentTestSession = {
+      issuedAt: session.issuedAt ?? Date.now(),
+      expiresAt: session.expiresAt ?? Date.now() + 7 * 24 * 3600 * 1000,
+      ...session,
+    };
+  } else {
+    currentTestSession = session;
+  }
 }
 
 /**

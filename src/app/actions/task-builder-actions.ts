@@ -5,6 +5,7 @@ import { PhaseStatus, QuestionType } from "@prisma/client";
 import { requireRole } from "@/lib/auth";
 import { recordAuditLog } from "@/lib/audit";
 import { revalidatePath } from "next/cache";
+import { parseDhakaDateTime } from "@/lib/contest-lifecycle";
 
 function safeRevalidatePath(path: string) {
   try {
@@ -177,11 +178,27 @@ export interface CreatePhaseInput {
   description?: string;
   weightPercentage?: number;
   deadline: string;
+  status?: "OPEN" | "UPCOMING";
 }
 
 export async function createPhaseAction(input: CreatePhaseInput) {
   try {
     const session = await requireRole(["ADMIN"]);
+
+    const contest = await prisma.contest.findUnique({
+      where: { id: input.contestId },
+      include: { phases: true },
+    });
+
+    if (!contest) {
+      return { success: false, error: "Contest not found." };
+    }
+
+    // Default to OPEN if contest is LIVE and this is the first phase or explicitly requested
+    let initialStatus: PhaseStatus = PhaseStatus.UPCOMING;
+    if (input.status === "OPEN" || (contest.status === "LIVE" && contest.phases.length === 0)) {
+      initialStatus = PhaseStatus.OPEN;
+    }
 
     const newPhase = await prisma.phase.create({
       data: {
@@ -191,7 +208,7 @@ export async function createPhaseAction(input: CreatePhaseInput) {
         description: input.description?.trim() || null,
         weightPercentage: input.weightPercentage || 100.0,
         deadline: new Date(input.deadline),
-        status: PhaseStatus.UPCOMING,
+        status: initialStatus,
       },
     });
 
@@ -200,16 +217,131 @@ export async function createPhaseAction(input: CreatePhaseInput) {
       action: "CREATE_PHASE",
       targetType: "PHASE",
       targetId: newPhase.id,
-      metadata: { title: newPhase.title, contestId: input.contestId },
+      metadata: { title: newPhase.title, contestId: input.contestId, status: initialStatus },
     });
 
     safeRevalidatePath("/admin/tasks");
     safeRevalidatePath("/admin/contests");
+    safeRevalidatePath("/dashboard");
+    safeRevalidatePath("/assessment");
 
     return { success: true, phaseId: newPhase.id };
   } catch (error) {
     console.error("Error creating phase:", error);
     return { success: false, error: error instanceof Error ? error.message : "Failed to create phase" };
+  }
+}
+
+export async function updatePhaseDeadlineAction(phaseId: string, deadline: string) {
+  try {
+    const session = await requireRole(["ADMIN"]);
+
+    const phase = await prisma.phase.findUnique({
+      where: { id: phaseId },
+      include: { contest: true },
+    });
+
+    if (!phase) {
+      return { success: false, error: "Phase not found." };
+    }
+
+    const newDeadline = parseDhakaDateTime(deadline);
+    if (isNaN(newDeadline.getTime())) {
+      return { success: false, error: "Invalid deadline format." };
+    }
+
+    const updatedPhase = await prisma.phase.update({
+      where: { id: phaseId },
+      data: { deadline: newDeadline },
+    });
+
+    // If new phase deadline exceeds current contest end date, extend contest end date so it doesn't close prematurely
+    if (newDeadline.getTime() > phase.contest.endDate.getTime()) {
+      await prisma.contest.update({
+        where: { id: phase.contestId },
+        data: { endDate: newDeadline },
+      });
+    }
+
+    await recordAuditLog({
+      actorId: session.userId,
+      action: "UPDATE_PHASE_DEADLINE",
+      targetType: "PHASE",
+      targetId: phaseId,
+      metadata: {
+        oldDeadline: phase.deadline.toISOString(),
+        newDeadline: newDeadline.toISOString(),
+        contestId: phase.contestId,
+      },
+    });
+
+    safeRevalidatePath("/admin/tasks");
+    safeRevalidatePath("/admin/contests");
+    safeRevalidatePath("/dashboard");
+    safeRevalidatePath("/dashboard/contests");
+    safeRevalidatePath(`/dashboard/contests/${phase.contestId}`);
+    safeRevalidatePath("/assessment");
+
+    return {
+      success: true,
+      deadline: newDeadline.toISOString(),
+      formattedDeadline: newDeadline.toLocaleString("en-US", { timeZone: "Asia/Dhaka" }),
+    };
+  } catch (error) {
+    console.error("Error updating phase deadline:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Failed to update phase deadline" };
+  }
+}
+
+export async function deletePhaseAction(phaseId: string) {
+  try {
+    const session = await requireRole(["ADMIN"]);
+
+    await prisma.phase.delete({
+      where: { id: phaseId },
+    });
+
+    await recordAuditLog({
+      actorId: session.userId,
+      action: "DELETE_PHASE",
+      targetType: "PHASE",
+      targetId: phaseId,
+    });
+
+    safeRevalidatePath("/admin/tasks");
+    safeRevalidatePath("/admin/contests");
+    safeRevalidatePath("/dashboard");
+    safeRevalidatePath("/assessment");
+
+    return { success: true };
+  } catch (error) {
+    console.error("Error deleting phase:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Failed to delete phase" };
+  }
+}
+
+export async function deleteTaskAction(taskId: string) {
+  try {
+    const session = await requireRole(["ADMIN"]);
+
+    await prisma.task.delete({
+      where: { id: taskId },
+    });
+
+    await recordAuditLog({
+      actorId: session.userId,
+      action: "DELETE_TASK",
+      targetType: "TASK",
+      targetId: taskId,
+    });
+
+    safeRevalidatePath("/admin/tasks");
+    safeRevalidatePath("/assessment");
+
+    return { success: true };
+  } catch (error) {
+    console.error("Error deleting task:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Failed to delete task" };
   }
 }
 
@@ -245,6 +377,8 @@ export async function createTaskAction(input: CreateTaskInput) {
 
     safeRevalidatePath("/admin/tasks");
     safeRevalidatePath("/admin/contests");
+    safeRevalidatePath("/assessment");
+    safeRevalidatePath("/dashboard");
 
     return { success: true, taskId: newTask.id };
   } catch (error) {
