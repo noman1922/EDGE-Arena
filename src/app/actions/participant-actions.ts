@@ -53,18 +53,38 @@ export async function getAdminParticipants(
             }
           : {}),
       },
-      include: {
-        cohort: true,
-        participants: {
-          include: {
-            contest: true,
-          },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        candidateId: true,
+        institution: true,
+        createdAt: true,
+        cohort: {
+          select: { name: true },
         },
-        submissions: {
-          where: { status: { in: ["SUBMITTED", "GRADED", "PUBLISHED"] } },
+        participants: {
+          select: {
+            id: true,
+            status: true,
+            enrolledAt: true,
+            contest: {
+              select: { id: true, title: true },
+            },
+          },
+          orderBy: { enrolledAt: "desc" },
+        },
+        _count: {
+          select: {
+            submissions: {
+              where: { status: { in: ["SUBMITTED", "GRADED", "PUBLISHED"] } },
+            },
+          },
         },
       },
       orderBy: { createdAt: "desc" },
+      take: 200,
     });
 
     return users.map((u) => {
@@ -80,7 +100,7 @@ export async function getAdminParticipants(
         institution: u.institution || "National Campus Cluster",
         cohortName: u.cohort?.name || "Campus Leadership Programme 2025",
         enrolledContestsCount: u.participants.length,
-        completedSubmissionsCount: u.submissions.length,
+        completedSubmissionsCount: u._count.submissions,
         status: participationStatus as any,
         contests: u.participants.map((p) => ({
           id: p.contest.id,

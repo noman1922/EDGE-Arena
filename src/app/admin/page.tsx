@@ -8,13 +8,14 @@ import {
   publishContestResultsAction,
   type SubmissionToGrade,
 } from "@/app/actions/evaluator-actions";
-import { getAdminContests, type AdminContestListItem } from "@/app/actions/contest-actions";
+import { getAdminOverviewSummaryAction, getAdminContestOptions, type AdminContestOption } from "@/app/actions/contest-actions";
 
 export default function AdminOverviewPage() {
   const [filterTab, setFilterTab] = useState<"All" | "Pending" | "Graded">("All");
   const [searchTerm, setSearchTerm] = useState("");
   const [submissions, setSubmissions] = useState<SubmissionToGrade[]>([]);
-  const [contests, setContests] = useState<AdminContestListItem[]>([]);
+  const [contests, setContests] = useState<AdminContestOption[]>([]);
+  const [enrolledCount, setEnrolledCount] = useState<number>(0);
   const [isLoading, setIsLoading] = useState(true);
 
   // Grading Drawer State
@@ -31,11 +32,13 @@ export default function AdminOverviewPage() {
   const loadData = async () => {
     try {
       setIsLoading(true);
-      const [subs, contestList] = await Promise.all([
+      const [subs, summary, contestList] = await Promise.all([
         getSubmissionsForGrading(),
-        getAdminContests(),
+        getAdminOverviewSummaryAction(),
+        getAdminContestOptions(),
       ]);
       setSubmissions(subs);
+      setEnrolledCount(summary.totalEnrolled);
       setContests(contestList);
     } catch (err) {
       console.error("Failed to load admin overview data:", err);
@@ -87,7 +90,19 @@ export default function AdminOverviewPage() {
         setGradeSuccessMsg(
           `Rubrics scored! Manual: ${res.manualGradeScore} pts • Final Score: ${res.finalScore}/100`
         );
-        await loadData();
+        // Instant state update without full-page reload
+        setSubmissions((prev) =>
+          prev.map((s) =>
+            s.id === selectedSub.id
+              ? {
+                  ...s,
+                  status: "GRADED",
+                  manualGradeScore: res.manualGradeScore ?? s.manualGradeScore,
+                  finalScore: res.finalScore ?? s.finalScore,
+                }
+              : s
+          )
+        );
       } else {
         alert(`Evaluation error: ${res.error}`);
       }
@@ -106,11 +121,10 @@ export default function AdminOverviewPage() {
       // Uses verified admin session from HTTP-only cookie
       const res = await publishContestResultsAction(contestId);
       if (res.success) {
-        setPublishMessage(`Successfully certified and published results for ${res.publishedCount} candidate(s).`);
+        setPublishMessage(`Successfully published results for ${res.publishedCount} candidate(s).`);
         await loadData();
       } else {
-        // Fallback demo admin notification if user is not in admin table
-        alert(`Publishing authorization: ${res.error}`);
+        alert(`Publishing error: ${res.error}`);
       }
     } catch (err) {
       console.error("Publish error:", err);
@@ -133,30 +147,30 @@ export default function AdminOverviewPage() {
 
   const pendingCount = submissions.filter((s) => s.status === "SUBMITTED").length;
   const gradedCount = submissions.filter((s) => s.status === "GRADED").length;
-  const totalEnrolled = contests.reduce((acc, c) => acc + c.participants.length, 0);
+  const totalEnrolled = enrolledCount;
 
   return (
     <div className="flex flex-col w-full pb-space-xl">
-      {/* Live Health Status Banner */}
-      <div className="mb-4 px-4 py-2.5 bg-on-tertiary-container/60 rounded border border-primary-container/30 text-on-surface font-label-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+      {/* Overview Status Banner */}
+      <div className="mb-4 px-4 py-2.5 bg-surface-container-low rounded border border-[#e2e8f0] text-on-surface font-label-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <span className="material-symbols-outlined text-[16px] text-primary-container">
-            verified
+            fact_check
           </span>
           <span>
-            <strong className="text-on-surface">Live Evaluator Scoring Suite:</strong> Connected to Supabase PostgreSQL database. Real candidate submissions, rubric weighting engine, and certified publication pipeline.
+            <strong className="text-on-surface">Evaluation Console:</strong> Candidate submissions, rubric scoring, and official results management.
           </span>
         </div>
-        <span className="text-primary-container font-mono font-semibold shrink-0">Stage 3 Production Ready</span>
+        <span className="text-secondary font-label-xs shrink-0">Evaluation Panel</span>
       </div>
 
       {/* Header Section */}
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-space-md pt-2 pb-space-lg">
         <div>
           <div className="flex items-center gap-space-xs text-secondary font-label-xs uppercase tracking-wider mb-1">
-            <span>Leadership Evaluation Suite</span>
+            <span>Evaluation</span>
             <span>/</span>
-            <span className="text-primary-container font-semibold">Live Telemetry & Grading</span>
+            <span className="text-primary-container font-semibold">Submissions & Grading</span>
           </div>
           <h1 className="font-display-lg text-on-surface">Evaluation Console</h1>
           <p className="font-body-md text-secondary mt-1">
@@ -414,7 +428,7 @@ export default function AdminOverviewPage() {
                 >
                   <div className="flex items-center justify-between">
                     <span className="font-label-sm font-semibold text-on-surface truncate">
-                      {c.name}
+                      {c.title}
                     </span>
                     <span
                       className={`font-label-xs px-2 py-0.5 rounded-full ${
@@ -428,8 +442,8 @@ export default function AdminOverviewPage() {
                   </div>
 
                   <div className="flex items-center justify-between pt-1">
-                    <span className="font-label-xs text-secondary">
-                      {c.submitted} of {c.total} Submissions
+                    <span className="font-label-xs text-secondary truncate max-w-[180px]">
+                      {c.track}
                     </span>
                     <button
                       onClick={() => handlePublishResults(c.id)}

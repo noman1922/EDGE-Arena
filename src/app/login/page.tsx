@@ -126,7 +126,7 @@ function LoginContent() {
 
         {/* Security Disclaimers */}
         <div className="mt-6 text-center text-secondary font-label-xs max-w-sm">
-          <span>Security Protocol: Role routing is enforced server-side from PostgreSQL. Client tampering and role spoofing are rejected.</span>
+          <span>Authorized access only. User roles and permissions are enforced on the server.</span>
         </div>
       </main>
 

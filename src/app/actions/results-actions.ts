@@ -50,20 +50,42 @@ export async function getAdminLeaderboardAndResults(
     const selectedContestId = contestId || contests[0].id;
     const contest = await prisma.contest.findUnique({
       where: { id: selectedContestId },
-      include: {
+      select: {
+        id: true,
+        title: true,
+        track: true,
+        isPublished: true,
         participants: {
-          include: {
-            user: true,
+          select: {
+            id: true,
           },
         },
         submissions: {
-          include: {
-            user: true,
+          select: {
+            id: true,
+            userId: true,
+            status: true,
+            autoGradeScore: true,
+            manualGradeScore: true,
+            finalScore: true,
+            submittedAt: true,
+            user: {
+              select: {
+                name: true,
+                email: true,
+                candidateId: true,
+                institution: true,
+              },
+            },
           },
         },
         results: {
-          include: {
-            user: true,
+          select: {
+            userId: true,
+            rank: true,
+            percentile: true,
+            isCertified: true,
+            publishedAt: true,
           },
         },
       },
@@ -249,25 +271,72 @@ export async function getAdminSubmissionsList(
         contestId: activeContestId,
         status: { not: "DRAFT" },
       },
-      include: {
-        user: true,
+      select: {
+        id: true,
+        contestId: true,
+        taskId: true,
+        userId: true,
+        status: true,
+        submittedAt: true,
+        autoGradeScore: true,
+        manualGradeScore: true,
+        finalScore: true,
+        isLate: true,
+        user: {
+          select: {
+            name: true,
+            email: true,
+            candidateId: true,
+            institution: true,
+          },
+        },
         task: {
-          include: {
-            rubrics: true,
+          select: {
+            title: true,
+            rubrics: {
+              select: {
+                name: true,
+                maxPoints: true,
+                weightPercentage: true,
+              },
+            },
           },
         },
         answers: {
-          include: {
-            question: true,
+          select: {
+            id: true,
+            questionId: true,
+            selectedOption: true,
+            writtenText: true,
+            wordCount: true,
+            fileName: true,
+            fileKey: true,
+            score: true,
+            question: {
+              select: {
+                prompt: true,
+                type: true,
+                points: true,
+              },
+            },
           },
         },
         evaluations: {
-          include: {
-            rubric: true,
+          select: {
+            scoreAwarded: true,
+            comments: true,
+            rubric: {
+              select: {
+                name: true,
+                maxPoints: true,
+                weightPercentage: true,
+              },
+            },
           },
         },
       },
       orderBy: { submittedAt: "desc" },
+      take: 100,
     });
 
     const mappedSubmissions: AdminSubmissionDetail[] = submissions.map((sub) => ({

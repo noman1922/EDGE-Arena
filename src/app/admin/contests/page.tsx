@@ -279,19 +279,19 @@ export default function ContestManagementPage() {
 
   return (
     <div className="flex flex-col w-full pb-space-xl">
-      {/* Top Breadcrumb & Live Health Telemetry Bar */}
+      {/* Top Breadcrumb & Status Bar */}
       <div className="flex flex-wrap items-center justify-between gap-space-sm pb-space-sm border-b border-[#e2e8f0]">
         <div className="flex items-center gap-space-xs font-label-xs text-secondary">
-          <span>WORKSPACE</span>
+          <span>ADMINISTRATION</span>
           <span className="material-symbols-outlined text-[14px]">chevron_right</span>
-          <span>DEMO COHORT CLP-2025</span>
+          <span>CONTESTS</span>
           <span className="material-symbols-outlined text-[14px]">chevron_right</span>
-          <span className="text-primary-container font-semibold">ASSESSMENT ENGINE</span>
+          <span className="text-primary-container font-semibold">MANAGEMENT</span>
         </div>
         <div className="flex items-center gap-space-xs font-label-xs text-on-surface-variant">
-          <span className="w-2 h-2 rounded-full bg-primary-container animate-pulse"></span>
-          <span className="font-semibold text-on-surface">Supabase Live Connection:</span>
-          <span className="text-secondary">Mumbai Region (PostgreSQL) • Active</span>
+          <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+          <span className="font-semibold text-on-surface">System Status:</span>
+          <span className="text-secondary">Operational</span>
         </div>
       </div>
 
@@ -301,11 +301,11 @@ export default function ContestManagementPage() {
           <div className="flex items-center gap-space-sm">
             <h1 className="font-display-lg text-on-surface tracking-tight">Contests</h1>
             <span className="px-space-sm py-0.5 rounded-full bg-surface-container-high border border-[#e2e8f0] text-secondary font-label-xs font-semibold tabular-nums">
-              {contests.length} {contests.length === 1 ? "Contest" : "Contests"} in Database
+              {contests.length} {contests.length === 1 ? "Contest" : "Contests"}
             </span>
           </div>
           <p className="font-body-md text-secondary mt-1 max-w-2xl">
-            Manage leadership challenges, phases, diagnostic evaluation rubrics, and automated candidate grading pipelines.
+            Manage contests, assessment phases, evaluation rubrics, and candidate assignments.
           </p>
         </div>
 
@@ -402,7 +402,7 @@ export default function ContestManagementPage() {
                   <td colSpan={7} className="py-12 text-center text-secondary">
                     <div className="flex items-center justify-center gap-2">
                       <span className="w-4 h-4 border-2 border-primary-container border-t-transparent rounded-full animate-spin"></span>
-                      <span>Querying Supabase database...</span>
+                      <span>Loading contests...</span>
                     </div>
                   </td>
                 </tr>

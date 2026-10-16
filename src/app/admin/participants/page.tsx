@@ -9,13 +9,14 @@ import {
   type AdminParticipantItem,
   type BulkImportResult,
 } from "@/app/actions/participant-actions";
-import { getAdminContests, type AdminContestListItem } from "@/app/actions/contest-actions";
+import { getAdminContestOptions, type AdminContestOption } from "@/app/actions/contest-actions";
 
 export default function AdminParticipantsPage() {
   const [participants, setParticipants] = useState<AdminParticipantItem[]>([]);
-  const [contests, setContests] = useState<AdminContestListItem[]>([]);
+  const [contests, setContests] = useState<AdminContestOption[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState<"ALL" | "PARTICIPANT" | "EVALUATOR">("ALL");
 
   // Single Create Modal State
@@ -42,15 +43,26 @@ export default function AdminParticipantsPage() {
   // Status Action State
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
 
-  const loadData = async () => {
+  // Load contest options once on mount
+  useEffect(() => {
+    getAdminContestOptions().then((list) => {
+      setContests(list);
+    });
+  }, []);
+
+  // Debounce search input by 300ms
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  const loadParticipants = async (query = debouncedSearch) => {
     try {
       setIsLoading(true);
-      const [parts, contestList] = await Promise.all([
-        getAdminParticipants(searchQuery),
-        getAdminContests(),
-      ]);
+      const parts = await getAdminParticipants(query);
       setParticipants(parts);
-      setContests(contestList);
     } catch (err) {
       console.error("Error loading participants:", err);
     } finally {
@@ -59,8 +71,8 @@ export default function AdminParticipantsPage() {
   };
 
   useEffect(() => {
-    loadData();
-  }, [searchQuery]);
+    loadParticipants(debouncedSearch);
+  }, [debouncedSearch]);
 
   const handleCreateAccount = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -86,7 +98,7 @@ export default function AdminParticipantsPage() {
         setCandidateId("");
         setInitialPassword("");
         setActionSuccess(`Account successfully created for ${email}`);
-        await loadData();
+        await loadParticipants();
       } else {
         setModalError(res.error || "Failed to create account.");
       }
@@ -145,7 +157,7 @@ export default function AdminParticipantsPage() {
 
       if (res.importedCount > 0) {
         setActionSuccess(`Successfully imported ${res.importedCount} user accounts.`);
-        await loadData();
+        await loadParticipants();
       }
       if (!res.success && res.errors.length > 0) {
         setBulkGeneralError(`Import completed with ${res.errors.length} issue(s). Review details below.`);
@@ -163,7 +175,7 @@ export default function AdminParticipantsPage() {
       const res = await updateParticipantStatusAction(userId, newStatus);
       if (res.success) {
         setActionSuccess(`Participant status updated to ${newStatus}`);
-        await loadData();
+        await loadParticipants();
       } else {
         alert(res.error || "Status update failed.");
       }
@@ -183,7 +195,7 @@ export default function AdminParticipantsPage() {
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-space-md pt-space-xs pb-space-lg">
         <div>
           <div className="flex items-center gap-space-xs text-secondary font-label-xs uppercase tracking-wider mb-1">
-            <span>Administration Suite</span>
+            <span>Administration</span>
             <span>/</span>
             <span className="text-primary-container font-semibold">Enrolled Cohort</span>
           </div>
@@ -510,7 +522,7 @@ export default function AdminParticipantsPage() {
                   <option value="">-- No initial contest assignment --</option>
                   {contests.map((c) => (
                     <option key={c.id} value={c.id}>
-                      {c.name} ({c.status})
+                      {c.title} ({c.status})
                     </option>
                   ))}
                 </select>
@@ -613,7 +625,7 @@ export default function AdminParticipantsPage() {
                   <option value="">-- No initial contest assignment --</option>
                   {contests.map((c) => (
                     <option key={c.id} value={c.id}>
-                      {c.name} ({c.status})
+                      {c.title} ({c.status})
                     </option>
                   ))}
                 </select>

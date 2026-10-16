@@ -183,24 +183,33 @@ export async function getContestMonitoringDashboardAction(
 
     const targetContest = accessibleContests.find((c) => c.id === activeContestId)!;
 
-    // 2. Load monitoring settings for selected contest
-    const settings = await getContestMonitoringSettings(activeContestId);
-
-    // 3. Fetch participants enrolled in this contest
-    const enrollments = await prisma.contestParticipant.findMany({
-      where: { contestId: activeContestId },
-      include: {
-        user: {
-          include: {
-            submissions: {
-              where: { contestId: activeContestId },
-              select: { id: true, status: true, submittedAt: true, updatedAt: true },
+    // 2 & 3. Load monitoring settings and enrollments in parallel with field projection
+    const [settings, enrollments] = await Promise.all([
+      getContestMonitoringSettings(activeContestId),
+      prisma.contestParticipant.findMany({
+        where: { contestId: activeContestId },
+        select: {
+          id: true,
+          userId: true,
+          enrolledAt: true,
+          user: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              candidateId: true,
+              institution: true,
+              submissions: {
+                where: { contestId: activeContestId },
+                select: { id: true, status: true, submittedAt: true, updatedAt: true },
+              },
             },
           },
         },
-      },
-      orderBy: { enrolledAt: "asc" },
-    });
+        orderBy: { enrolledAt: "asc" },
+        take: 200,
+      }),
+    ]);
 
     // 4. Query telemetry events from AuditLog
     const userIds = enrollments.map((e) => e.userId);

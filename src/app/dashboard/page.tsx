@@ -41,13 +41,13 @@ export default function ParticipantDashboardPage() {
 
   return (
     <div className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-space-lg sm:py-space-xl flex flex-col gap-space-xl">
-          {/* Live Status Banner */}
-          <div className="px-4 py-2 bg-on-tertiary-container/60 rounded border border-primary-container/30 text-on-surface font-label-xs flex items-center justify-between">
+          {/* Status Banner */}
+          <div className="px-4 py-2 bg-surface-container-low rounded border border-[#e2e8f0] text-on-surface font-label-xs flex items-center justify-between">
             <span className="flex items-center gap-1.5">
-              <span className="material-symbols-outlined text-[16px] text-primary-container">verified</span>
-              <strong>Candidate Database Verified:</strong> Connected to live Supabase Mumbai database. Scoped exclusively to your enrolled assignments.
+              <span className="material-symbols-outlined text-[16px] text-primary-container">assignment</span>
+              <strong>Enrolled Assessments:</strong> Scoped to your assigned cohort benchmarks.
             </span>
-            <span className="text-primary-container font-mono font-semibold">Stage 3 Live</span>
+            <span className="text-secondary font-label-xs">Active Session</span>
           </div>
 
           {/* Welcome Header Section */}

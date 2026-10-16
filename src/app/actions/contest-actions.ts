@@ -31,31 +31,112 @@ export interface AdminContestListItem {
   participants: Array<{ id: string; userId: string; name: string; email: string; status: string; enrolledAt: string }>;
 }
 
+export interface AdminContestOption {
+  id: string;
+  title: string;
+  track: string;
+  status: string;
+}
+
+/**
+ * Ultra-fast contest options query for dropdown selectors across admin and evaluator panels.
+ * Avoids heavy multi-table joins.
+ */
+export async function getAdminContestOptions(): Promise<AdminContestOption[]> {
+  try {
+    await requireRole(["ADMIN", "EVALUATOR"]);
+    return await prisma.contest.findMany({
+      select: {
+        id: true,
+        title: true,
+        track: true,
+        status: true,
+      },
+      orderBy: { createdAt: "desc" },
+    });
+  } catch (err) {
+    console.error("Failed to load contest options:", err);
+    return [];
+  }
+}
+
+/**
+ * Fast scalar counts for admin overview metrics.
+ */
+export async function getAdminOverviewSummaryAction(): Promise<{
+  totalEnrolled: number;
+  totalContests: number;
+}> {
+  try {
+    await requireRole(["ADMIN"]);
+    const [totalEnrolled, totalContests] = await Promise.all([
+      prisma.contestParticipant.count(),
+      prisma.contest.count(),
+    ]);
+    return { totalEnrolled, totalContests };
+  } catch (err) {
+    console.error("Failed to load overview summary:", err);
+    return { totalEnrolled: 0, totalContests: 0 };
+  }
+}
+
 export async function getAdminContests(): Promise<AdminContestListItem[]> {
   try {
     await requireRole(["ADMIN"]);
 
     const contests = await prisma.contest.findMany({
-      include: {
-        cohort: true,
+      select: {
+        id: true,
+        slug: true,
+        title: true,
+        track: true,
+        description: true,
+        status: true,
+        isPublished: true,
+        startDate: true,
+        endDate: true,
+        cohort: {
+          select: { name: true },
+        },
         phases: {
-          orderBy: { phaseNumber: "asc" },
-          include: {
+          select: {
+            id: true,
+            phaseNumber: true,
+            title: true,
+            status: true,
             tasks: {
-              include: {
-                rubrics: true,
-                submissions: {
-                  include: {
-                    user: true,
-                  },
+              select: {
+                id: true,
+                rubrics: {
+                  select: { name: true, weightPercentage: true },
                 },
               },
             },
           },
+          orderBy: { phaseNumber: "asc" },
+        },
+        submissions: {
+          select: {
+            id: true,
+            status: true,
+            finalScore: true,
+            submittedAt: true,
+            user: {
+              select: { name: true, email: true },
+            },
+          },
+          orderBy: { submittedAt: "desc" },
+          take: 20,
         },
         participants: {
-          include: {
-            user: true,
+          select: {
+            id: true,
+            userId: true,
+            status: true,
+            enrolledAt: true,
+            user: {
+              select: { name: true, email: true },
+            },
           },
         },
       },
@@ -77,8 +158,7 @@ export async function getAdminContests(): Promise<AdminContestListItem[]> {
 
       // Calculate submissions vs total participants
       const totalParticipants = c.participants.length;
-      const allSubmissions = c.phases.flatMap((p) => p.tasks.flatMap((t) => t.submissions));
-      const submittedCount = allSubmissions.filter((s) => s.status !== "DRAFT").length;
+      const submittedCount = c.submissions.filter((s) => s.status !== "DRAFT").length;
 
       // Rubrics from tasks
       const allRubrics = c.phases.flatMap((p) => p.tasks.flatMap((t) => t.rubrics));
@@ -100,9 +180,8 @@ export async function getAdminContests(): Promise<AdminContestListItem[]> {
       const dateWindow = `${startStr} – ${endStr} (BST)`;
 
       // Recent uploads
-      const recentUploads = allSubmissions
+      const recentUploads = c.submissions
         .filter((s) => s.submittedAt !== null)
-        .sort((a, b) => (b.submittedAt?.getTime() ?? 0) - (a.submittedAt?.getTime() ?? 0))
         .slice(0, 3)
         .map((s) => ({
           name: s.user.name || s.user.email,

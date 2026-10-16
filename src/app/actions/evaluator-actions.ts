@@ -72,26 +72,82 @@ export async function getSubmissionsForGrading(
         ...(contestId ? { contestId } : {}),
         status: { in: ["SUBMITTED", "GRADING_IN_PROGRESS", "GRADED"] },
       },
-      include: {
-        user: true,
-        contest: true,
-        phase: true,
+      select: {
+        id: true,
+        contestId: true,
+        phaseId: true,
+        taskId: true,
+        userId: true,
+        status: true,
+        submittedAt: true,
+        autoGradeScore: true,
+        manualGradeScore: true,
+        finalScore: true,
+        isLate: true,
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            candidateId: true,
+            institution: true,
+          },
+        },
+        contest: {
+          select: {
+            title: true,
+            isPublished: true,
+          },
+        },
+        phase: {
+          select: {
+            title: true,
+            phaseNumber: true,
+          },
+        },
         task: {
-          include: {
-            rubrics: true,
-            questions: {
-              orderBy: { questionNumber: "asc" },
+          select: {
+            title: true,
+            totalPoints: true,
+            rubrics: {
+              select: {
+                id: true,
+                name: true,
+                description: true,
+                weightPercentage: true,
+                maxPoints: true,
+              },
             },
           },
         },
         answers: {
-          include: {
-            question: true,
+          select: {
+            id: true,
+            questionId: true,
+            selectedOption: true,
+            writtenText: true,
+            wordCount: true,
+            fileName: true,
+            fileKey: true,
+            question: {
+              select: {
+                prompt: true,
+                type: true,
+                points: true,
+              },
+            },
           },
         },
-        evaluations: true,
+        evaluations: {
+          select: {
+            rubricId: true,
+            scoreAwarded: true,
+            comments: true,
+          },
+        },
       },
       orderBy: { submittedAt: "desc" },
+      take: 100,
     });
 
     return submissions.map((sub) => {

@@ -12,10 +12,10 @@ import {
   type TaskBuilderTask,
   type TaskBuilderQuestion,
 } from "@/app/actions/task-builder-actions";
-import { getAdminContests, type AdminContestListItem } from "@/app/actions/contest-actions";
+import { getAdminContestOptions, type AdminContestOption } from "@/app/actions/contest-actions";
 
 export default function AdminTasksPage() {
-  const [contests, setContests] = useState<AdminContestListItem[]>([]);
+  const [contests, setContests] = useState<AdminContestOption[]>([]);
   const [selectedContestId, setSelectedContestId] = useState<string>("");
   const [contestTitle, setContestTitle] = useState<string>("");
   const [phases, setPhases] = useState<TaskBuilderPhase[]>([]);
@@ -55,12 +55,12 @@ export default function AdminTasksPage() {
   const [isSubmittingQuestion, setIsSubmittingQuestion] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
-  // Initial Contest Load
+  // Fast Contest Options Load
   useEffect(() => {
     async function loadContests() {
       try {
         setIsLoading(true);
-        const data = await getAdminContests();
+        const data = await getAdminContestOptions();
         setContests(data);
         if (data.length > 0) {
           setSelectedContestId(data[0].id);
@@ -264,7 +264,7 @@ export default function AdminTasksPage() {
           >
             {contests.map((c) => (
               <option key={c.id} value={c.id}>
-                {c.name} ({c.status})
+                {c.title} ({c.status})
               </option>
             ))}
           </select>
@@ -294,7 +294,7 @@ export default function AdminTasksPage() {
       {isLoading ? (
         <div className="py-20 flex flex-col items-center justify-center text-secondary">
           <span className="w-8 h-8 border-3 border-primary-container border-t-transparent rounded-full animate-spin mb-3"></span>
-          <p className="font-label-sm">Loading curriculum structure from database...</p>
+          <p className="font-label-sm">Loading phases and tasks...</p>
         </div>
       ) : phases.length === 0 ? (
         <div className="p-12 text-center bg-surface-container-lowest border border-[#e2e8f0] rounded-lg">

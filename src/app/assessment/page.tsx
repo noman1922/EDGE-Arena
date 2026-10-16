@@ -432,7 +432,7 @@ export default function AssessmentInterfacePage() {
         <main className="w-full pt-32 pb-32 flex flex-col items-center justify-center">
           <div className="flex items-center gap-3 text-secondary font-label-md">
             <span className="w-5 h-5 border-2 border-primary-container border-t-transparent rounded-full animate-spin"></span>
-            <span>Loading assessment benchmark from Supabase database...</span>
+            <span>Loading assessment...</span>
           </div>
         </main>
         <ParticipantFooter />
@@ -629,8 +629,8 @@ export default function AssessmentInterfacePage() {
                   Task Assessment Submitted & Permanently Saved
                 </h3>
                 <p className="font-body-sm text-on-surface-variant mt-0.5">
-                  Your diagnostic responses and deliverables were recorded in the Supabase PostgreSQL database at {lastSaved} and
-                  locked. Answers are queued for panel evaluation. Answer keys remain strictly isolated.
+                  Your responses and deliverables were recorded at {lastSaved} and
+                  locked. Answers are queued for panel evaluation.
                 </p>
                 <Link
                   href="/dashboard"
@@ -651,7 +651,7 @@ export default function AssessmentInterfacePage() {
               <div>
                 <div className="flex items-center gap-2">
                   <span className="font-label-xs px-2 py-0.5 rounded-full bg-on-tertiary-container text-primary-container uppercase font-semibold tracking-wider">
-                    Live Supabase Persistence
+                    Saved
                   </span>
                   <span className="font-label-xs text-secondary">• Submission #{data?.submission.id.slice(0, 8)}</span>
                 </div>
@@ -1078,7 +1078,7 @@ export default function AssessmentInterfacePage() {
                   Finalize and Submit Assessment?
                 </h3>
                 <p className="font-body-md text-secondary mt-1">
-                  Once submitted, your answers will be permanently saved to the Supabase database, timestamped, locked, and queued for evaluation.
+                  Once submitted, your answers will be permanently saved, timestamped, locked, and queued for evaluation.
                 </p>
               </div>
 
