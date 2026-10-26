@@ -98,44 +98,50 @@ export async function ensurePilotContest() {
   });
 
   // Ensure Phase 1
-  const phase1 = await prisma.phase.upsert({
-    where: {
-      contestId_phaseNumber: {
-        contestId: PILOT_CONTEST_ID,
-        phaseNumber: 1,
-      },
-    },
-    update: {
-      status: PhaseStatus.OPEN,
-    },
-    create: {
-      contestId: PILOT_CONTEST_ID,
-      phaseNumber: 1,
-      title: "Phase 1: Diagnostic Assessment",
-      weightPercentage: 50,
-      deadline: new Date("2026-11-30T23:59:59Z"),
-      status: PhaseStatus.OPEN,
-    },
+  let phase1 = await prisma.phase.findFirst({
+    where: { contestId: PILOT_CONTEST_ID, phaseNumber: 1 },
   });
+  if (!phase1) {
+    try {
+      phase1 = await prisma.phase.create({
+        data: {
+          contestId: PILOT_CONTEST_ID,
+          phaseNumber: 1,
+          title: "Phase 1: Diagnostic Assessment",
+          weightPercentage: 50,
+          deadline: new Date("2026-11-30T23:59:59Z"),
+          status: PhaseStatus.OPEN,
+        },
+      });
+    } catch {
+      phase1 = (await prisma.phase.findFirst({
+        where: { contestId: PILOT_CONTEST_ID, phaseNumber: 1 },
+      }))!;
+    }
+  }
 
   // Ensure Phase 2
-  const phase2 = await prisma.phase.upsert({
-    where: {
-      contestId_phaseNumber: {
-        contestId: PILOT_CONTEST_ID,
-        phaseNumber: 2,
-      },
-    },
-    update: {},
-    create: {
-      contestId: PILOT_CONTEST_ID,
-      phaseNumber: 2,
-      title: "Phase 2: Strategy Proposal",
-      weightPercentage: 50,
-      deadline: new Date("2026-12-15T23:59:59Z"),
-      status: PhaseStatus.UPCOMING,
-    },
+  let phase2 = await prisma.phase.findFirst({
+    where: { contestId: PILOT_CONTEST_ID, phaseNumber: 2 },
   });
+  if (!phase2) {
+    try {
+      phase2 = await prisma.phase.create({
+        data: {
+          contestId: PILOT_CONTEST_ID,
+          phaseNumber: 2,
+          title: "Phase 2: Strategy Proposal",
+          weightPercentage: 50,
+          deadline: new Date("2026-12-15T23:59:59Z"),
+          status: PhaseStatus.UPCOMING,
+        },
+      });
+    } catch {
+      phase2 = (await prisma.phase.findFirst({
+        where: { contestId: PILOT_CONTEST_ID, phaseNumber: 2 },
+      }))!;
+    }
+  }
 
   // Ensure Tasks in Phase 1
   const task11 = await prisma.task.upsert({

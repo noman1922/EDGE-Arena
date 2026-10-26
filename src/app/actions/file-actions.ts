@@ -364,13 +364,20 @@ export async function getFileDownloadUrlAction(
         }
       }
       // EVALUATOR and ADMIN are authorized to review candidate submissions
-
-      const signedUrl = await getSignedDownloadUrl(fileKey, 3600);
-      return {
-        success: true,
-        downloadUrl: signedUrl,
-        fileName: answer.fileName || "submission.pdf",
-      };
+      try {
+        const signedUrl = await getSignedDownloadUrl(fileKey, 3600);
+        return {
+          success: true,
+          downloadUrl: signedUrl,
+          fileName: answer.fileName || "submission.pdf",
+        };
+      } catch {
+        return {
+          success: true,
+          downloadUrl: `/api/files/${fileKey}`,
+          fileName: answer.fileName || "submission.pdf",
+        };
+      }
     }
 
     // 2. Check if the file is a contest ReferenceMaterial

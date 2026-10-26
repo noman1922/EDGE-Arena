@@ -775,16 +775,7 @@ export async function getTaskAssessmentData(
         const isSub =
           sub?.status === "SUBMITTED" ||
           sub?.status === "GRADED" ||
-          sub?.status === "PUBLISHED" ||
-          hasAnswersForAllQuestions;
-
-        // Auto-finalize draft in database if all questions are answered
-        if (sub?.status === "DRAFT" && hasAnswersForAllQuestions) {
-          await prisma.submission.update({
-            where: { id: sub.id },
-            data: { status: "SUBMITTED", submittedAt: new Date() },
-          }).catch(() => {});
-        }
+          sub?.status === "PUBLISHED";
 
         let isTaskLocked = false;
         let taskUnlockText: string | undefined = undefined;
@@ -1333,7 +1324,7 @@ export async function submitAssessmentAction(
       submission.status === "SUBMITTED" ||
       submission.status === "GRADED" ||
       submission.status === "PUBLISHED";
-    if (isSubmitted) {
+    if (isSubmitted && submission.autoGradeScore !== null) {
       return { success: true, message: "Already submitted." };
     }
 

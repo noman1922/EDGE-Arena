@@ -1,11 +1,11 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import Link from "next/link";
 import { BrandLogo } from "@/components/ui/brand-logo";
 import {
   getEvaluatorDashboardDataAction,
-  saveRubricScoreAction,
+  gradeSubmissionAction,
   type SubmissionToGrade,
   type EvaluatorContestItem,
 } from "@/app/actions/evaluator-actions";
@@ -25,12 +25,17 @@ export default function EvaluatorConsolePage() {
 
   // Grading Drawer State
   const [selectedSub, setSelectedSub] = useState<SubmissionToGrade | null>(null);
+  const [questionScores, setQuestionScores] = useState<Record<string, number>>({});
+  const [questionFeedback, setQuestionFeedback] = useState<Record<string, string>>({});
+  const [overallFeedback, setOverallFeedback] = useState<string>("");
   const [rubricScores, setRubricScores] = useState<Record<string, number>>({});
   const [rubricComments, setRubricComments] = useState<Record<string, string>>({});
-  const [isSavingGrade, setIsSavingGrade] = useState(false);
+  const [isSavingDraft, setIsSavingDraft] = useState(false);
+  const [isFinalizing, setIsFinalizing] = useState(false);
   const [gradeSuccessMsg, setGradeSuccessMsg] = useState<string | null>(null);
+  const [gradeErrorMsg, setGradeErrorMsg] = useState<string | null>(null);
 
-  const loadData = async (contestId?: string) => {
+  const loadData = useCallback(async (contestId?: string) => {
     try {
       setIsLoading(true);
       const activeFilter = contestId !== undefined ? contestId : selectedContestFilter;
@@ -47,79 +52,186 @@ export default function EvaluatorConsolePage() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [selectedContestFilter]);
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [loadData]);
 
   const openGradingDrawer = (sub: SubmissionToGrade) => {
     setSelectedSub(sub);
     setGradeSuccessMsg(null);
-    const initialScores: Record<string, number> = {};
-    const initialComments: Record<string, string> = {};
+    setGradeErrorMsg(null);
+
+    // 1. Populate individual question scores & feedback
+    const initialQScore: Record<string, number> = {};
+    const initialQFeedback: Record<string, string> = {};
+
+    sub.answers.forEach((ans) => {
+      initialQScore[ans.questionId] =
+        ans.score !== null ? Number(ans.score) : 0;
+      initialQFeedback[ans.questionId] = ans.feedback || "";
+    });
+
+    // 2. Populate rubrics
+    const initialRubricScores: Record<string, number> = {};
+    const initialRubricComments: Record<string, string> = {};
 
     sub.rubrics.forEach((r) => {
-      initialScores[r.id] =
+      initialRubricScores[r.id] =
         r.currentScoreAwarded !== undefined
           ? r.currentScoreAwarded
           : Math.round(r.maxPoints * 0.85);
-      initialComments[r.id] = r.currentComments || "";
+      initialRubricComments[r.id] = r.currentComments || "";
     });
 
-    setRubricScores(initialScores);
-    setRubricComments(initialComments);
+    setQuestionScores(initialQScore);
+    setQuestionFeedback(initialQFeedback);
+    setOverallFeedback(sub.overallFeedback || "");
+    setRubricScores(initialRubricScores);
+    setRubricComments(initialRubricComments);
   };
 
-  const handleSaveGrades = async (e: React.FormEvent) => {
-    e.preventDefault();
+  // Live Score Computations
+  const { autoScore, manualScore, liveFinalScore } = useMemo(() => {
+    if (!selectedSub) {
+      return { autoScore: 0, manualScore: 0, liveFinalScore: 0 };
+    }
+
+    // MCQ Auto-graded total
+    const auto = selectedSub.answers
+      .filter((a) => a.questionType === "MCQ")
+      .reduce((sum, a) => sum + (a.score !== null ? Number(a.score) : 0), 0);
+
+    let manual = 0;
+    if (selectedSub.rubrics.length > 0) {
+      let weightedTotal = 0;
+      selectedSub.rubrics.forEach((r) => {
+        const awarded = rubricScores[r.id] ?? 0;
+        const bounded = Math.max(0, Math.min(awarded, r.maxPoints));
+        weightedTotal += (bounded / r.maxPoints) * r.weightPercentage;
+      });
+      const rubricTaskIds = new Set(selectedSub.rubrics.map((r) => r.taskId).filter(Boolean));
+      const nonRubricQuestionsScore = selectedSub.answers
+        .filter((a) => a.questionType !== "MCQ" && (!a.taskId || !rubricTaskIds.has(a.taskId)))
+        .reduce((sum, a) => sum + (questionScores[a.questionId] ?? 0), 0);
+      manual = Math.round((weightedTotal + nonRubricQuestionsScore) * 100) / 100;
+    } else {
+      manual = selectedSub.answers
+        .filter((a) => a.questionType !== "MCQ")
+        .reduce((sum, a) => sum + (questionScores[a.questionId] ?? 0), 0);
+    }
+
+    const finalTotal = Math.min(
+      selectedSub.taskPoints,
+      Math.max(0, Math.round((auto + manual) * 100) / 100)
+    );
+
+    return { autoScore: auto, manualScore: manual, liveFinalScore: finalTotal };
+  }, [selectedSub, rubricScores, questionScores]);
+
+  const handleSaveEvaluation = async (isDraft: boolean) => {
     if (!selectedSub) return;
 
     try {
-      setIsSavingGrade(true);
+      if (isDraft) {
+        setIsSavingDraft(true);
+      } else {
+        setIsFinalizing(true);
+      }
       setGradeSuccessMsg(null);
+      setGradeErrorMsg(null);
 
-      const scorePayload = selectedSub.rubrics.map((r) => ({
+      // Validate marks against maximum question bounds
+      for (const ans of selectedSub.answers) {
+        if (ans.questionType !== "MCQ") {
+          const val = questionScores[ans.questionId] ?? 0;
+          if (val < 0 || val > ans.questionPoints) {
+            setGradeErrorMsg(
+              `Question 0${ans.questionNumber} score (${val}) must be between 0 and maximum ${ans.questionPoints} points.`
+            );
+            return;
+          }
+        }
+      }
+
+      // Validate rubric bounds
+      for (const r of selectedSub.rubrics) {
+        const val = rubricScores[r.id] ?? 0;
+        if (val < 0 || val > r.maxPoints) {
+          setGradeErrorMsg(
+            `Rubric "${r.name}" score (${val}) must be between 0 and maximum ${r.maxPoints} points.`
+          );
+          return;
+        }
+      }
+
+      const questionGradesPayload = selectedSub.answers
+        .filter((a) => a.questionType !== "MCQ")
+        .map((a) => ({
+          questionId: a.questionId,
+          score: Number(questionScores[a.questionId] ?? 0),
+          feedback: questionFeedback[a.questionId] || undefined,
+        }));
+
+      const rubricScoresPayload = selectedSub.rubrics.map((r) => ({
         rubricId: r.id,
         scoreAwarded: Number(rubricScores[r.id] ?? 0),
         comments: rubricComments[r.id] || undefined,
       }));
 
-      const res = await saveRubricScoreAction({
+      const res = await gradeSubmissionAction({
         submissionId: selectedSub.id,
         evaluatorEmail: session?.email || "evaluator.demo@example.com",
-        scores: scorePayload,
+        isDraft,
+        overallFeedback,
+        questionGrades: questionGradesPayload,
+        rubricScores: rubricScoresPayload,
       });
 
       if (res.success) {
-        setGradeSuccessMsg(
-          `Rubrics scored! Manual: ${res.manualGradeScore} pts • Final Score: ${res.finalScore}/100`
-        );
+        if (isDraft) {
+          setGradeSuccessMsg(
+            `Draft saved! Status: Grading in Progress • Manual: ${res.manualGradeScore} pts • Score: ${res.finalScore}/${selectedSub.taskPoints}`
+          );
+        } else {
+          setGradeSuccessMsg(
+            `Evaluation finalized! Locked Score: ${res.finalScore}/${selectedSub.taskPoints} (Auto: ${res.autoGradeScore} pts • Manual: ${res.manualGradeScore} pts)`
+          );
+        }
         await loadData();
       } else {
-        alert(`Evaluation error: ${res.error}`);
+        setGradeErrorMsg(res.error || "Failed to record evaluation.");
       }
     } catch (err) {
-      console.error("Save grade error:", err);
+      console.error("Grading workflow error:", err);
+      setGradeErrorMsg(err instanceof Error ? err.message : "Failed to record evaluation.");
     } finally {
-      setIsSavingGrade(false);
+      setIsSavingDraft(false);
+      setIsFinalizing(false);
     }
   };
 
   const filteredSubmissions = submissions.filter((s) => {
     const matchesFilter =
       filterTab === "All" ||
-      (filterTab === "Pending" && s.status === "SUBMITTED") ||
-      (filterTab === "Graded" && s.status === "GRADED");
+      (filterTab === "Pending" &&
+        (s.status === "SUBMITTED" || s.status === "GRADING_IN_PROGRESS")) ||
+      (filterTab === "Graded" && (s.status === "GRADED" || s.status === "PUBLISHED"));
     const matchesSearch =
       s.candidateName.toLowerCase().includes(searchTerm.toLowerCase()) ||
       s.candidateEmail.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      s.candidateId.toLowerCase().includes(searchTerm.toLowerCase()) ||
       s.contestTitle.toLowerCase().includes(searchTerm.toLowerCase());
     return matchesFilter && matchesSearch;
   });
 
-  const pendingCount = submissions.filter((s) => s.status === "SUBMITTED").length;
-  const gradedCount = submissions.filter((s) => s.status === "GRADED").length;
+  const pendingCount = submissions.filter(
+    (s) => s.status === "SUBMITTED" || s.status === "GRADING_IN_PROGRESS"
+  ).length;
+  const gradedCount = submissions.filter(
+    (s) => s.status === "GRADED" || s.status === "PUBLISHED"
+  ).length;
 
   return (
     <div className="min-h-screen bg-surface flex flex-col justify-between">
@@ -178,14 +290,14 @@ export default function EvaluatorConsolePage() {
               Assigned Submissions
             </h1>
             <p className="font-body-md text-secondary mt-1">
-              Score candidate executive summaries, diagnostic tasks, and slide decks against weighted rubrics.
+              Review candidate written answers, inspect uploaded PDF deliverables, score rubrics, and finalize assessment marks.
             </p>
           </div>
 
           <div className="flex items-center gap-2 self-start sm:self-auto">
             <button
               onClick={() => loadData()}
-              className="px-3 py-1.5 rounded bg-surface-container-lowest hover:bg-surface-container text-on-surface font-label-sm border border-[#e2e8f0] shadow-2xs flex items-center gap-1.5"
+              className="px-3 py-1.5 rounded bg-surface-container-lowest hover:bg-surface-container text-on-surface font-label-sm border border-[#e2e8f0] shadow-2xs flex items-center gap-1.5 cursor-pointer"
             >
               <span className="material-symbols-outlined text-[16px] text-secondary">refresh</span>
               <span>Refresh</span>
@@ -238,7 +350,7 @@ export default function EvaluatorConsolePage() {
                 {pendingCount}
               </span>
               <span className="font-label-xs text-amber-700/80 mt-0.5 block">
-                Awaiting rubric scoring
+                Awaiting manual review & locking
               </span>
             </div>
             <div className="w-10 h-10 rounded bg-amber-50 flex items-center justify-center text-amber-600">
@@ -249,16 +361,16 @@ export default function EvaluatorConsolePage() {
           <div className="p-4 bg-surface-container-lowest rounded-lg border border-[#e2e8f0] shadow-2xs flex justify-between items-center">
             <div>
               <span className="font-label-xs uppercase tracking-wider text-secondary block">
-                Evaluations Completed
+                Evaluations Finalized
               </span>
               <span className="font-display-lg text-primary-container tabular-nums">
                 {gradedCount}
               </span>
               <span className="font-label-xs text-secondary mt-0.5 block">
-                Standardized scores locked
+                Scores locked & certified
               </span>
             </div>
-            <div className="w-10 h-10 rounded bg-on-tertiary-container flex items-center justify-center text-primary-container">
+            <div className="w-10 h-10 rounded bg-[#dcfce7] flex items-center justify-center text-primary-container">
               <span className="material-symbols-outlined text-[20px]">verified</span>
             </div>
           </div>
@@ -272,7 +384,7 @@ export default function EvaluatorConsolePage() {
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search by candidate name, email, challenge..."
+              placeholder="Search by candidate name, email, ID, challenge..."
               className="w-full bg-transparent text-on-surface placeholder:text-secondary font-body-sm focus:outline-none"
             />
           </div>
@@ -302,7 +414,7 @@ export default function EvaluatorConsolePage() {
                 <button
                   key={tab}
                   onClick={() => setFilterTab(tab)}
-                  className={`px-3 py-1 rounded font-label-xs transition-colors ${
+                  className={`px-3 py-1 rounded font-label-xs transition-colors cursor-pointer ${
                     filterTab === tab
                       ? "bg-surface-container-lowest text-on-surface font-semibold shadow-2xs"
                       : "text-secondary hover:text-on-surface"
@@ -327,60 +439,72 @@ export default function EvaluatorConsolePage() {
               </div>
             </div>
           ) : filteredSubmissions.length > 0 ? (
-            filteredSubmissions.map((sub) => (
-              <div
-                key={sub.id}
-                className="p-space-lg flex flex-col sm:flex-row sm:items-center justify-between gap-space-md hover:bg-surface-container-low/40 transition-colors"
-              >
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span
-                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded font-label-xs font-semibold ${
-                        sub.status === "GRADED"
-                          ? "bg-on-tertiary-container text-primary-container"
-                          : "bg-surface-container-high text-secondary"
-                      }`}
-                    >
-                      {sub.status === "GRADED" ? (
-                        <span className="material-symbols-outlined text-[13px]">verified</span>
-                      ) : (
-                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
-                      )}
-                      {sub.status === "GRADED" ? "Graded" : "Ready for Grading"}
-                    </span>
-                    <span className="font-label-xs text-secondary">• {sub.contestTitle}</span>
-                  </div>
+            filteredSubmissions.map((sub) => {
+              const isGraded = sub.status === "GRADED" || sub.status === "PUBLISHED";
+              const isDraft = sub.status === "GRADING_IN_PROGRESS";
 
-                  <h3 className="font-headline-sm text-on-surface truncate">
-                    {sub.candidateName}
-                  </h3>
-                  <p className="font-body-sm text-secondary mt-0.5 truncate">
-                    {sub.institution} • {sub.candidateEmail}
-                  </p>
-
-                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2.5 font-label-sm text-secondary">
-                    <span>Submitted: {sub.submittedAt ? new Date(sub.submittedAt).toLocaleString() : "Recent"}</span>
-                    {sub.finalScore !== null && (
-                      <span className="font-semibold text-primary-container">
-                        Score: {sub.finalScore}/100
+              return (
+                <div
+                  key={sub.id}
+                  className="p-space-lg flex flex-col sm:flex-row sm:items-center justify-between gap-space-md hover:bg-surface-container-low/40 transition-colors"
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded font-label-xs font-semibold ${
+                          isGraded
+                            ? "bg-[#dcfce7] text-[#166534]"
+                            : isDraft
+                            ? "bg-amber-100 text-amber-800"
+                            : "bg-surface-container-high text-secondary"
+                        }`}
+                      >
+                        {isGraded ? (
+                          <span className="material-symbols-outlined text-[13px]">verified</span>
+                        ) : isDraft ? (
+                          <span className="material-symbols-outlined text-[13px]">edit_note</span>
+                        ) : (
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+                        )}
+                        {isGraded ? "Graded" : isDraft ? "Draft Saved" : "Ready for Grading"}
                       </span>
-                    )}
+                      <span className="font-label-xs text-secondary">• {sub.contestTitle}</span>
+                      <span className="font-label-xs text-secondary">• {sub.phaseTitle}</span>
+                    </div>
+
+                    <h3 className="font-headline-sm text-on-surface truncate">
+                      {sub.candidateName}
+                    </h3>
+                    <p className="font-body-sm text-secondary mt-0.5 truncate">
+                      {sub.candidateId} • {sub.institution} • {sub.candidateEmail}
+                    </p>
+
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2.5 font-label-sm text-secondary">
+                      <span>Submitted: {sub.submittedAt ? new Date(sub.submittedAt).toLocaleString() : "Recent"}</span>
+                      {sub.finalScore !== null && (
+                        <span className="font-semibold text-primary-container">
+                          Score: {sub.finalScore}/{sub.taskPoints} pts
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => openGradingDrawer(sub)}
+                      className="inline-flex items-center gap-1.5 px-space-md py-2 bg-primary-container hover:bg-[#166534] text-on-primary font-label-md rounded shadow-2xs transition-colors cursor-pointer"
+                    >
+                      <span className="material-symbols-outlined text-[16px]">
+                        {isGraded ? "edit_note" : isDraft ? "edit" : "rate_review"}
+                      </span>
+                      <span>
+                        {isGraded ? "Review Grade" : isDraft ? "Continue Grading" : "Grade Submission"}
+                      </span>
+                    </button>
                   </div>
                 </div>
-
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    onClick={() => openGradingDrawer(sub)}
-                    className="inline-flex items-center gap-1.5 px-space-md py-2 bg-primary-container hover:bg-[#166534] text-on-primary font-label-md rounded shadow-2xs transition-colors"
-                  >
-                    <span className="material-symbols-outlined text-[16px]">
-                      {sub.status === "GRADED" ? "edit_note" : "rate_review"}
-                    </span>
-                    <span>{sub.status === "GRADED" ? "Review Score" : "Score Rubric"}</span>
-                  </button>
-                </div>
-              </div>
-            ))
+              );
+            })
           ) : (
             <div className="p-12 text-center flex flex-col items-center justify-center">
               <div className="w-12 h-12 rounded-full bg-surface-container flex items-center justify-center text-secondary mb-3">
@@ -397,7 +521,7 @@ export default function EvaluatorConsolePage() {
         </div>
       </main>
 
-      {/* Evaluator Rubric Grading Drawer */}
+      {/* Evaluator Manual Grading & Rubric Drawer */}
       {selectedSub && (
         <div
           className="fixed inset-0 bg-inverse-surface/40 backdrop-blur-xs z-50 flex justify-end transition-opacity"
@@ -411,8 +535,20 @@ export default function EvaluatorConsolePage() {
               {/* Header */}
               <div className="flex items-center justify-between pb-space-md border-b border-[#f1f5f9]">
                 <div className="flex items-center gap-2">
-                  <span className="px-2 py-0.5 rounded bg-on-tertiary-container text-primary-container font-label-xs font-semibold">
-                    {selectedSub.status}
+                  <span
+                    className={`px-2 py-0.5 rounded font-label-xs font-semibold ${
+                      selectedSub.status === "GRADED"
+                        ? "bg-[#dcfce7] text-[#166534]"
+                        : selectedSub.status === "GRADING_IN_PROGRESS"
+                        ? "bg-amber-100 text-amber-800"
+                        : "bg-surface-container-high text-secondary"
+                    }`}
+                  >
+                    {selectedSub.status === "GRADED"
+                      ? "Graded"
+                      : selectedSub.status === "GRADING_IN_PROGRESS"
+                      ? "Draft Saved"
+                      : "Ready for Review"}
                   </span>
                   <span className="font-label-xs text-secondary font-mono">
                     ID: #{selectedSub.id.slice(0, 8)}
@@ -420,7 +556,7 @@ export default function EvaluatorConsolePage() {
                 </div>
                 <button
                   onClick={() => setSelectedSub(null)}
-                  className="p-1 rounded text-secondary hover:text-on-surface hover:bg-surface-container"
+                  className="p-1 rounded text-secondary hover:text-on-surface hover:bg-surface-container cursor-pointer"
                 >
                   <span className="material-symbols-outlined text-[20px]">close</span>
                 </button>
@@ -431,172 +567,442 @@ export default function EvaluatorConsolePage() {
                 {selectedSub.candidateName}
               </h2>
               <p className="font-body-md text-secondary mt-0.5">
-                {selectedSub.institution} • {selectedSub.contestTitle} ({selectedSub.phaseTitle})
+                {selectedSub.candidateId} • {selectedSub.institution} • {selectedSub.contestTitle} ({selectedSub.phaseTitle})
               </p>
 
+              {/* Live Assessment Score Dashboard */}
+              <div className="my-3 p-3 bg-surface-container-low rounded-lg border border-[#e2e8f0] grid grid-cols-3 gap-2 text-center">
+                <div className="p-2 bg-surface-container-lowest rounded border border-[#e2e8f0]">
+                  <span className="font-label-xs uppercase tracking-wider text-secondary block">
+                    Auto-Graded (MCQ)
+                  </span>
+                  <span className="font-headline-sm font-bold text-on-surface tabular-nums">
+                    {autoScore} pts
+                  </span>
+                </div>
+                <div className="p-2 bg-surface-container-lowest rounded border border-[#e2e8f0]">
+                  <span className="font-label-xs uppercase tracking-wider text-secondary block">
+                    {selectedSub.rubrics.length > 0 ? "Rubric Weighted" : "Manual Marks"}
+                  </span>
+                  <span className="font-headline-sm font-bold text-primary-container tabular-nums">
+                    {manualScore} pts
+                  </span>
+                </div>
+                <div className="p-2 bg-surface-container-lowest rounded border border-primary-container/30">
+                  <span className="font-label-xs uppercase tracking-wider text-primary-container font-semibold block">
+                    Total Score
+                  </span>
+                  <span className="font-headline-sm font-bold text-primary-container tabular-nums">
+                    {liveFinalScore} / {selectedSub.taskPoints}
+                  </span>
+                </div>
+              </div>
+
               {gradeSuccessMsg && (
-                <div className="my-3 p-3 rounded bg-on-tertiary-container border border-primary-container/40 text-primary-container font-label-sm font-semibold flex items-center gap-2">
+                <div className="my-2 p-3 rounded bg-[#dcfce7] border border-primary-container/40 text-[#166534] font-label-sm font-semibold flex items-center gap-2">
                   <span className="material-symbols-outlined text-[18px]">verified</span>
                   <span>{gradeSuccessMsg}</span>
                 </div>
               )}
 
-              {/* Candidate Answers Preview */}
-              <div className="my-space-md p-4 bg-surface-container-low rounded-lg border border-[#e2e8f0] flex flex-col gap-3">
-                <span className="font-label-xs uppercase tracking-wider text-secondary font-semibold">
-                  Candidate Responses
-                </span>
+              {gradeErrorMsg && (
+                <div className="my-2 p-3 rounded bg-red-50 border border-red-200 text-red-700 font-label-sm font-semibold flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[18px]">error</span>
+                  <span>{gradeErrorMsg}</span>
+                </div>
+              )}
 
-                {selectedSub.answers.map((ans, i) => (
-                  <div key={ans.id} className="p-3 bg-surface-container-lowest rounded border border-[#e2e8f0] text-body-sm">
-                    <div className="flex items-center justify-between text-secondary font-label-xs mb-1">
-                      <span className="font-semibold text-on-surface">Question 0{i + 1} ({ans.questionType})</span>
-                      <span>{ans.questionPoints} pts max</span>
-                    </div>
-                    <p className="font-body-sm text-on-surface mb-2">{ans.questionPrompt}</p>
-
-                    {ans.selectedOption && (
-                      <div className="font-label-sm text-primary-container font-semibold">
-                        Selected Option: Option {ans.selectedOption}
-                      </div>
-                    )}
-
-                    {ans.writtenText && (
-                      <div className="p-2.5 rounded bg-surface-container-low font-body-sm text-on-surface text-xs leading-relaxed italic border border-[#e2e8f0]">
-                        &quot;{ans.writtenText}&quot;
-                        <div className="text-secondary font-label-xs mt-1 not-italic">
-                          Word Count: {ans.wordCount ?? 0} words
-                        </div>
-                      </div>
-                    )}
-
-                    {ans.fileKey && (
-                      <div className="p-3 bg-surface-container-low rounded border border-[#e2e8f0] text-xs flex items-center justify-between mt-2">
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <span className="material-symbols-outlined text-error text-[24px] shrink-0">
-                            picture_as_pdf
-                          </span>
-                          <div className="min-w-0">
-                            <span className="font-semibold text-on-surface block truncate">
-                              {ans.fileName || "Candidate_Deliverable.pdf"}
-                            </span>
-                            <span className="text-[11px] text-secondary font-mono">
-                              Verified PDF Attachment
-                            </span>
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            try {
-                              const res = await getFileDownloadUrlAction(ans.fileKey!);
-                              if (res.success && res.downloadUrl) {
-                                window.open(res.downloadUrl, "_blank", "noopener,noreferrer");
-                              } else {
-                                window.open(`/api/files/${ans.fileKey}`, "_blank", "noopener,noreferrer");
-                              }
-                            } catch {
-                              window.open(`/api/files/${ans.fileKey}`, "_blank", "noopener,noreferrer");
-                            }
-                          }}
-                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded bg-surface-container-lowest hover:bg-surface-container text-on-surface font-label-xs font-medium border border-[#e2e8f0] shadow-2xs transition-colors shrink-0"
-                        >
-                          <span className="material-symbols-outlined text-[15px]">visibility</span>
-                          Open PDF
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              {/* Rubric Evaluation Form */}
-              <form onSubmit={handleSaveGrades} className="flex flex-col gap-space-md">
+              {/* Question-by-Question Grading */}
+              <div className="my-space-md flex flex-col gap-3">
                 <div className="flex items-center justify-between">
                   <span className="font-label-xs uppercase tracking-wider text-secondary font-semibold">
-                    Standardized Rubric Scoring Matrix
+                    Question-by-Question Evaluation ({selectedSub.answers.length} items)
                   </span>
-                  <span className="font-label-xs text-primary-container font-semibold">
-                    Weight Sum: 100%
+                  <span className="font-label-xs text-secondary">
+                    Total Task Points: {selectedSub.taskPoints}
                   </span>
                 </div>
 
-                <div className="space-y-3">
-                  {selectedSub.rubrics.map((r) => {
-                    const currentVal = rubricScores[r.id] ?? Math.round(r.maxPoints * 0.85);
+                {selectedSub.answers.map((ans, i) => {
+                  const currentScore = questionScores[ans.questionId] ?? 0;
+                  const isScoreInvalid = currentScore < 0 || currentScore > ans.questionPoints;
 
-                    return (
-                      <div key={r.id} className="p-3 bg-surface-container-lowest rounded-lg border border-[#e2e8f0] shadow-2xs flex flex-col gap-2">
-                        <div className="flex items-center justify-between">
-                          <span className="font-label-md font-semibold text-on-surface">
-                            {r.name}
+                  return (
+                    <div
+                      key={ans.id}
+                      className="p-3.5 bg-surface-container-lowest rounded-lg border border-[#e2e8f0] shadow-2xs text-body-sm flex flex-col gap-2.5"
+                    >
+                      <div className="flex items-center justify-between text-secondary font-label-xs">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-on-surface">
+                            Question 0{ans.questionNumber || i + 1}
                           </span>
-                          <span className="font-label-xs text-secondary">
-                            Max {r.maxPoints} pts ({r.weightPercentage}% weight)
+                          <span
+                            className={`px-2 py-0.2 rounded text-[10px] font-semibold uppercase tracking-wider ${
+                              ans.questionType === "MCQ"
+                                ? "bg-slate-100 text-slate-700"
+                                : ans.questionType === "WRITTEN"
+                                ? "bg-blue-50 text-blue-700"
+                                : "bg-purple-50 text-purple-700"
+                            }`}
+                          >
+                            {ans.questionType}
                           </span>
                         </div>
+                        <span className="font-medium text-secondary">
+                          Max: {ans.questionPoints} pts
+                        </span>
+                      </div>
 
-                        {r.description && (
-                          <p className="font-body-xs text-secondary text-xs">{r.description}</p>
-                        )}
+                      <p className="font-body-sm text-on-surface font-medium">
+                        {ans.questionPrompt}
+                      </p>
 
-                        <div className="flex items-center gap-3 pt-1">
+                      {ans.questionInstructions && (
+                        <p className="font-body-xs text-secondary text-xs italic">
+                          {ans.questionInstructions}
+                        </p>
+                      )}
+
+                      {/* MCQ Response Review */}
+                      {ans.questionType === "MCQ" && (
+                        <div className="p-3 rounded bg-surface-container-low border border-[#e2e8f0] flex flex-col gap-2">
+                          <div className="flex items-center justify-between">
+                            <span className="font-label-sm text-on-surface">
+                              Candidate Selected:{" "}
+                              <strong className="text-primary-container">
+                                Option {ans.selectedOption || "None"}
+                              </strong>
+                            </span>
+                            <span
+                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold ${
+                                ans.isCorrect
+                                  ? "bg-[#dcfce7] text-[#166534]"
+                                  : "bg-red-50 text-red-700"
+                              }`}
+                            >
+                              <span className="material-symbols-outlined text-[14px]">
+                                {ans.isCorrect ? "check_circle" : "cancel"}
+                              </span>
+                              <span>
+                                {ans.isCorrect
+                                  ? `Correct (+${ans.score ?? ans.questionPoints} pts)`
+                                  : "Incorrect (0 pts)"}
+                              </span>
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-secondary">
+                            Auto-graded on server submission using verified answer key.
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Written Response Review & Grading */}
+                      {ans.questionType === "WRITTEN" && (
+                        <div className="flex flex-col gap-2.5">
+                          {ans.writtenText ? (
+                            <div className="p-3 rounded bg-surface-container-low font-body-sm text-on-surface text-xs leading-relaxed italic border border-[#e2e8f0]">
+                              &quot;{ans.writtenText}&quot;
+                              <div className="text-secondary font-label-xs mt-1.5 not-italic flex items-center gap-3">
+                                <span>Word Count: <strong>{ans.wordCount ?? 0} words</strong></span>
+                                {(ans.minWords || ans.maxWords) && (
+                                  <span>
+                                    Target: {ans.minWords ?? 0} – {ans.maxWords ?? "No limit"} words
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="p-2.5 rounded bg-surface-container-low text-xs text-secondary italic border border-[#e2e8f0]">
+                              No written response was provided by candidate.
+                            </div>
+                          )}
+
+                          {/* Manual Question Scoring Input */}
+                          <div className="p-3 bg-surface-container-low rounded border border-[#e2e8f0] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                            <div className="flex-1">
+                              <label className="block font-label-xs font-semibold text-on-surface mb-1">
+                                Award Marks (0 – {ans.questionPoints} pts)
+                              </label>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max={ans.questionPoints}
+                                  step="1"
+                                  value={questionScores[ans.questionId] ?? 0}
+                                  onChange={(e) =>
+                                    setQuestionScores({
+                                      ...questionScores,
+                                      [ans.questionId]: Number(e.target.value),
+                                    })
+                                  }
+                                  className={`w-24 px-2.5 py-1 text-sm rounded bg-surface-container-lowest border font-mono font-bold ${
+                                    isScoreInvalid
+                                      ? "border-red-500 text-red-600 focus:outline-red-500"
+                                      : "border-[#e2e8f0] text-on-surface focus:outline-primary-container"
+                                  }`}
+                                />
+                                <span className="font-label-xs text-secondary">
+                                  / {ans.questionPoints} max points
+                                </span>
+                              </div>
+                              {isScoreInvalid && (
+                                <span className="text-[11px] text-red-600 mt-0.5 block">
+                                  Score cannot exceed {ans.questionPoints} points or be negative.
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Question Feedback Textarea */}
+                          <div>
+                            <label className="block font-label-xs text-secondary font-semibold mb-1">
+                              Question Evaluator Feedback
+                            </label>
+                            <textarea
+                              rows={2}
+                              value={questionFeedback[ans.questionId] || ""}
+                              onChange={(e) =>
+                                setQuestionFeedback({
+                                  ...questionFeedback,
+                                  [ans.questionId]: e.target.value,
+                                })
+                              }
+                              placeholder="Add specific qualitative feedback for this response..."
+                              className="w-full px-2.5 py-1.5 text-xs rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface focus:outline-none focus:border-primary-container"
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {/* File Upload Review & Grading */}
+                      {ans.questionType === "FILE_UPLOAD" && (
+                        <div className="flex flex-col gap-2.5">
+                          {ans.fileKey ? (
+                            <div className="p-3 bg-surface-container-low rounded border border-[#e2e8f0] text-xs flex items-center justify-between">
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <span className="material-symbols-outlined text-red-600 text-[26px] shrink-0">
+                                  picture_as_pdf
+                                </span>
+                                <div className="min-w-0">
+                                  <span className="font-semibold text-on-surface block truncate">
+                                    {ans.fileName || "Candidate_Deliverable.pdf"}
+                                  </span>
+                                  <span className="text-[11px] text-secondary font-mono">
+                                    Verified Secure PDF Deliverable
+                                  </span>
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  try {
+                                    const res = await getFileDownloadUrlAction(ans.fileKey!);
+                                    if (res.success && res.downloadUrl) {
+                                      window.open(res.downloadUrl, "_blank", "noopener,noreferrer");
+                                    } else {
+                                      window.open(`/api/files/${ans.fileKey}`, "_blank", "noopener,noreferrer");
+                                    }
+                                  } catch {
+                                    window.open(`/api/files/${ans.fileKey}`, "_blank", "noopener,noreferrer");
+                                  }
+                                }}
+                                className="inline-flex items-center gap-1 px-3 py-1.5 rounded bg-surface-container-lowest hover:bg-surface-container text-on-surface font-label-xs font-semibold border border-[#e2e8f0] shadow-2xs transition-colors shrink-0 cursor-pointer"
+                              >
+                                <span className="material-symbols-outlined text-[16px]">visibility</span>
+                                <span>Open PDF Deliverable</span>
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="p-2.5 rounded bg-surface-container-low text-xs text-secondary italic border border-[#e2e8f0]">
+                              No file attachment was uploaded by candidate.
+                            </div>
+                          )}
+
+                          {/* Manual Question Scoring Input */}
+                          <div className="p-3 bg-surface-container-low rounded border border-[#e2e8f0] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                            <div className="flex-1">
+                              <label className="block font-label-xs font-semibold text-on-surface mb-1">
+                                Award Marks (0 – {ans.questionPoints} pts)
+                              </label>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max={ans.questionPoints}
+                                  step="1"
+                                  value={questionScores[ans.questionId] ?? 0}
+                                  onChange={(e) =>
+                                    setQuestionScores({
+                                      ...questionScores,
+                                      [ans.questionId]: Number(e.target.value),
+                                    })
+                                  }
+                                  className={`w-24 px-2.5 py-1 text-sm rounded bg-surface-container-lowest border font-mono font-bold ${
+                                    isScoreInvalid
+                                      ? "border-red-500 text-red-600 focus:outline-red-500"
+                                      : "border-[#e2e8f0] text-on-surface focus:outline-primary-container"
+                                  }`}
+                                />
+                                <span className="font-label-xs text-secondary">
+                                  / {ans.questionPoints} max points
+                                </span>
+                              </div>
+                              {isScoreInvalid && (
+                                <span className="text-[11px] text-red-600 mt-0.5 block">
+                                  Score cannot exceed {ans.questionPoints} points or be negative.
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Deliverable Feedback */}
+                          <div>
+                            <label className="block font-label-xs text-secondary font-semibold mb-1">
+                              Deliverable Evaluator Feedback
+                            </label>
+                            <textarea
+                              rows={2}
+                              value={questionFeedback[ans.questionId] || ""}
+                              onChange={(e) =>
+                                setQuestionFeedback({
+                                  ...questionFeedback,
+                                  [ans.questionId]: e.target.value,
+                                })
+                              }
+                              placeholder="Feedback on structure, pitch deck design, and quantitative accuracy..."
+                              className="w-full px-2.5 py-1.5 text-xs rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface focus:outline-none focus:border-primary-container"
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Rubric Evaluation Form (Rendered if criteria are configured) */}
+              {selectedSub.rubrics.length > 0 && (
+                <div className="my-space-md flex flex-col gap-3">
+                  <div className="flex items-center justify-between pb-1 border-b border-[#e2e8f0]">
+                    <span className="font-label-xs uppercase tracking-wider text-secondary font-semibold">
+                      Standardized Rubric Scoring Matrix ({selectedSub.rubrics.length} Criteria)
+                    </span>
+                    <span className="font-label-xs text-primary-container font-semibold">
+                      Weighted Total: {manualScore} / 100
+                    </span>
+                  </div>
+
+                  <div className="space-y-3">
+                    {selectedSub.rubrics.map((r) => {
+                      const currentVal = rubricScores[r.id] ?? Math.round(r.maxPoints * 0.85);
+
+                      return (
+                        <div
+                          key={r.id}
+                          className="p-3 bg-surface-container-lowest rounded-lg border border-[#e2e8f0] shadow-2xs flex flex-col gap-2"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="font-label-md font-semibold text-on-surface">
+                              {r.name}
+                            </span>
+                            <span className="font-label-xs text-secondary">
+                              Max {r.maxPoints} pts ({r.weightPercentage}% weight)
+                            </span>
+                          </div>
+
+                          {r.description && (
+                            <p className="font-body-xs text-secondary text-xs">{r.description}</p>
+                          )}
+
+                          <div className="flex items-center gap-3 pt-1">
+                            <input
+                              type="range"
+                              min="0"
+                              max={r.maxPoints}
+                              step="1"
+                              value={currentVal}
+                              onChange={(e) =>
+                                setRubricScores({
+                                  ...rubricScores,
+                                  [r.id]: Number(e.target.value),
+                                })
+                              }
+                              className="flex-1 accent-primary-container cursor-pointer"
+                            />
+                            <span className="font-mono text-on-surface font-bold text-sm w-16 text-right">
+                              {currentVal} / {r.maxPoints}
+                            </span>
+                          </div>
+
                           <input
-                            type="range"
-                            min="0"
-                            max={r.maxPoints}
-                            step="1"
-                            value={currentVal}
+                            type="text"
+                            placeholder="Criterion evaluation notes..."
+                            value={rubricComments[r.id] || ""}
                             onChange={(e) =>
-                              setRubricScores({
-                                ...rubricScores,
-                                [r.id]: Number(e.target.value),
+                              setRubricComments({
+                                ...rubricComments,
+                                [r.id]: e.target.value,
                               })
                             }
-                            className="flex-1 accent-primary-container cursor-pointer"
+                            className="px-2.5 py-1 text-xs rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface focus:outline-none focus:border-primary-container"
                           />
-                          <span className="font-mono text-on-surface font-bold text-sm w-12 text-right">
-                            {currentVal} / {r.maxPoints}
-                          </span>
                         </div>
-
-                        <input
-                          type="text"
-                          placeholder="Optional evaluator feedback notes..."
-                          value={rubricComments[r.id] || ""}
-                          onChange={(e) =>
-                            setRubricComments({
-                              ...rubricComments,
-                              [r.id]: e.target.value,
-                            })
-                          }
-                          className="px-2.5 py-1 text-xs rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface focus:outline-none focus:border-primary-container"
-                        />
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
+                  </div>
                 </div>
+              )}
 
-                <div className="pt-space-md flex items-center justify-end gap-space-sm border-t border-[#f1f5f9]">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedSub(null)}
-                    className="px-space-md py-2 rounded bg-surface-container-high hover:bg-surface-container text-on-surface font-label-md border border-[#e2e8f0]"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={isSavingGrade}
-                    className="px-space-md py-2 rounded bg-primary-container hover:bg-[#166534] text-on-primary font-label-md font-medium shadow-2xs flex items-center gap-1.5"
-                  >
-                    {isSavingGrade && (
-                      <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
-                    )}
-                    <span>Save Evaluation & Lock Score</span>
-                  </button>
-                </div>
-              </form>
+              {/* Overall Evaluator Feedback */}
+              <div className="my-space-sm p-3 bg-surface-container-lowest rounded-lg border border-[#e2e8f0] flex flex-col gap-1.5">
+                <label className="font-label-xs uppercase tracking-wider text-secondary font-semibold">
+                  Overall Candidate Feedback & Executive Summary
+                </label>
+                <textarea
+                  rows={3}
+                  value={overallFeedback}
+                  onChange={(e) => setOverallFeedback(e.target.value)}
+                  placeholder="Comprehensive feedback notes for the participant and academic audit..."
+                  className="w-full px-2.5 py-1.5 text-xs rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface focus:outline-none focus:border-primary-container"
+                />
+              </div>
+
+              {/* Action Buttons */}
+              <div className="pt-space-md flex items-center justify-end gap-space-sm border-t border-[#f1f5f9] mt-3">
+                <button
+                  type="button"
+                  onClick={() => setSelectedSub(null)}
+                  className="px-space-md py-2 rounded bg-surface-container-high hover:bg-surface-container text-on-surface font-label-md border border-[#e2e8f0] cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={isSavingDraft || isFinalizing}
+                  onClick={() => handleSaveEvaluation(true)}
+                  className="px-space-md py-2 rounded bg-surface-container-lowest hover:bg-surface-container text-on-surface font-label-md font-medium border border-[#e2e8f0] shadow-2xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  {isSavingDraft && (
+                    <span className="w-3.5 h-3.5 border-2 border-secondary border-t-transparent rounded-full animate-spin"></span>
+                  )}
+                  <span className="material-symbols-outlined text-[16px] text-secondary">save</span>
+                  <span>Save Draft</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isSavingDraft || isFinalizing}
+                  onClick={() => handleSaveEvaluation(false)}
+                  className="px-space-md py-2 rounded bg-primary-container hover:bg-[#166534] text-on-primary font-label-md font-medium shadow-2xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  {isFinalizing && (
+                    <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                  )}
+                  <span className="material-symbols-outlined text-[16px]">verified</span>
+                  <span>Finalize & Lock Grade</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>

@@ -134,6 +134,8 @@ export async function getParticipantContests(): Promise<{
 }
 
 export interface ParticipantLeaderboardRow {
+  userId?: string;
+  candidateName?: string;
   candidateId: string;
   rank: number;
   finalScore: number;
@@ -212,6 +214,8 @@ export async function getParticipantLeaderboard(
         if (isCurrent) userRank = r.rank;
 
         return {
+          userId: r.userId,
+          candidateName: r.user.name,
           candidateId: isCurrent
             ? `${r.user.candidateId || "YOU"} (You)`
             : r.user.candidateId || `ACI-CAND-${r.userId.slice(0, 4).toUpperCase()}`,
@@ -231,23 +235,37 @@ export async function getParticipantLeaderboard(
       };
     }
 
-    // If not certified/published yet: return clean provisional leaderboard with Candidate IDs
+    // If not certified/published yet: return clean provisional leaderboard with Candidate IDs (masking unpublished scores)
+    const candidateMap = new Map<string, typeof contest.submissions>();
+    for (const sub of contest.submissions) {
+      if (!candidateMap.has(sub.userId)) {
+        candidateMap.set(sub.userId, []);
+      }
+      candidateMap.get(sub.userId)!.push(sub);
+    }
+
     let userRank: number | null = null;
-    const rows: ParticipantLeaderboardRow[] = contest.submissions.map((sub, index) => {
-      const isCurrent = sub.userId === session.userId;
-      const rank = index + 1;
+    let rankIndex = 1;
+    const rows: ParticipantLeaderboardRow[] = [];
+
+    for (const [userId, userSubs] of candidateMap.entries()) {
+      const isCurrent = userId === session.userId;
+      const rank = rankIndex++;
       if (isCurrent) userRank = rank;
 
-      return {
+      const sub = userSubs[0];
+      rows.push({
+        userId: sub.userId,
+        candidateName: sub.user.name,
         candidateId: isCurrent
           ? `${sub.user.candidateId || "YOU"} (You)`
           : sub.user.candidateId || `ACI-CAND-${sub.userId.slice(0, 4).toUpperCase()}`,
         rank,
-        finalScore: Number(sub.finalScore ?? 0),
+        finalScore: 0,
         isCurrentUser: isCurrent,
         isCertified: false,
-      };
-    });
+      });
+    }
 
     return {
       contestTitle: contest.title,
@@ -293,8 +311,8 @@ export async function getParticipantScorecard(
   try {
     const session = await requireRole(["PARTICIPANT"]);
 
-    // Find latest submission for this user
-    const submission = await prisma.submission.findFirst({
+    // Find all submissions for this user in this contest
+    const submissions = await prisma.submission.findMany({
       where: {
         userId: session.userId,
         ...(contestId ? { contestId } : {}),
@@ -317,11 +335,12 @@ export async function getParticipantScorecard(
       orderBy: { createdAt: "desc" },
     });
 
-    if (!submission) {
+    if (submissions.length === 0) {
       return null;
     }
 
-    const contest = submission.contest;
+    const primarySub = submissions[0];
+    const contest = primarySub.contest;
     const cohortResult = contest.results[0];
     const isPublished = contest.isPublished;
 
@@ -331,8 +350,8 @@ export async function getParticipantScorecard(
         contestTitle: contest.title,
         track: contest.track,
         isPublished: false,
-        submissionStatus: submission.status,
-        submittedAt: submission.submittedAt?.toISOString() || null,
+        submissionStatus: primarySub.status,
+        submittedAt: primarySub.submittedAt?.toISOString() || null,
         totalScore: 0,
         rank: null,
         percentile: null,
@@ -341,29 +360,36 @@ export async function getParticipantScorecard(
       };
     }
 
-    // Map rubrics with awarded scores and qualitative comments
-    const rubrics = submission.task.rubrics.map((r) => {
-      const evaluation = submission.evaluations.find((e) => e.rubricId === r.id);
-      return {
-        name: r.name,
-        weight: Number(r.weightPercentage),
-        maxPoints: Number(r.maxPoints),
-        scoreAwarded: evaluation ? Number(evaluation.scoreAwarded) : 0,
-        comments: evaluation?.comments || null,
-      };
-    });
+    // Map all rubrics across all candidate tasks
+    const allRubrics: ParticipantScorecardData["rubrics"] = [];
+    for (const sub of submissions) {
+      for (const r of sub.task.rubrics) {
+        const evaluation = sub.evaluations.find((e) => e.rubricId === r.id);
+        allRubrics.push({
+          name: r.name,
+          weight: Number(r.weightPercentage),
+          maxPoints: Number(r.maxPoints),
+          scoreAwarded: evaluation ? Number(evaluation.scoreAwarded) : 0,
+          comments: evaluation?.comments || null,
+        });
+      }
+    }
+
+    const totalScore = cohortResult
+      ? Number(cohortResult.totalScore)
+      : submissions.reduce((sum, s) => sum + (s.finalScore ? Number(s.finalScore) : 0), 0);
 
     return {
       contestTitle: contest.title,
       track: contest.track,
       isPublished: true,
-      submissionStatus: submission.status,
-      submittedAt: submission.submittedAt?.toISOString() || null,
-      totalScore: Number(submission.finalScore ?? 0),
+      submissionStatus: primarySub.status,
+      submittedAt: primarySub.submittedAt?.toISOString() || null,
+      totalScore,
       rank: cohortResult?.rank || null,
       percentile: cohortResult ? Number(cohortResult.percentile) : null,
       isCertified: cohortResult?.isCertified || false,
-      rubrics,
+      rubrics: allRubrics,
     };
   } catch (error) {
     console.error("Error fetching participant scorecard:", error);
