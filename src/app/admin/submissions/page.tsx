@@ -7,16 +7,24 @@ import {
   type AdminSubmissionsOverview,
   type AdminSubmissionDetail,
 } from "@/app/actions/results-actions";
-import { getFileDownloadUrlAction } from "@/app/actions/file-actions";
 import { gradeSubmissionAction } from "@/app/actions/evaluator-actions";
+import { useAdminContest } from "@/context/admin-contest-context";
 
 export default function AdminSubmissionsPage() {
+  const { selectedContestId: globalContestId, setSelectedContestId: setGlobalContestId } = useAdminContest();
   const [data, setData] = useState<AdminSubmissionsOverview | null>(null);
-  const [selectedContestId, setSelectedContestId] = useState<string>("");
+  const [selectedContestId, setSelectedContestId] = useState<string>(globalContestId || "ALL");
   const [statusFilter, setStatusFilter] = useState<"ALL" | "SUBMITTED" | "GRADED">("ALL");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedSubmission, setSelectedSubmission] = useState<AdminSubmissionDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+
+  // Sync with global contest context when changed from sidebar or header
+  useEffect(() => {
+    if (globalContestId && globalContestId !== selectedContestId) {
+      setSelectedContestId(globalContestId);
+    }
+  }, [globalContestId, selectedContestId]);
 
   // Interactive Grading Drawer State
   const [questionScores, setQuestionScores] = useState<Record<string, number>>({});
@@ -34,9 +42,6 @@ export default function AdminSubmissionsPage() {
       setIsLoading(true);
       const res = await getAdminSubmissionsList(contestId);
       setData(res);
-      if (!selectedContestId && res.selectedContestId) {
-        setSelectedContestId(res.selectedContestId);
-      }
       if (selectedSubmission) {
         const updated = res.submissions.find((s) => s.id === selectedSubmission.id);
         if (updated) setSelectedSubmission(updated);
@@ -46,11 +51,11 @@ export default function AdminSubmissionsPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [selectedContestId, selectedSubmission]);
+  }, [selectedSubmission]);
 
   useEffect(() => {
     loadSubmissions(selectedContestId || undefined);
-  }, [selectedContestId]);
+  }, [selectedContestId, loadSubmissions]);
 
   const openInspector = (sub: AdminSubmissionDetail) => {
     setSelectedSubmission(sub);
@@ -241,16 +246,21 @@ export default function AdminSubmissionsPage() {
         </div>
 
         {/* Contest Switcher */}
-        {data && data.contests.length > 0 && (
+        {data && (
           <div className="flex items-center gap-space-sm">
             <label className="font-label-xs text-secondary font-medium whitespace-nowrap">
               Contest:
             </label>
             <select
               value={selectedContestId}
-              onChange={(e) => setSelectedContestId(e.target.value)}
+              onChange={(e) => {
+                const val = e.target.value;
+                setSelectedContestId(val);
+                setGlobalContestId(val);
+              }}
               className="px-3 py-2 bg-surface-container-lowest border border-[#e2e8f0] rounded text-on-surface font-label-sm font-medium focus:outline-none focus:border-primary-container"
             >
+              <option value="ALL">All Contests (Global Scope)</option>
               {data.contests.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.title}
@@ -422,7 +432,7 @@ export default function AdminSubmissionsPage() {
           onClick={() => setSelectedSubmission(null)}
         >
           <div
-            className="w-full max-w-2xl bg-surface-container-lowest h-full shadow-2xl p-space-lg flex flex-col justify-between border-l border-[#e2e8f0] overflow-y-auto"
+            className="w-full sm:w-[94vw] md:w-[75vw] lg:w-[48vw] lg:min-w-[680px] lg:max-w-[920px] xl:max-w-[1020px] 2xl:max-w-[1150px] bg-surface-container-lowest h-full shadow-2xl p-space-lg flex flex-col justify-between border-l border-[#e2e8f0] overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
             <div>
@@ -662,25 +672,27 @@ export default function AdminSubmissionsPage() {
                               </div>
                             </div>
                             {ans.fileKey && (
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  try {
-                                    const res = await getFileDownloadUrlAction(ans.fileKey!);
-                                    if (res.success && res.downloadUrl) {
-                                      window.open(res.downloadUrl, "_blank", "noopener,noreferrer");
-                                    } else {
-                                      window.open(`/api/files/${ans.fileKey}`, "_blank", "noopener,noreferrer");
-                                    }
-                                  } catch {
-                                    window.open(`/api/files/${ans.fileKey}`, "_blank", "noopener,noreferrer");
-                                  }
-                                }}
-                                className="inline-flex items-center gap-1 px-3 py-1.5 rounded bg-surface-container hover:bg-surface-container-high text-on-surface font-label-xs font-semibold border border-[#e2e8f0] transition-colors shrink-0 cursor-pointer"
-                              >
-                                <span className="material-symbols-outlined text-[16px]">visibility</span>
-                                <span>Open PDF</span>
-                              </button>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <a
+                                  href={`/api/files/${ans.fileKey}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded bg-surface-container-lowest hover:bg-surface-container text-on-surface font-label-xs font-semibold border border-[#e2e8f0] shadow-2xs transition-colors shrink-0 cursor-pointer"
+                                  title="Open PDF in new browser tab"
+                                >
+                                  <span className="material-symbols-outlined text-[16px]">visibility</span>
+                                  <span>Open PDF</span>
+                                </a>
+                                <a
+                                  href={`/api/files/${ans.fileKey}?download=1`}
+                                  download={ans.fileName || "Candidate_Deliverable.pdf"}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded bg-surface-container hover:bg-surface-container-high text-on-surface font-label-xs font-medium border border-[#e2e8f0] transition-colors shrink-0 cursor-pointer"
+                                  title="Download PDF to your computer"
+                                >
+                                  <span className="material-symbols-outlined text-[16px]">download</span>
+                                  <span className="hidden sm:inline">Download</span>
+                                </a>
+                              </div>
                             )}
                           </div>
 

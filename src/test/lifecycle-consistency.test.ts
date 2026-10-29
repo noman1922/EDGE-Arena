@@ -50,7 +50,7 @@ describe("Shared Contest Lifecycle & Cross-Role Consistency", () => {
 
     // 2. Participant View
     setTestSession({ userId: participantUser.id, email: participantEmail, role: "PARTICIPANT", name: "Sarah Jenkins" });
-    const partDash = await getParticipantDashboard(participantEmail);
+    const partDash = await getParticipantDashboard();
     const pilotPartDash = partDash.contests.find((c) => c.contestId === contestId);
 
     assert.notEqual(pilotPartDash?.daysRemainingText, "Contest Concluded", "Live contest must not show Contest Concluded on dashboard");

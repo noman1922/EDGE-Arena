@@ -1,16 +1,20 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, Suspense } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import {
   getParticipantLeaderboard,
   type ParticipantLeaderboardData,
   type ParticipantLeaderboardRow,
 } from "@/app/actions/participant-nav-actions";
 
-export default function ParticipantLeaderboardPage() {
+function ParticipantLeaderboardContent() {
+  const searchParams = useSearchParams();
+  const contestIdParam = searchParams.get("contestId") || "";
+
   const [data, setData] = useState<ParticipantLeaderboardData | null>(null);
-  const [selectedContestId, setSelectedContestId] = useState<string>("");
+  const [selectedContestId, setSelectedContestId] = useState<string>(contestIdParam);
   const [isLoading, setIsLoading] = useState(true);
 
   const loadLeaderboard = async (contestId?: string) => {
@@ -27,6 +31,12 @@ export default function ParticipantLeaderboardPage() {
       setIsLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (contestIdParam && contestIdParam !== selectedContestId) {
+      setSelectedContestId(contestIdParam);
+    }
+  }, [contestIdParam]);
 
   useEffect(() => {
     loadLeaderboard(selectedContestId || undefined);
@@ -77,13 +87,13 @@ export default function ParticipantLeaderboardPage() {
           <div className="flex items-center gap-space-md">
             <div
               className={`w-12 h-12 rounded-full flex items-center justify-center shrink-0 ${
-                data.currentUserRank
+                data.isPublished && data.currentUserRank
                   ? "bg-[#dcfce7] text-primary-container"
                   : "bg-surface-container text-secondary"
               }`}
             >
               <span className="material-symbols-outlined text-[28px]">
-                {data.currentUserRank ? "military_tech" : "hourglass_top"}
+                {data.isPublished && data.currentUserRank ? "military_tech" : "hourglass_top"}
               </span>
             </div>
             <div>
@@ -98,45 +108,53 @@ export default function ParticipantLeaderboardPage() {
                       : "bg-[#fef3c7] text-[#92400e]"
                   }`}
                 >
-                  {data.isPublished ? "Official Certified" : "Provisional Standing"}
+                  {data.isPublished ? "Official Certified" : "Official Results Pending"}
                 </span>
               </div>
               <h3 className="font-headline-md font-bold text-on-surface mt-0.5">
-                {data.currentUserRank ? `Rank #${data.currentUserRank}` : "Submission Pending / In Review"}
+                {data.isPublished && data.currentUserRank
+                  ? `Rank #${data.currentUserRank}`
+                  : "Official Results Pending"}
               </h3>
               <p className="font-body-xs text-secondary mt-0.5">
                 {data.isPublished
                   ? "This rank is officially certified by platform administrators."
-                  : "Evaluators are currently reviewing written essays. Standings will be finalized upon official certification."}
+                  : "Evaluators and administrators are currently verifying submissions. Official ranks, percentiles, and scores will appear once certified and published."}
               </p>
             </div>
           </div>
 
           <div className="px-4 py-2 bg-surface-container-low rounded border border-[#e2e8f0] text-xs text-secondary self-start sm:self-auto max-w-xs">
-            <strong className="text-on-surface block mb-0.5">Tie-Breaking Protocol:</strong>
-            Equal scores are broken chronologically by submission timestamp (earlier timestamp takes precedence).
+            <strong className="text-on-surface block mb-0.5">Integrity & Tie-Breaking:</strong>
+            Equal scores are broken chronologically by final submission timestamp. Unpublished results remain strictly shielded.
           </div>
         </div>
       )}
 
-      {/* Leaderboard Table */}
+      {/* Leaderboard Table / Pending State */}
       <div className="bg-surface-container-lowest border border-[#e2e8f0] rounded-lg shadow-2xs overflow-hidden">
         {isLoading ? (
           <div className="py-20 flex flex-col items-center justify-center text-secondary">
             <span className="w-8 h-8 border-3 border-primary-container border-t-transparent rounded-full animate-spin mb-3"></span>
             <p className="font-label-sm">Loading cohort leaderboard...</p>
           </div>
-        ) : !data || data.rows.length === 0 ? (
-          <div className="p-12 text-center text-secondary">
-            <span className="material-symbols-outlined text-[40px] mb-2 text-secondary/60">
-              leaderboard
-            </span>
+        ) : !data || !data.isPublished || data.rows.length === 0 ? (
+          <div className="p-12 text-center text-secondary flex flex-col items-center justify-center">
+            <div className="w-14 h-14 rounded-full bg-surface-container flex items-center justify-center mb-3 text-secondary">
+              <span className="material-symbols-outlined text-[32px]">
+                lock_clock
+              </span>
+            </div>
             <h4 className="font-headline-sm font-semibold text-on-surface">
-              Leaderboard Pending
+              Official Results Pending
             </h4>
-            <p className="font-body-sm text-secondary mt-1">
-              No participant submissions have been graded yet for this contest. Rankings will appear as evaluations proceed.
+            <p className="font-body-sm text-secondary mt-1 max-w-md">
+              Official results for <strong>{data?.contestTitle || "this contest"}</strong> have not been published yet. In accordance with platform privacy protocols, provisional standings and competitor scores are shielded until certified publication.
             </p>
+            <div className="mt-4 inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-surface-container-low border border-[#e2e8f0] text-xs text-secondary font-medium">
+              <span className="material-symbols-outlined text-[16px] text-amber-600">verified_user</span>
+              <span>Submissions safely recorded for accreditation review</span>
+            </div>
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -214,3 +232,19 @@ export default function ParticipantLeaderboardPage() {
     </div>
   );
 }
+
+export default function ParticipantLeaderboardPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="py-24 flex flex-col items-center justify-center text-secondary">
+          <span className="w-8 h-8 border-3 border-primary-container border-t-transparent rounded-full animate-spin mb-3"></span>
+          <p className="font-label-sm">Loading leaderboard...</p>
+        </div>
+      }
+    >
+      <ParticipantLeaderboardContent />
+    </Suspense>
+  );
+}
+

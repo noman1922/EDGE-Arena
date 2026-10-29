@@ -95,7 +95,7 @@ export default function RootHomePage() {
       {/* Footer */}
       <footer className="w-full bg-surface-container-low py-space-md border-t border-[#e2e8f0]">
         <div className="max-w-4xl mx-auto px-4 text-center font-body-sm text-secondary">
-          © 2025 ACI Career EDGE Assessment Platform. High-Stakes Evaluation System.
+          © 2026 ACI Career EDGE Assess. Enterprise Assessment Platform.
         </div>
       </footer>
     </div>

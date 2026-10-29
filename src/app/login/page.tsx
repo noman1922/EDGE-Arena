@@ -21,14 +21,17 @@ function LoginContent() {
       const res = await loginAction(targetEmail, password);
 
       if (res.success && res.redirectTo) {
-        // If a redirect parameter was provided and matches permissions, or use canonical role destination
-        window.location.href = redirectTarget || res.redirectTo;
+        if (res.mustChangePassword) {
+          window.location.href = "/change-password";
+        } else {
+          window.location.href = redirectTarget || res.redirectTo;
+        }
       } else {
-        setErrorMessage(res.error || "Authentication failed.");
+        setErrorMessage(res.error || "Invalid email or password.");
       }
     } catch (err) {
       console.error(err);
-      setErrorMessage("An unexpected network error occurred.");
+      setErrorMessage("Something went wrong. Please contact your system administrator.");
     } finally {
       setIsLoading(false);
     }
@@ -59,7 +62,7 @@ function LoginContent() {
               <span className="material-symbols-outlined text-[24px]">verified_user</span>
             </div>
             <h1 className="font-headline-lg text-on-surface font-semibold tracking-tight">
-              Sign In to EDGE-Arena
+              Sign In to ACI Career EDGE Assess
             </h1>
             <p className="font-body-sm text-secondary mt-1">
               Select your verified role profile or enter your enrolled institution email.
@@ -104,6 +107,7 @@ function LoginContent() {
               </label>
               <input
                 type="password"
+                required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"

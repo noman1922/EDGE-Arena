@@ -321,7 +321,7 @@ describe("Workflow Fixes: Completion Detection, Pre-Contest Gate, and Sequential
     await submitAssessmentAction(data22.submission.id);
 
     // Verify Dashboard progress: all 4 units completed (100%)
-    const dashboard = await getParticipantDashboard(candidateEmail);
+    const dashboard = await getParticipantDashboard();
     const contestCard = dashboard.contests.find((c) => c.contestId === contestId);
 
     assert.ok(contestCard);

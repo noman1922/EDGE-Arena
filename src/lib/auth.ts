@@ -1,10 +1,28 @@
 import { cookies } from "next/headers";
+import { cache } from "react";
 
 export const SESSION_COOKIE_NAME = "edge_session";
-const SESSION_SECRET =
-  process.env.SESSION_SECRET ||
-  process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  "aci-career-edge-assess-production-session-secret-2025-secure";
+
+export function getSessionSecret(): string {
+  const configuredSecret = process.env.SESSION_SECRET;
+
+  if (process.env.NODE_ENV === "production") {
+    if (!configuredSecret || configuredSecret.length < 32) {
+      throw new Error(
+        "SESSION_SECRET must be configured with at least 32 characters in production."
+      );
+    }
+    return configuredSecret;
+  }
+
+  if (!configuredSecret || configuredSecret.length < 32) {
+    throw new Error(
+      "SESSION_SECRET must be configured with at least 32 characters in your environment (e.g. .env or .env.local). Incompatible per-runtime fallbacks are disabled to prevent authentication redirect loops."
+    );
+  }
+
+  return configuredSecret;
+}
 
 export interface SessionPayload {
   userId: string;
@@ -13,6 +31,7 @@ export interface SessionPayload {
   name: string;
   candidateId?: string;
   institution?: string;
+  mustChangePassword?: boolean;
   issuedAt: number;
   expiresAt: number;
 }
@@ -41,14 +60,22 @@ function base64UrlDecode(str: string): Uint8Array {
   return bytes;
 }
 
+let cachedHmacKeyPromise: Promise<CryptoKey> | null = null;
+let cachedSecretUsed: string | null = null;
+
 async function getHmacKey(): Promise<CryptoKey> {
-  return await crypto.subtle.importKey(
-    "raw",
-    textEncoder.encode(SESSION_SECRET),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign", "verify"]
-  );
+  const secret = getSessionSecret();
+  if (!cachedHmacKeyPromise || cachedSecretUsed !== secret) {
+    cachedSecretUsed = secret;
+    cachedHmacKeyPromise = crypto.subtle.importKey(
+      "raw",
+      textEncoder.encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign", "verify"]
+    );
+  }
+  return cachedHmacKeyPromise;
 }
 
 /**
@@ -136,8 +163,10 @@ export function setTestSession(
 
 /**
  * Reads and verifies the current session from incoming HTTP cookies.
+ * Request-scoped memoization via React cache prevents duplicate cookie reads
+ * and HMAC verification within a single render cycle.
  */
-export async function getSession(): Promise<SessionPayload | null> {
+export const getSession = cache(async (): Promise<SessionPayload | null> => {
   if (currentTestSession !== undefined) {
     return currentTestSession;
   }
@@ -149,7 +178,7 @@ export async function getSession(): Promise<SessionPayload | null> {
   } catch {
     return null;
   }
-}
+});
 
 /**
  * Requires an active authenticated session.
@@ -169,6 +198,11 @@ export async function requireRole(
   allowedRoles: ("ADMIN" | "EVALUATOR" | "PARTICIPANT")[]
 ): Promise<SessionPayload> {
   const session = await requireSession();
+  if (session.mustChangePassword) {
+    throw new Error(
+      "Password change required: You must change your temporary password before accessing platform functionality."
+    );
+  }
   if (!allowedRoles.includes(session.role)) {
     throw new Error(
       `Forbidden: Role ${session.role} is not authorized for this operation. Requires one of: ${allowedRoles.join(", ")}.`

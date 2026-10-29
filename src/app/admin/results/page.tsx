@@ -8,17 +8,28 @@ import {
   type AdminLeaderboardRow,
 } from "@/app/actions/results-actions";
 import { publishContestResultsAction } from "@/app/actions/evaluator-actions";
+import { useAdminContest } from "@/context/admin-contest-context";
 
 export default function AdminResultsPage() {
+  const { selectedContestId: globalContestId, setSelectedContestId: setGlobalContestId } = useAdminContest();
   const [data, setData] = useState<{
     contests: Array<{ id: string; title: string }>;
     current: AdminResultsOverview | null;
   } | null>(null);
-  const [selectedContestId, setSelectedContestId] = useState<string>("");
+  const [selectedContestId, setSelectedContestId] = useState<string>(
+    globalContestId && globalContestId !== "ALL" ? globalContestId : ""
+  );
   const [searchQuery, setSearchQuery] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isPublishing, setIsPublishing] = useState(false);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  // Sync with global contest context when changed elsewhere
+  useEffect(() => {
+    if (globalContestId && globalContestId !== "ALL" && globalContestId !== selectedContestId) {
+      setSelectedContestId(globalContestId);
+    }
+  }, [globalContestId, selectedContestId]);
 
   const loadResults = async (contestId?: string) => {
     try {
@@ -39,19 +50,20 @@ export default function AdminResultsPage() {
     loadResults(selectedContestId || undefined);
   }, [selectedContestId]);
 
-  const handlePublishResults = async () => {
+  const handlePublishResults = async (isFinalCertification = false) => {
     if (!selectedContestId) return;
-    const confirmMsg =
-      "Are you sure you want to certify and publish these results? This will calculate official ranks and percentiles and make scores visible to enrolled participants on their scorecards.";
+    const confirmMsg = isFinalCertification
+      ? "Are you sure you want to perform Final Certification and Lock this contest? This requires all enrolled participants to have completed assessments."
+      : "Publish progressive leaderboard update? This will calculate official ranks and percentiles for all currently finalized candidates and make standings visible to enrolled participants without locking the contest.";
     if (!confirm(confirmMsg)) return;
 
     try {
       setIsPublishing(true);
-      const res = await publishContestResultsAction(selectedContestId);
+      const res = await publishContestResultsAction(selectedContestId, { isFinalCertification });
       if (res.success) {
         setFeedback({
           type: "success",
-          text: `Contest results successfully certified and published for ${res.publishedCount} participants.`,
+          text: `Leaderboard successfully updated and published for ${res.publishedCount} finalized participant(s).`,
         });
         await loadResults(selectedContestId);
       } else {
@@ -76,6 +88,8 @@ export default function AdminResultsPage() {
       "Candidate Name",
       "Email",
       "Institution",
+      "Raw Score",
+      "Penalties Deducted",
       "Final Score",
       "Percentile",
       "Status",
@@ -88,6 +102,8 @@ export default function AdminResultsPage() {
       `"${r.candidateName}"`,
       `"${r.candidateEmail}"`,
       `"${r.institution}"`,
+      r.rawScore,
+      r.penalties,
       r.finalScore,
       `${r.percentile}%`,
       r.submissionStatus,
@@ -144,7 +160,11 @@ export default function AdminResultsPage() {
             </label>
             <select
               value={selectedContestId}
-              onChange={(e) => setSelectedContestId(e.target.value)}
+              onChange={(e) => {
+                const val = e.target.value;
+                setSelectedContestId(val);
+                setGlobalContestId(val);
+              }}
               className="px-3 py-2 bg-surface-container-lowest border border-[#e2e8f0] rounded text-on-surface font-label-sm font-medium focus:outline-none focus:border-primary-container"
             >
               {data.contests.map((c) => (
@@ -193,24 +213,34 @@ export default function AdminResultsPage() {
                 <span
                   className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
                     data.current.isPublished
-                      ? "bg-[#dcfce7] text-[#166534]"
+                      ? data.current.finalizedCount === data.current.totalEnrolled && data.current.totalEnrolled > 0
+                        ? "bg-[#dcfce7] text-[#166534]"
+                        : "bg-emerald-50 text-emerald-800 border border-emerald-200"
                       : "bg-[#fef3c7] text-[#92400e]"
                   }`}
                 >
-                  {data.current.isPublished ? "Certified & Published" : "Provisional (Unpublished)"}
+                  {data.current.isPublished
+                    ? data.current.finalizedCount === data.current.totalEnrolled && data.current.totalEnrolled > 0
+                      ? "Certified & Finalized"
+                      : "Progressive Leaderboard Published"
+                    : "Provisional (Unpublished)"}
                 </span>
               </div>
               <p className="font-body-sm text-secondary mt-0.5">
                 {data.current.isPublished
-                  ? "Official rankings are certified in the database. Participants can now access their personalized scorecards."
+                  ? `Official standings are live for ${data.current.finalizedCount} candidate(s). Enrolled candidates can view their certified scorecards.`
                   : "Results are currently private to administrators and evaluators. Participants see provisional status without score exposure."}
               </p>
-              <div className="flex items-center gap-4 text-xs text-secondary mt-2">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-secondary mt-2">
                 <span>Enrolled: <strong className="text-on-surface">{data.current.totalEnrolled}</strong></span>
                 <span>•</span>
                 <span>Submitted: <strong className="text-on-surface">{data.current.totalSubmissions}</strong></span>
                 <span>•</span>
-                <span>Graded: <strong className="text-on-surface">{data.current.gradedCount}</strong></span>
+                <span>Unsubmitted: <strong className="text-amber-800">{data.current.unsubmittedCount}</strong></span>
+                <span>•</span>
+                <span>Pending Evaluation: <strong className="text-blue-800">{data.current.pendingEvaluationCount}</strong></span>
+                <span>•</span>
+                <span>Finalized / Published: <strong className="text-emerald-800">{data.current.finalizedCount}</strong></span>
               </div>
             </div>
           </div>
@@ -219,26 +249,28 @@ export default function AdminResultsPage() {
             <button
               onClick={handleExportCsv}
               disabled={data.current.rows.length === 0}
-              className="px-3.5 py-2 bg-surface-container-low hover:bg-surface-container text-on-surface font-label-sm font-medium rounded border border-[#e2e8f0] flex items-center gap-1.5 transition-colors disabled:opacity-50"
+              className="px-3.5 py-2 bg-surface-container-low hover:bg-surface-container text-on-surface font-label-sm font-medium rounded border border-[#e2e8f0] flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
             >
               <span className="material-symbols-outlined text-[16px]">download</span>
               Export CSV
             </button>
 
-            {!data.current.isPublished && (
-              <button
-                onClick={handlePublishResults}
-                disabled={isPublishing || data.current.gradedCount === 0}
-                className="px-4 py-2 bg-primary-container hover:bg-[#166534] text-on-primary font-label-sm font-medium rounded shadow-2xs flex items-center gap-1.5 transition-colors disabled:opacity-50"
-              >
-                {isPublishing ? (
-                  <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
-                ) : (
-                  <span className="material-symbols-outlined text-[16px]">publish</span>
-                )}
-                <span>Finalize & Publish Results</span>
-              </button>
-            )}
+            <button
+              onClick={() => handlePublishResults(false)}
+              disabled={isPublishing || data.current.finalizedCount === 0}
+              className="px-4 py-2 bg-primary-container hover:bg-[#166534] text-on-primary font-label-sm font-medium rounded shadow-2xs flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
+            >
+              {isPublishing ? (
+                <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+              ) : (
+                <span className="material-symbols-outlined text-[16px]">publish</span>
+              )}
+              <span>
+                {data.current.isPublished
+                  ? `Update Leaderboard (${data.current.finalizedCount} Finalized)`
+                  : `Publish Leaderboard (${data.current.finalizedCount} Finalized)`}
+              </span>
+            </button>
           </div>
         </div>
       )}
@@ -292,8 +324,8 @@ export default function AdminResultsPage() {
                   <th className="py-3 px-space-md w-16 text-center">Rank</th>
                   <th className="py-3 px-space-md">Candidate</th>
                   <th className="py-3 px-space-md">Institution</th>
-                  <th className="py-3 px-space-md text-right">MCQ Score</th>
-                  <th className="py-3 px-space-md text-right">Manual Score</th>
+                  <th className="py-3 px-space-md text-right">Raw Score</th>
+                  <th className="py-3 px-space-md text-right">Penalties</th>
                   <th className="py-3 px-space-md text-right">Final Score</th>
                   <th className="py-3 px-space-md text-right">Percentile</th>
                   <th className="py-3 px-space-md text-center">Status</th>
@@ -330,11 +362,17 @@ export default function AdminResultsPage() {
                     <td className="py-3.5 px-space-md text-secondary text-xs">
                       {row.institution}
                     </td>
-                    <td className="py-3.5 px-space-md text-right font-mono text-xs">
-                      {row.autoGradeScore !== null ? `${row.autoGradeScore} pts` : "—"}
+                    <td className="py-3.5 px-space-md text-right font-mono text-xs font-medium">
+                      {row.rawScore} pts
                     </td>
                     <td className="py-3.5 px-space-md text-right font-mono text-xs">
-                      {row.manualGradeScore !== null ? `${row.manualGradeScore} pts` : "—"}
+                      {row.penalties > 0 ? (
+                        <span className="text-rose-600 font-semibold bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200">
+                          -{row.penalties} pts
+                        </span>
+                      ) : (
+                        <span className="text-secondary">0 pts</span>
+                      )}
                     </td>
                     <td className="py-3.5 px-space-md text-right font-mono font-bold text-primary-container">
                       {row.finalScore} pts

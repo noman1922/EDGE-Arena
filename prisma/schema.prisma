@@ -57,16 +57,23 @@ model User {
   name        String
   candidateId String?  @unique
   institution String?
-  avatarUrl   String?
-  cohortId    String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  avatarUrl          String?
+  cohortId           String?
+  passwordHash       String?
+  passwordSalt       String?
+  mustChangePassword Boolean              @default(true)
+  isActive           Boolean              @default(true)
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
 
   cohort       Cohort?              @relation(fields: [cohortId], references: [id], onDelete: SetNull)
   participants ContestParticipant[]
   submissions  Submission[]
   evaluations  EvaluationScore[]
   results      CohortResult[]
+  contestEvaluations            ContestEvaluator[]             @relation("UserContestEvaluators")
+  evaluatorAssignedCandidates   EvaluatorCandidateAssignment[] @relation("EvaluatorAssignedCandidates")
+  candidateEvaluatorAssignments EvaluatorCandidateAssignment[] @relation("CandidateEvaluatorAssignments")
 
   @@index([role])
   @@index([cohortId])
@@ -106,6 +113,8 @@ model Contest {
   cohort       Cohort?              @relation(fields: [cohortId], references: [id], onDelete: SetNull)
   phases       Phase[]
   participants ContestParticipant[]
+  evaluators   ContestEvaluator[]
+  candidateAssignments EvaluatorCandidateAssignment[]
   submissions  Submission[]
   results      CohortResult[]
 
@@ -127,6 +136,43 @@ model ContestParticipant {
   @@unique([contestId, userId])
   @@index([contestId, status])
   @@index([userId])
+}
+
+model ContestEvaluator {
+  id         String   @id @default(uuid())
+  contestId  String
+  userId     String
+  assignedAt DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  contest              Contest                        @relation(fields: [contestId], references: [id], onDelete: Cascade)
+  user                 User                           @relation("UserContestEvaluators", fields: [userId], references: [id], onDelete: Cascade)
+  candidateAssignments EvaluatorCandidateAssignment[]
+
+  @@unique([contestId, userId])
+  @@index([contestId])
+  @@index([userId])
+}
+
+model EvaluatorCandidateAssignment {
+  id                 String   @id @default(uuid())
+  contestId          String
+  contestEvaluatorId String
+  evaluatorId        String
+  participantId      String
+  assignedAt         DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  contest          Contest          @relation(fields: [contestId], references: [id], onDelete: Cascade)
+  contestEvaluator ContestEvaluator @relation(fields: [contestEvaluatorId], references: [id], onDelete: Cascade)
+  evaluator        User             @relation("EvaluatorAssignedCandidates", fields: [evaluatorId], references: [id], onDelete: Cascade)
+  participant      User             @relation("CandidateEvaluatorAssignments", fields: [participantId], references: [id], onDelete: Cascade)
+
+  @@unique([contestId, evaluatorId, participantId])
+  @@index([contestId, evaluatorId])
+  @@index([contestId, participantId])
+  @@index([evaluatorId])
+  @@index([participantId])
 }
 
 model Phase {
@@ -359,4 +405,18 @@ model AuditLog {
 
   @@index([targetType, targetId])
   @@index([action, createdAt])
+}
+
+model SystemErrorLog {
+  id         String   @id
+  route      String
+  operation  String
+  category   String
+  httpStatus Int?
+  details    String?  @db.Text
+  status     String   @default("FAILED")
+  createdAt  DateTime @default(now())
+
+  @@index([category, createdAt])
+  @@index([createdAt])
 }

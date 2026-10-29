@@ -12,6 +12,7 @@ export default function AssessmentUnitReaderPage() {
 
   return (
     <AssessmentDocumentReader
+      key={`${contestId}-${phaseId}-${taskId}`}
       initialContestId={contestId}
       initialPhaseId={phaseId}
       initialTaskId={taskId}

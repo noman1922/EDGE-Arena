@@ -11,7 +11,8 @@
     "postinstall": "prisma generate",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate deploy",
-    "prisma:seed": "tsx prisma/seed-demo.ts"
+    "prisma:seed": "tsx prisma/seed-demo.ts",
+    "provision:admin": "tsx scripts/provision-admin.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.4.1",

@@ -6,11 +6,16 @@ import { BrandLogo } from "@/components/ui/brand-logo";
 import {
   getEvaluatorDashboardDataAction,
   gradeSubmissionAction,
+  getParticipantMonitoringForEvaluatorAction,
+  deductMarksAction,
   type SubmissionToGrade,
   type EvaluatorContestItem,
+  type ParticipantMonitoringEventView,
+  type ParticipantMonitoringDataResult,
 } from "@/app/actions/evaluator-actions";
+import { formatMarksInWords } from "@/lib/marks-formatter";
+import { getMonitoringEvidenceAction } from "@/app/actions/monitoring-actions";
 import { logoutAction, getCurrentUserSession } from "@/app/actions/auth-actions";
-import { getFileDownloadUrlAction } from "@/app/actions/file-actions";
 import { SessionPayload } from "@/lib/auth";
 
 export default function EvaluatorConsolePage() {
@@ -35,12 +40,39 @@ export default function EvaluatorConsolePage() {
   const [gradeSuccessMsg, setGradeSuccessMsg] = useState<string | null>(null);
   const [gradeErrorMsg, setGradeErrorMsg] = useState<string | null>(null);
 
+  // Drawer Sub-tab: "grading" | "monitoring"
+  const [drawerTab, setDrawerTab] = useState<"grading" | "monitoring">("grading");
+
+  // Feature 1: Monitoring Telemetry State
+  const [monitoringData, setMonitoringData] = useState<ParticipantMonitoringDataResult | null>(null);
+  const [isLoadingMonitoring, setIsLoadingMonitoring] = useState(false);
+  const [monitoringError, setMonitoringError] = useState<string | null>(null);
+  const [evidenceViewerOpen, setEvidenceViewerOpen] = useState(false);
+  const [selectedEvidence, setSelectedEvidence] = useState<{
+    eventType: string;
+    screenCapture: string | null;
+    cameraCapture: string | null;
+    timestamp: string;
+  } | null>(null);
+  const [isLoadingEvidence, setIsLoadingEvidence] = useState(false);
+
+  // Feature 2: Safe Marks Deduction State
+  const [isDeductModalOpen, setIsDeductModalOpen] = useState(false);
+  const [isDeductConfirmOpen, setIsDeductConfirmOpen] = useState(false);
+  const [deductAmountInput, setDeductAmountInput] = useState<string>("");
+  const [deductReasonInput, setDeductReasonInput] = useState<string>("");
+  const [idempotencyKey, setIdempotencyKey] = useState<string>("");
+  const [confirmPublishedOverride, setConfirmPublishedOverride] = useState(false);
+  const [isSubmittingDeduction, setIsSubmittingDeduction] = useState(false);
+  const [deductError, setDeductError] = useState<string | null>(null);
+  const [deductSuccessMsg, setDeductSuccessMsg] = useState<string | null>(null);
+
   const loadData = useCallback(async (contestId?: string) => {
     try {
       setIsLoading(true);
       const activeFilter = contestId !== undefined ? contestId : selectedContestFilter;
       const [dashData, userSession] = await Promise.all([
-        getEvaluatorDashboardDataAction(activeFilter !== "ALL" ? activeFilter : undefined),
+        getEvaluatorDashboardDataAction(activeFilter && activeFilter !== "ALL" ? activeFilter : undefined),
         getCurrentUserSession(),
       ]);
       setSubmissions(dashData.submissions);
@@ -55,13 +87,134 @@ export default function EvaluatorConsolePage() {
   }, [selectedContestFilter]);
 
   useEffect(() => {
-    loadData();
-  }, [loadData]);
+    loadData(selectedContestFilter);
+  }, [selectedContestFilter, loadData]);
+
+  const fetchMonitoring = useCallback(async (submissionId: string) => {
+    try {
+      setIsLoadingMonitoring(true);
+      setMonitoringError(null);
+      const res = await getParticipantMonitoringForEvaluatorAction(submissionId);
+      if (res.success) {
+        setMonitoringData(res);
+      } else {
+        setMonitoringError(res.error || "Failed to load monitoring events.");
+      }
+    } catch (err) {
+      console.error("Error loading monitoring:", err);
+      setMonitoringError(err instanceof Error ? err.message : "Failed to load monitoring data.");
+    } finally {
+      setIsLoadingMonitoring(false);
+    }
+  }, []);
+
+  const handleInspectEvidence = async (contestId: string, eventId: string) => {
+    try {
+      setIsLoadingEvidence(true);
+      const res = await getMonitoringEvidenceAction({ contestId, eventId });
+      if (res.success && res.evidence) {
+        setSelectedEvidence(res.evidence);
+        setEvidenceViewerOpen(true);
+      } else {
+        alert(res.error || "Evidence could not be retrieved.");
+      }
+    } catch {
+      alert("Failed to load evidence.");
+    } finally {
+      setIsLoadingEvidence(false);
+    }
+  };
+
+  const handleOpenDeductForm = () => {
+    setDeductAmountInput("");
+    setDeductReasonInput("");
+    setDeductError(null);
+    setConfirmPublishedOverride(false);
+    setIdempotencyKey(`deduct_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`);
+    setIsDeductModalOpen(true);
+  };
+
+  const handleProceedToConfirmDeduction = () => {
+    setDeductError(null);
+    const amount = Number(deductAmountInput);
+    if (isNaN(amount) || amount <= 0) {
+      setDeductError("Please enter a valid positive deduction amount in marks (e.g. 5, 10, 55).");
+      return;
+    }
+
+    if (Math.round(amount * 100) / 100 !== amount) {
+      setDeductError("Deduction amount cannot have more than 2 decimal places.");
+      return;
+    }
+
+    if (!deductReasonInput.trim() || deductReasonInput.trim().length < 5) {
+      setDeductError("A mandatory deduction reason of at least 5 characters is required.");
+      return;
+    }
+
+    const currentScore = selectedSub?.finalScore !== null && selectedSub?.finalScore !== undefined
+      ? Number(selectedSub.finalScore)
+      : liveFinalScore;
+
+    if (amount > currentScore) {
+      setDeductError(`Deduction amount (${amount} marks) exceeds candidate's eligible score (${currentScore} marks). Cannot reduce below 0.`);
+      return;
+    }
+
+    // Passed client validation -> open Confirmation Dialog
+    setIsDeductModalOpen(false);
+    setIsDeductConfirmOpen(true);
+  };
+
+  const handleApplyDeduction = async () => {
+    if (!selectedSub) return;
+    try {
+      setIsSubmittingDeduction(true);
+      setDeductError(null);
+
+      const res = await deductMarksAction({
+        submissionId: selectedSub.id,
+        amount: Number(deductAmountInput),
+        reason: deductReasonInput.trim(),
+        idempotencyKey,
+        confirmPublishedOverride,
+      });
+
+      if (res.success) {
+        setDeductSuccessMsg(
+          `Successfully deducted ${res.deductionAmount} marks (${res.spelledMarks || formatMarksInWords(res.deductionAmount || 0)}). Adjusted score: ${res.adjustedScore} marks.`
+        );
+        setIsDeductConfirmOpen(false);
+        if (res.adjustedScore !== undefined) {
+          setSelectedSub((prev) =>
+            prev ? { ...prev, finalScore: res.adjustedScore! } : null
+          );
+        }
+        await loadData();
+        await fetchMonitoring(selectedSub.id);
+      } else {
+        setDeductError(res.error || "Failed to apply marks deduction.");
+      }
+    } catch (err) {
+      console.error("Deduction error:", err);
+      setDeductError(err instanceof Error ? err.message : "Failed to apply marks deduction.");
+    } finally {
+      setIsSubmittingDeduction(false);
+    }
+  };
 
   const openGradingDrawer = (sub: SubmissionToGrade) => {
     setSelectedSub(sub);
+    setDrawerTab("grading");
     setGradeSuccessMsg(null);
     setGradeErrorMsg(null);
+    setDeductError(null);
+    setDeductSuccessMsg(null);
+    setMonitoringData(null);
+    setMonitoringError(null);
+
+    // Pre-fetch candidate attempt monitoring
+    fetchMonitoring(sub.id);
 
     // 1. Populate individual question scores & feedback
     const initialQScore: Record<string, number> = {};
@@ -182,7 +335,7 @@ export default function EvaluatorConsolePage() {
 
       const res = await gradeSubmissionAction({
         submissionId: selectedSub.id,
-        evaluatorEmail: session?.email || "evaluator.demo@example.com",
+        evaluatorEmail: session?.email || "evaluator@career-edge.internal",
         isDraft,
         overallFeedback,
         questionGrades: questionGradesPayload,
@@ -238,7 +391,7 @@ export default function EvaluatorConsolePage() {
       {/* Top Header */}
       <header className="h-16 w-full border-b border-[#e2e8f0] bg-surface-container-lowest/90 backdrop-blur-xl px-4 sm:px-gutter flex items-center justify-between sticky top-0 z-30">
         <div className="flex items-center gap-4">
-          <BrandLogo showSubtitle={true} />
+          <BrandLogo showSubtitle={true} subtitleText="Evaluator Console" />
           <nav className="hidden md:flex items-center gap-1 pl-4 border-l border-[#e2e8f0]">
             <Link
               href="/evaluator"
@@ -260,7 +413,7 @@ export default function EvaluatorConsolePage() {
           <div className="hidden sm:flex items-center gap-2 px-3 py-1 rounded-full bg-surface-container-low border border-[#e2e8f0] font-label-xs text-secondary">
             <span className="w-2 h-2 rounded-full bg-primary-container"></span>
             <span className="font-semibold text-on-surface">Evaluator Console:</span>
-            <span>{session?.email || "evaluator.demo@example.com"}</span>
+            <span>{session?.email || "evaluator@career-edge.internal"}</span>
           </div>
 
           <button
@@ -393,11 +546,7 @@ export default function EvaluatorConsolePage() {
             {assignedContests.length > 0 && (
               <select
                 value={selectedContestFilter}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  setSelectedContestFilter(val);
-                  loadData(val);
-                }}
+                onChange={(e) => setSelectedContestFilter(e.target.value)}
                 className="px-3 py-1 rounded bg-surface-container-low border border-[#e2e8f0] font-label-xs text-on-surface focus:outline-none focus:border-primary-container"
               >
                 <option value="ALL">All Contests ({assignedContests.length})</option>
@@ -505,6 +654,16 @@ export default function EvaluatorConsolePage() {
                 </div>
               );
             })
+          ) : assignedContests.length === 0 ? (
+            <div className="p-12 text-center flex flex-col items-center justify-center">
+              <div className="w-12 h-12 rounded-full bg-surface-container flex items-center justify-center text-secondary mb-3">
+                <span className="material-symbols-outlined text-[24px]">assignment_late</span>
+              </div>
+              <h4 className="font-headline-sm font-semibold text-on-surface">No Contests Assigned</h4>
+              <p className="font-body-sm text-secondary mt-1 max-w-md mx-auto">
+                Platform administrators have not assigned any assessment contests or candidate cohorts to your account yet.
+              </p>
+            </div>
           ) : (
             <div className="p-12 text-center flex flex-col items-center justify-center">
               <div className="w-12 h-12 rounded-full bg-surface-container flex items-center justify-center text-secondary mb-3">
@@ -570,31 +729,104 @@ export default function EvaluatorConsolePage() {
                 {selectedSub.candidateId} • {selectedSub.institution} • {selectedSub.contestTitle} ({selectedSub.phaseTitle})
               </p>
 
-              {/* Live Assessment Score Dashboard */}
-              <div className="my-3 p-3 bg-surface-container-low rounded-lg border border-[#e2e8f0] grid grid-cols-3 gap-2 text-center">
-                <div className="p-2 bg-surface-container-lowest rounded border border-[#e2e8f0]">
-                  <span className="font-label-xs uppercase tracking-wider text-secondary block">
-                    Auto-Graded (MCQ)
-                  </span>
-                  <span className="font-headline-sm font-bold text-on-surface tabular-nums">
-                    {autoScore} pts
-                  </span>
+              {/* Drawer View Navigation Tabs */}
+              <div className="flex items-center gap-1 my-3 p-1 bg-surface-container-low rounded-lg border border-[#e2e8f0]">
+                <button
+                  type="button"
+                  onClick={() => setDrawerTab("grading")}
+                  className={`flex-1 py-1.5 px-3 rounded-md font-label-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                    drawerTab === "grading"
+                      ? "bg-surface-container-lowest text-on-surface shadow-xs border border-[#e2e8f0]"
+                      : "text-secondary hover:text-on-surface"
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[16px]">rate_review</span>
+                  <span>Answer Sheet & Grading</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDrawerTab("monitoring");
+                    if (selectedSub) fetchMonitoring(selectedSub.id);
+                  }}
+                  className={`flex-1 py-1.5 px-3 rounded-md font-label-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                    drawerTab === "monitoring"
+                      ? "bg-surface-container-lowest text-on-surface shadow-xs border border-[#e2e8f0]"
+                      : "text-secondary hover:text-on-surface"
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[16px]">visibility</span>
+                  <span>Participant Monitoring</span>
+                  {monitoringData?.alertCount ? (
+                    <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-red-100 text-red-700">
+                      {monitoringData.alertCount} alerts
+                    </span>
+                  ) : null}
+                </button>
+              </div>
+
+              {/* Live Assessment Score Dashboard & Deduction Control */}
+              <div className="my-2 p-3 bg-surface-container-low rounded-lg border border-[#e2e8f0] flex flex-col gap-2.5">
+                <div className="grid grid-cols-3 gap-2 text-center">
+                  <div className="p-2 bg-surface-container-lowest rounded border border-[#e2e8f0]">
+                    <span className="font-label-xs uppercase tracking-wider text-secondary block">
+                      Auto-Graded (MCQ)
+                    </span>
+                    <span className="font-headline-sm font-bold text-on-surface tabular-nums">
+                      {autoScore} pts
+                    </span>
+                  </div>
+                  <div className="p-2 bg-surface-container-lowest rounded border border-[#e2e8f0]">
+                    <span className="font-label-xs uppercase tracking-wider text-secondary block">
+                      {selectedSub.rubrics.length > 0 ? "Rubric Weighted" : "Manual Marks"}
+                    </span>
+                    <span className="font-headline-sm font-bold text-primary-container tabular-nums">
+                      {manualScore} pts
+                    </span>
+                  </div>
+                  <div className="p-2 bg-surface-container-lowest rounded border border-primary-container/30">
+                    <span className="font-label-xs uppercase tracking-wider text-primary-container font-semibold block">
+                      Eligible Score
+                    </span>
+                    <span className="font-headline-sm font-bold text-primary-container tabular-nums">
+                      {selectedSub.finalScore !== null ? Number(selectedSub.finalScore) : liveFinalScore} / {selectedSub.taskPoints} pts
+                    </span>
+                  </div>
                 </div>
-                <div className="p-2 bg-surface-container-lowest rounded border border-[#e2e8f0]">
-                  <span className="font-label-xs uppercase tracking-wider text-secondary block">
-                    {selectedSub.rubrics.length > 0 ? "Rubric Weighted" : "Manual Marks"}
-                  </span>
-                  <span className="font-headline-sm font-bold text-primary-container tabular-nums">
-                    {manualScore} pts
-                  </span>
-                </div>
-                <div className="p-2 bg-surface-container-lowest rounded border border-primary-container/30">
-                  <span className="font-label-xs uppercase tracking-wider text-primary-container font-semibold block">
-                    Total Score
-                  </span>
-                  <span className="font-headline-sm font-bold text-primary-container tabular-nums">
-                    {liveFinalScore} / {selectedSub.taskPoints}
-                  </span>
+
+                {/* Safe Marks Deduction Control Strip */}
+                <div className="p-2.5 bg-surface-container-lowest rounded-md border border-[#e2e8f0] flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-secondary">
+                    <span>
+                      Original: <strong className="text-on-surface font-mono">{liveFinalScore} marks</strong>
+                    </span>
+                    {(monitoringData?.totalPenalties ?? 0) > 0 && (
+                      <>
+                        <span>•</span>
+                        <span className="text-red-700 font-semibold">
+                          Deductions: <strong className="font-mono">-{monitoringData?.totalPenalties} marks</strong>
+                        </span>
+                        <span>•</span>
+                        <span className="text-[#166534] font-semibold">
+                          Adjusted:{" "}
+                          <strong className="font-mono">
+                            {selectedSub.finalScore !== null
+                              ? Number(selectedSub.finalScore)
+                              : Math.max(0, liveFinalScore - (monitoringData?.totalPenalties ?? 0))}{" "}
+                            marks
+                          </strong>
+                        </span>
+                      </>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleOpenDeductForm}
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 font-label-xs font-bold transition-colors cursor-pointer shrink-0"
+                  >
+                    <span className="material-symbols-outlined text-[16px]">remove_circle_outline</span>
+                    <span>Deduct Marks</span>
+                  </button>
                 </div>
               </div>
 
@@ -612,7 +844,24 @@ export default function EvaluatorConsolePage() {
                 </div>
               )}
 
-              {/* Question-by-Question Grading */}
+              {deductSuccessMsg && (
+                <div className="my-2 p-3 rounded bg-[#dcfce7] border border-primary-container/40 text-[#166534] font-label-sm font-semibold flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[18px]">gavel</span>
+                  <span>{deductSuccessMsg}</span>
+                </div>
+              )}
+
+              {deductError && (
+                <div className="my-2 p-3 rounded bg-red-50 border border-red-200 text-red-700 font-label-sm font-semibold flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[18px]">error</span>
+                  <span>{deductError}</span>
+                </div>
+              )}
+
+              {/* View Tab 1: Answer Sheet & Evaluation */}
+              {drawerTab === "grading" && (
+                <>
+                  {/* Question-by-Question Grading */}
               <div className="my-space-md flex flex-col gap-3">
                 <div className="flex items-center justify-between">
                   <span className="font-label-xs uppercase tracking-wider text-secondary font-semibold">
@@ -794,25 +1043,27 @@ export default function EvaluatorConsolePage() {
                                   </span>
                                 </div>
                               </div>
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  try {
-                                    const res = await getFileDownloadUrlAction(ans.fileKey!);
-                                    if (res.success && res.downloadUrl) {
-                                      window.open(res.downloadUrl, "_blank", "noopener,noreferrer");
-                                    } else {
-                                      window.open(`/api/files/${ans.fileKey}`, "_blank", "noopener,noreferrer");
-                                    }
-                                  } catch {
-                                    window.open(`/api/files/${ans.fileKey}`, "_blank", "noopener,noreferrer");
-                                  }
-                                }}
-                                className="inline-flex items-center gap-1 px-3 py-1.5 rounded bg-surface-container-lowest hover:bg-surface-container text-on-surface font-label-xs font-semibold border border-[#e2e8f0] shadow-2xs transition-colors shrink-0 cursor-pointer"
-                              >
-                                <span className="material-symbols-outlined text-[16px]">visibility</span>
-                                <span>Open PDF Deliverable</span>
-                              </button>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <a
+                                  href={`/api/files/${ans.fileKey}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded bg-surface-container-lowest hover:bg-surface-container text-on-surface font-label-xs font-semibold border border-[#e2e8f0] shadow-2xs transition-colors shrink-0 cursor-pointer"
+                                  title="Open PDF in new browser tab"
+                                >
+                                  <span className="material-symbols-outlined text-[16px]">visibility</span>
+                                  <span>Open PDF</span>
+                                </a>
+                                <a
+                                  href={`/api/files/${ans.fileKey}?download=1`}
+                                  download={ans.fileName || "Candidate_Deliverable.pdf"}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded bg-surface-container hover:bg-surface-container-high text-on-surface font-label-xs font-medium border border-[#e2e8f0] transition-colors shrink-0 cursor-pointer"
+                                  title="Download PDF to your computer"
+                                >
+                                  <span className="material-symbols-outlined text-[16px]">download</span>
+                                  <span className="hidden sm:inline">Download</span>
+                                </a>
+                              </div>
                             </div>
                           ) : (
                             <div className="p-2.5 rounded bg-surface-container-low text-xs text-secondary italic border border-[#e2e8f0]">
@@ -1003,6 +1254,595 @@ export default function EvaluatorConsolePage() {
                   <span>Finalize & Lock Grade</span>
                 </button>
               </div>
+            </>
+          )}
+
+          {/* View Tab 2: Feature 1: Participant-Specific Monitoring */}
+          {drawerTab === "monitoring" && (
+            <div className="my-space-md flex flex-col gap-3">
+              <div className="p-3 bg-surface-container-low rounded-lg border border-[#e2e8f0] flex items-center justify-between">
+                <div>
+                  <h4 className="font-label-sm font-bold text-on-surface">
+                    Assessment Session Telemetry Stream
+                  </h4>
+                  <p className="font-body-xs text-secondary mt-0.5">
+                    Scoped strictly to this candidate attempt ({selectedSub.candidateName} • {selectedSub.candidateId}).
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => fetchMonitoring(selectedSub.id)}
+                  disabled={isLoadingMonitoring}
+                  className="p-1.5 rounded-md bg-surface-container-lowest hover:bg-surface-container border border-[#e2e8f0] text-secondary hover:text-on-surface cursor-pointer disabled:opacity-50"
+                  title="Refresh Telemetry Events"
+                >
+                  <span className={`material-symbols-outlined text-[18px] ${isLoadingMonitoring ? "animate-spin" : ""}`}>
+                    refresh
+                  </span>
+                </button>
+              </div>
+
+              {/* Summary Chips */}
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="p-2.5 bg-surface-container-lowest rounded-md border border-[#e2e8f0]">
+                  <span className="font-label-xs uppercase tracking-wider text-secondary block">
+                    Monitoring Alerts
+                  </span>
+                  <span className="font-headline-sm font-bold text-red-600 tabular-nums">
+                    {monitoringData?.alertCount ?? 0}
+                  </span>
+                </div>
+                <div className="p-2.5 bg-surface-container-lowest rounded-md border border-[#e2e8f0]">
+                  <span className="font-label-xs uppercase tracking-wider text-secondary block">
+                    Total Penalties
+                  </span>
+                  <span className="font-headline-sm font-bold text-red-700 tabular-nums">
+                    -{monitoringData?.totalPenalties ?? 0} marks
+                  </span>
+                </div>
+                <div className="p-2.5 bg-surface-container-lowest rounded-md border border-[#e2e8f0]">
+                  <span className="font-label-xs uppercase tracking-wider text-secondary block">
+                    Recorded Events
+                  </span>
+                  <span className="font-headline-sm font-bold text-on-surface tabular-nums">
+                    {monitoringData?.events?.length ?? 0}
+                  </span>
+                </div>
+              </div>
+
+              {/* Loading State */}
+              {isLoadingMonitoring && (
+                <div className="p-8 text-center flex flex-col items-center justify-center gap-2 bg-surface-container-low rounded-lg border border-[#e2e8f0]">
+                  <span className="w-6 h-6 border-2 border-primary-container border-t-transparent rounded-full animate-spin"></span>
+                  <span className="font-label-xs font-semibold text-secondary">
+                    Loading verified telemetry events for candidate...
+                  </span>
+                </div>
+              )}
+
+              {/* Error State */}
+              {monitoringError && (
+                <div className="p-4 rounded-lg bg-red-50 border border-red-200 text-red-700 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 text-xs font-semibold">
+                    <span className="material-symbols-outlined text-[18px]">error</span>
+                    <span>{monitoringError}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => fetchMonitoring(selectedSub.id)}
+                    className="px-2.5 py-1 rounded bg-red-100 hover:bg-red-200 text-xs font-bold shrink-0 cursor-pointer"
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
+
+              {/* Empty State */}
+              {!isLoadingMonitoring && !monitoringError && (!monitoringData?.events || monitoringData.events.length === 0) && (
+                <div className="p-8 text-center flex flex-col items-center justify-center bg-surface-container-low rounded-lg border border-[#e2e8f0]">
+                  <span className="material-symbols-outlined text-[32px] text-secondary mb-1">
+                    verified_user
+                  </span>
+                  <h4 className="font-label-md font-bold text-on-surface">
+                    No Telemetry Events Recorded
+                  </h4>
+                  <p className="font-body-xs text-secondary mt-1 max-w-sm">
+                    No window switches, fullscreen exits, or proctoring alerts were recorded for this candidate attempt.
+                  </p>
+                </div>
+              )}
+
+              {/* Telemetry Event Stream */}
+              {!isLoadingMonitoring && monitoringData?.events && monitoringData.events.length > 0 && (
+                <div className="space-y-2">
+                  {monitoringData.events.map((evt) => (
+                    <div
+                      key={evt.id}
+                      className="p-3 bg-surface-container-lowest rounded-lg border border-[#e2e8f0] flex flex-col gap-1.5 shadow-2xs"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                              evt.severity === "HIGH"
+                                ? "bg-red-100 text-red-700"
+                                : evt.severity === "WARNING"
+                                ? "bg-amber-100 text-amber-800"
+                                : "bg-slate-100 text-slate-700"
+                            }`}
+                          >
+                            {evt.eventType.replace(/_/g, " ")}
+                          </span>
+                          <span
+                            className={`px-1.5 py-0.2 rounded text-[9px] font-bold uppercase ${
+                              evt.severity === "HIGH"
+                                ? "bg-red-50 text-red-600 border border-red-200"
+                                : evt.severity === "WARNING"
+                                ? "bg-amber-50 text-amber-700 border border-amber-200"
+                                : "bg-slate-50 text-slate-600 border border-slate-200"
+                            }`}
+                          >
+                            {evt.severity}
+                          </span>
+                        </div>
+                        <span className="font-mono text-[11px] text-secondary">
+                          {new Date(evt.timestamp).toLocaleTimeString()}
+                        </span>
+                      </div>
+
+                      <p className="text-xs text-on-surface font-medium">
+                        {evt.status} {evt.details ? `— ${evt.details}` : ""}
+                      </p>
+
+                      <div className="flex items-center justify-between text-[11px] pt-1 border-t border-[#f1f5f9]">
+                        {evt.penaltyApplied ? (
+                          <span className="text-red-700 font-bold flex items-center gap-1">
+                            <span className="material-symbols-outlined text-[13px]">gavel</span>
+                            <span>-{evt.penaltyApplied} marks deduction applied</span>
+                          </span>
+                        ) : (
+                          <span className="text-secondary italic">No automatic penalty applied</span>
+                        )}
+
+                        {evt.hasEvidence && evt.eventId && (
+                          <button
+                            type="button"
+                            onClick={() => handleInspectEvidence(selectedSub.contestId, evt.eventId!)}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-blue-50 text-blue-700 font-semibold hover:bg-blue-100 border border-blue-200 text-[10px] cursor-pointer"
+                          >
+                            <span className="material-symbols-outlined text-[12px]">image</span>
+                            <span>Inspect Evidence Still</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Applied Penalties Breakdown Card */}
+              {monitoringData?.penalties && monitoringData.penalties.length > 0 && (
+                <div className="mt-2 p-3 bg-red-50/60 rounded-lg border border-red-200/70">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-label-xs uppercase tracking-wider text-red-800 font-bold">
+                      Recorded Score Deductions ({monitoringData.penalties.length})
+                    </span>
+                    <span className="font-label-xs font-bold text-red-700 font-mono">
+                      Total: -{monitoringData.totalPenalties} marks
+                    </span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {monitoringData.penalties.map((p) => (
+                      <div
+                        key={p.id}
+                        className="p-2 rounded bg-surface-container-lowest border border-red-200 text-xs flex items-center justify-between gap-2"
+                      >
+                        <div>
+                          <span className="font-bold text-red-700">-{p.points} marks</span>
+                          <span className="text-secondary ml-1.5">• {p.reason}</span>
+                        </div>
+                        <span className="text-[10px] text-secondary font-mono shrink-0">
+                          {new Date(p.timestamp).toLocaleTimeString()}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Switch to grading button */}
+              <div className="pt-3 border-t border-[#f1f5f9] flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setDrawerTab("grading")}
+                  className="px-space-md py-2 rounded bg-surface-container-high hover:bg-surface-container text-on-surface font-label-md border border-[#e2e8f0] cursor-pointer"
+                >
+                  Return to Answer Sheet
+                </button>
+              </div>
+            </div>
+          )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Deduct Marks Form Modal */}
+      {isDeductModalOpen && selectedSub && (
+        <div
+          className="fixed inset-0 bg-inverse-surface/50 backdrop-blur-xs z-60 flex items-center justify-center p-4"
+          onClick={() => setIsDeductModalOpen(false)}
+        >
+          <div
+            className="w-full max-w-lg bg-surface-container-lowest rounded-xl shadow-2xl border border-[#e2e8f0] overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-4 border-b border-[#f1f5f9] flex items-center justify-between bg-surface-container-low">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-red-600 text-[22px]">remove_circle_outline</span>
+                <h3 className="font-headline-sm font-bold text-on-surface">Deduct Marks</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsDeductModalOpen(false)}
+                className="p-1 rounded text-secondary hover:text-on-surface hover:bg-surface-container cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[18px]">close</span>
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div className="p-3 bg-surface-container-low rounded-lg border border-[#e2e8f0] text-xs space-y-1">
+                <div>Candidate: <strong className="text-on-surface">{selectedSub.candidateName}</strong> ({selectedSub.candidateId})</div>
+                <div>Assessment: <strong className="text-on-surface">{selectedSub.contestTitle}</strong> • {selectedSub.phaseTitle}</div>
+                <div>
+                  Current Eligible Score:{" "}
+                  <strong className="text-primary-container font-mono">
+                    {selectedSub.finalScore !== null ? Number(selectedSub.finalScore) : liveFinalScore} marks
+                  </strong>
+                </div>
+              </div>
+
+              {deductError && (
+                <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs font-semibold flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[16px] shrink-0">error</span>
+                  <span>{deductError}</span>
+                </div>
+              )}
+
+              <div>
+                <label className="block font-label-xs font-bold text-on-surface uppercase tracking-wider mb-1">
+                  Deduction Amount <span className="text-red-600">*</span>
+                </label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    min="0.25"
+                    step="0.25"
+                    max={selectedSub.finalScore !== null ? Number(selectedSub.finalScore) : liveFinalScore}
+                    value={deductAmountInput}
+                    onChange={(e) => {
+                      setDeductAmountInput(e.target.value);
+                      setDeductError(null);
+                    }}
+                    placeholder="e.g. 5, 10, 55"
+                    className="w-full px-3 py-2 pr-16 text-sm rounded-lg bg-surface-container-low border border-[#e2e8f0] font-mono font-bold text-on-surface focus:outline-none focus:border-red-500"
+                  />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-bold text-secondary uppercase font-mono">
+                    marks
+                  </span>
+                </div>
+                {deductAmountInput && !isNaN(Number(deductAmountInput)) && Number(deductAmountInput) > 0 && (
+                  <p className="text-[11px] text-red-700 font-semibold mt-1">
+                    Spelled out: <strong>{formatMarksInWords(Number(deductAmountInput))}</strong>
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <label className="block font-label-xs font-bold text-on-surface uppercase tracking-wider mb-1">
+                  Mandatory Deduction Reason <span className="text-red-600">*</span>
+                </label>
+                <textarea
+                  rows={3}
+                  value={deductReasonInput}
+                  onChange={(e) => {
+                    setDeductReasonInput(e.target.value);
+                    setDeductError(null);
+                  }}
+                  placeholder="Provide an explicit, reviewable rationale for this score deduction (e.g., unauthorized window focus switch, plagiarism, or rubric discrepancy)..."
+                  className="w-full px-3 py-2 text-xs rounded-lg bg-surface-container-low border border-[#e2e8f0] text-on-surface focus:outline-none focus:border-red-500"
+                />
+                <span className="text-[10px] text-secondary">
+                  Minimum 5 characters required for academic audit compliance.
+                </span>
+              </div>
+
+              {/* Live Preview */}
+              {deductAmountInput && !isNaN(Number(deductAmountInput)) && Number(deductAmountInput) > 0 && (
+                <div className="p-3 bg-red-50/50 rounded-lg border border-red-200 text-xs flex items-center justify-between">
+                  <div>
+                    <span className="text-secondary block">Original Score</span>
+                    <strong className="text-on-surface font-mono">
+                      {selectedSub.finalScore !== null ? Number(selectedSub.finalScore) : liveFinalScore} marks
+                    </strong>
+                  </div>
+                  <div className="text-center">
+                    <span className="text-red-700 font-bold block">Deduction</span>
+                    <strong className="text-red-600 font-mono">-{Number(deductAmountInput)} marks</strong>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-[#166534] font-bold block">Resulting Score</span>
+                    <strong className="text-[#166534] font-mono font-bold">
+                      {Math.max(
+                        0,
+                        (selectedSub.finalScore !== null ? Number(selectedSub.finalScore) : liveFinalScore) -
+                          Number(deductAmountInput)
+                      )}{" "}
+                      marks
+                    </strong>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="px-5 py-3 border-t border-[#f1f5f9] bg-surface-container-low flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsDeductModalOpen(false)}
+                className="px-4 py-2 rounded-md bg-surface-container-high hover:bg-surface-container text-on-surface font-label-sm border border-[#e2e8f0] cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleProceedToConfirmDeduction}
+                className="px-4 py-2 rounded-md bg-red-600 hover:bg-red-700 text-white font-label-sm font-bold shadow-xs cursor-pointer flex items-center gap-1.5"
+              >
+                <span>Review & Confirm Deduction</span>
+                <span className="material-symbols-outlined text-[16px]">arrow_forward</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* High-Priority Confirmation Dialog (Safe Marks Deduction with 5 vs 55 Distinction) */}
+      {isDeductConfirmOpen && selectedSub && (
+        <div
+          className="fixed inset-0 bg-inverse-surface/60 backdrop-blur-sm z-70 flex items-center justify-center p-4"
+          onClick={() => !isSubmittingDeduction && setIsDeductConfirmOpen(false)}
+        >
+          <div
+            className="w-full max-w-lg bg-surface-container-lowest rounded-2xl shadow-2xl border-2 border-red-300 overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-4 bg-red-600 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-[24px]">gavel</span>
+                <h3 className="font-headline-sm font-bold tracking-tight">Confirm Marks Deduction</h3>
+              </div>
+              <button
+                type="button"
+                disabled={isSubmittingDeduction}
+                onClick={() => setIsDeductConfirmOpen(false)}
+                className="p-1 rounded text-white/80 hover:text-white hover:bg-red-700 cursor-pointer disabled:opacity-50"
+              >
+                <span className="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div className="text-xs text-secondary">
+                Please verify the exact participant and deduction parameters below. A second explicit click is required to apply this adjustment.
+              </div>
+
+              {/* Exact Participant & Assessment Info */}
+              <div className="p-3 bg-surface-container-low rounded-lg border border-[#e2e8f0] text-xs space-y-1.5">
+                <div className="flex justify-between">
+                  <span className="text-secondary">Participant Name:</span>
+                  <strong className="text-on-surface font-semibold">{selectedSub.candidateName}</strong>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-secondary">Candidate ID:</span>
+                  <strong className="text-on-surface font-mono">{selectedSub.candidateId}</strong>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-secondary">Assessment:</span>
+                  <strong className="text-on-surface truncate max-w-[260px]">
+                    {selectedSub.contestTitle} ({selectedSub.phaseTitle})
+                  </strong>
+                </div>
+              </div>
+
+              {/* PROMINENT DEDUCTION AMOUNT CALLOUT (5 vs 55 Unmistakable Distinction) */}
+              <div className="p-4 rounded-xl bg-red-50 border-2 border-red-300 text-center">
+                <span className="font-label-xs uppercase tracking-widest text-red-700 font-bold block mb-1">
+                  Deduction Amount (Marks)
+                </span>
+                <div className="text-4xl sm:text-5xl font-black text-red-600 font-mono tracking-tight my-1">
+                  {deductAmountInput} marks
+                </div>
+                <div className="text-xs font-bold text-red-800 uppercase tracking-widest bg-red-100 px-3 py-1 rounded inline-block border border-red-200 mt-1">
+                  {formatMarksInWords(Number(deductAmountInput))}
+                </div>
+
+                {Number(deductAmountInput) >= 10 && (
+                  <div className="mt-2.5 p-2 rounded bg-amber-50 border border-amber-200 text-amber-800 text-xs font-semibold flex items-center justify-center gap-1.5">
+                    <span className="material-symbols-outlined text-[16px] text-amber-600">warning</span>
+                    <span>High-Impact Deduction: You are deducting {deductAmountInput} marks ({formatMarksInWords(Number(deductAmountInput))}).</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Mandatory Reason Repeated */}
+              <div className="p-3 bg-surface-container-low rounded-lg border border-[#e2e8f0]">
+                <span className="font-label-xs uppercase tracking-wider text-secondary font-bold block mb-1">
+                  Recorded Reason
+                </span>
+                <p className="text-xs text-on-surface italic bg-surface-container-lowest p-2 rounded border border-[#e2e8f0]">
+                  &quot;{deductReasonInput.trim()}&quot;
+                </p>
+              </div>
+
+              {/* Resulting Score Breakdown */}
+              <div className="p-3 rounded-lg bg-surface-container-low border border-[#e2e8f0] grid grid-cols-3 gap-2 text-center text-xs">
+                <div>
+                  <span className="text-secondary block">Original Score</span>
+                  <strong className="text-on-surface font-mono text-sm block mt-0.5">
+                    {selectedSub.finalScore !== null ? Number(selectedSub.finalScore) : liveFinalScore} marks
+                  </strong>
+                </div>
+                <div>
+                  <span className="text-red-700 font-semibold block">Deduction</span>
+                  <strong className="text-red-600 font-mono text-sm block mt-0.5">
+                    -{deductAmountInput} marks
+                  </strong>
+                </div>
+                <div>
+                  <span className="text-[#166534] font-semibold block">Resulting Score</span>
+                  <strong className="text-[#166534] font-mono text-sm font-bold block mt-0.5">
+                    {Math.max(
+                      0,
+                      (selectedSub.finalScore !== null ? Number(selectedSub.finalScore) : liveFinalScore) -
+                        Number(deductAmountInput)
+                    )}{" "}
+                    marks
+                  </strong>
+                </div>
+              </div>
+
+              {/* Published Result Safeguard Warning */}
+              {selectedSub.contestIsPublished && (
+                <div className="p-3 rounded-lg bg-amber-50 border border-amber-300 text-amber-900 text-xs space-y-2">
+                  <div className="flex items-center gap-1.5 font-bold text-amber-800">
+                    <span className="material-symbols-outlined text-[16px]">lock</span>
+                    <span>Published Assessment Warning</span>
+                  </div>
+                  <p>
+                    This contest result has already been published. Applying this deduction will adjust the certified Cohort Result and require leaderboard republishing.
+                  </p>
+                  {session?.role === "ADMIN" ? (
+                    <label className="flex items-center gap-2 font-semibold text-amber-950 cursor-pointer pt-1">
+                      <input
+                        type="checkbox"
+                        checked={confirmPublishedOverride}
+                        onChange={(e) => setConfirmPublishedOverride(e.target.checked)}
+                        className="rounded text-primary-container focus:ring-0"
+                      />
+                      <span>I explicitly authorize updating published certified results.</span>
+                    </label>
+                  ) : (
+                    <p className="text-red-700 font-bold">
+                      Evaluators cannot alter already published results. Administrator override is required.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {deductError && (
+                <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs font-semibold flex items-center gap-2">
+                  <span className="material-symbols-outlined text-[16px] shrink-0">error</span>
+                  <span>{deductError}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="px-5 py-3 border-t border-[#f1f5f9] bg-surface-container-low flex items-center justify-between gap-2">
+              <button
+                type="button"
+                disabled={isSubmittingDeduction}
+                onClick={() => {
+                  setIsDeductConfirmOpen(false);
+                  setIsDeductModalOpen(true);
+                }}
+                className="px-4 py-2 rounded-md bg-surface-container-high hover:bg-surface-container text-on-surface font-label-sm border border-[#e2e8f0] cursor-pointer disabled:opacity-50"
+              >
+                Back / Edit
+              </button>
+              <button
+                type="button"
+                disabled={
+                  isSubmittingDeduction ||
+                  (selectedSub.contestIsPublished && session?.role !== "ADMIN") ||
+                  (selectedSub.contestIsPublished && session?.role === "ADMIN" && !confirmPublishedOverride)
+                }
+                onClick={handleApplyDeduction}
+                className="px-4 py-2 rounded-md bg-red-600 hover:bg-red-700 text-white font-label-sm font-bold shadow-xs cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+              >
+                {isSubmittingDeduction ? (
+                  <>
+                    <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                    <span>Applying Deduction...</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="material-symbols-outlined text-[16px]">check_circle</span>
+                    <span>Confirm & Apply {deductAmountInput} Marks Deduction</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Captured Evidence Still Viewer Modal */}
+      {evidenceViewerOpen && selectedEvidence && (
+        <div
+          className="fixed inset-0 bg-inverse-surface/60 backdrop-blur-sm z-80 flex items-center justify-center p-4"
+          onClick={() => setEvidenceViewerOpen(false)}
+        >
+          <div
+            className="w-full max-w-2xl bg-surface-container-lowest rounded-xl shadow-2xl border border-[#e2e8f0] overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-3 border-b border-[#f1f5f9] flex items-center justify-between bg-surface-container-low">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-[20px] text-primary-container">image</span>
+                <h4 className="font-label-sm font-bold text-on-surface">
+                  Captured Telemetry Evidence Still ({selectedEvidence.eventType})
+                </h4>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEvidenceViewerOpen(false)}
+                className="p-1 rounded text-secondary hover:text-on-surface hover:bg-surface-container cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[18px]">close</span>
+              </button>
+            </div>
+            <div className="p-5 text-center space-y-3">
+              {selectedEvidence.screenCapture ? (
+                <div>
+                  <span className="font-label-xs uppercase tracking-wider text-secondary font-bold block mb-1">
+                    Screen Capture Evidence Still
+                  </span>
+                  <img
+                    src={selectedEvidence.screenCapture}
+                    alt="Screen telemetry evidence"
+                    className="max-h-96 mx-auto rounded-lg border border-[#e2e8f0] object-contain shadow-xs"
+                  />
+                </div>
+              ) : selectedEvidence.cameraCapture ? (
+                <div>
+                  <span className="font-label-xs uppercase tracking-wider text-secondary font-bold block mb-1">
+                    Camera Telemetry Still
+                  </span>
+                  <img
+                    src={selectedEvidence.cameraCapture}
+                    alt="Camera telemetry evidence"
+                    className="max-h-96 mx-auto rounded-lg border border-[#e2e8f0] object-contain shadow-xs"
+                  />
+                </div>
+              ) : (
+                <div className="p-8 text-secondary text-xs italic">
+                  No visual image data was captured or permitted for this telemetry event.
+                </div>
+              )}
+              <p className="text-[11px] text-secondary font-mono">
+                Captured At: {new Date(selectedEvidence.timestamp).toLocaleString()}
+              </p>
             </div>
           </div>
         </div>

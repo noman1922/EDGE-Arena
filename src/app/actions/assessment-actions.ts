@@ -72,9 +72,7 @@ export interface ParticipantDashboardContest {
   phases?: AssessmentPhaseNavOption[];
 }
 
-export async function getParticipantDashboard(
-  userEmailParam?: string
-): Promise<{
+export async function getParticipantDashboard(): Promise<{
   candidate: {
     id: string;
     candidateId: string;
@@ -87,39 +85,58 @@ export async function getParticipantDashboard(
 }> {
   try {
     const session = await requireRole(["PARTICIPANT"]);
-    const candidateEmail = userEmailParam || session.email;
+    const candidateEmail = session.email;
 
-    // 1. Resolve candidate user
-    const user = await prisma.user.findUnique({
-      where: { email: candidateEmail },
-      include: { cohort: true },
-    });
-
-    if (!user) {
-      throw new Error(`Participant user not found for email: ${candidateEmail}`);
-    }
-
-    // 2. Fetch only enrolled contests for this specific candidate
-    const enrollments = await prisma.contestParticipant.findMany({
-      where: {
-        userId: user.id,
-        status: { in: ["ACTIVE", "ENROLLED"] },
-      },
-      include: {
-        contest: {
-          include: {
-            cohort: true,
-            phases: {
-              orderBy: { phaseNumber: "asc" },
-              include: {
-                tasks: {
-                  orderBy: { taskNumber: "asc" },
-                  include: {
-                    questions: true,
-                    submissions: {
-                      where: { userId: user.id },
-                      include: {
-                        answers: true,
+    // 1. Resolve candidate user and enrolled contests concurrently with optimized projections
+    const [user, enrollments] = await Promise.all([
+      prisma.user.findUnique({
+        where: { email: candidateEmail },
+        select: {
+          id: true,
+          candidateId: true,
+          name: true,
+          email: true,
+          institution: true,
+          cohort: { select: { name: true } },
+        },
+      }),
+      prisma.contestParticipant.findMany({
+        where: {
+          user: { email: candidateEmail },
+          status: { in: ["ACTIVE", "ENROLLED"] },
+        },
+        include: {
+          contest: {
+            include: {
+              cohort: { select: { name: true } },
+              phases: {
+                orderBy: { phaseNumber: "asc" },
+                include: {
+                  tasks: {
+                    orderBy: { taskNumber: "asc" },
+                    include: {
+                      questions: {
+                        select: {
+                          id: true,
+                          type: true,
+                        },
+                      },
+                      submissions: {
+                        where: { user: { email: candidateEmail } },
+                        select: {
+                          id: true,
+                          status: true,
+                          submittedAt: true,
+                          answers: {
+                            select: {
+                              questionId: true,
+                              selectedOption: true,
+                              writtenText: true,
+                              fileKey: true,
+                              fileName: true,
+                            },
+                          },
+                        },
                       },
                     },
                   },
@@ -128,8 +145,12 @@ export async function getParticipantDashboard(
             },
           },
         },
-      },
-    });
+      }),
+    ]);
+
+    if (!user) {
+      throw new Error(`Participant user not found for email: ${candidateEmail}`);
+    }
 
     const now = new Date();
     const contests: ParticipantDashboardContest[] = [];
@@ -375,11 +396,11 @@ export async function getParticipantDashboard(
     return {
       candidate: {
         id: user.id,
-        candidateId: user.candidateId || "DEMO-CANDIDATE-01",
+        candidateId: user.candidateId || `ACI-${user.id.slice(0, 6).toUpperCase()}`,
         name: user.name,
         email: user.email,
-        cohort: user.cohort?.name || "Campus Leadership Programme 2025",
-        institution: user.institution || "National Campus Cluster A",
+        cohort: user.cohort?.name || "Career EDGE Cohort",
+        institution: user.institution || "Candidate Institution",
       },
       contests,
     };
@@ -1181,8 +1202,7 @@ export async function saveAnswerDraftAction(
     writtenText?: string;
     fileName?: string;
     fileKey?: string;
-  },
-  _userEmail?: string
+  }
 ) {
   try {
     const session = await requireRole(["PARTICIPANT"]);
@@ -1201,9 +1221,7 @@ export async function saveAnswerDraftAction(
       return { success: false, error: "Submission session not found." };
     }
 
-    const userEmail = _userEmail || session.email;
-
-    if (submission.userId !== session.userId && submission.user.email !== userEmail) {
+    if (submission.userId !== session.userId) {
       return { success: false, error: "Unauthorized access: Cross-user submission modification is blocked." };
     }
 
@@ -1283,10 +1301,7 @@ export async function saveAnswerDraftAction(
   }
 }
 
-export async function submitAssessmentAction(
-  submissionId: string,
-  _userEmail?: string
-) {
+export async function submitAssessmentAction(submissionId: string) {
   try {
     const session = await requireRole(["PARTICIPANT"]);
 
@@ -1314,18 +1329,100 @@ export async function submitAssessmentAction(
       return { success: false, error: "Submission not found." };
     }
 
-    const userEmail = _userEmail || session.email;
-
-    if (submission.userId !== session.userId && submission.user.email !== userEmail) {
+    if (submission.userId !== session.userId) {
       return { success: false, error: "Unauthorized access: Cross-user submission finalization is blocked." };
+    }
+
+    // Helper to query contest progression and detect if this is the final contest task
+    async function determineContestProgression(targetContestId: string, targetTaskId: string, targetUserId: string) {
+      const contestStructure = await prisma.contest.findUnique({
+        where: { id: targetContestId },
+        include: {
+          phases: {
+            orderBy: { phaseNumber: "asc" },
+            include: {
+              tasks: {
+                orderBy: { taskNumber: "asc" },
+                select: { id: true, phaseId: true, taskNumber: true },
+              },
+            },
+          },
+        },
+      });
+
+      const allTasksFlat: Array<{ id: string; phaseId: string; taskNumber: number; phaseNumber: number }> = [];
+      if (contestStructure) {
+        for (const ph of contestStructure.phases) {
+          for (const t of ph.tasks) {
+            allTasksFlat.push({
+              id: t.id,
+              phaseId: ph.id,
+              taskNumber: t.taskNumber,
+              phaseNumber: ph.phaseNumber,
+            });
+          }
+        }
+      }
+
+      const currentTaskIndex = allTasksFlat.findIndex((t) => t.id === targetTaskId);
+      const isLastTask = currentTaskIndex >= 0 && currentTaskIndex === allTasksFlat.length - 1;
+
+      const candidateSubmissions = await prisma.submission.findMany({
+        where: {
+          contestId: targetContestId,
+          userId: targetUserId,
+        },
+        select: { taskId: true, status: true },
+      });
+
+      const submittedTaskIds = new Set(
+        candidateSubmissions
+          .filter((s) => s.status === "SUBMITTED" || s.status === "GRADED" || s.status === "PUBLISHED" || s.taskId === targetTaskId)
+          .map((s) => s.taskId)
+      );
+
+      const allContestTasksSubmitted = allTasksFlat.length > 0 && allTasksFlat.every((t) => submittedTaskIds.has(t.id));
+
+      // Find next required unsubmitted task
+      const nextUnsubmittedAfterCurrent = currentTaskIndex >= 0
+        ? allTasksFlat.slice(currentTaskIndex + 1).find((t) => !submittedTaskIds.has(t.id))
+        : undefined;
+
+      const firstUnsubmitted = allTasksFlat.find((t) => !submittedTaskIds.has(t.id));
+
+      const nextTask =
+        nextUnsubmittedAfterCurrent ||
+        firstUnsubmitted ||
+        (!allContestTasksSubmitted && currentTaskIndex >= 0 && currentTaskIndex < allTasksFlat.length - 1
+          ? allTasksFlat[currentTaskIndex + 1]
+          : null);
+
+      const isFinal = allContestTasksSubmitted || (isLastTask && !nextTask);
+
+      return {
+        isFinalSubmission: isFinal,
+        nextTaskId: !isFinal ? nextTask?.id : undefined,
+        nextPhaseId: !isFinal ? nextTask?.phaseId : undefined,
+      };
     }
 
     const isSubmitted =
       submission.status === "SUBMITTED" ||
       submission.status === "GRADED" ||
       submission.status === "PUBLISHED";
-    if (isSubmitted && submission.autoGradeScore !== null) {
-      return { success: true, message: "Already submitted." };
+
+    if (isSubmitted) {
+      const prog = await determineContestProgression(submission.contestId, submission.taskId, submission.userId);
+      return {
+        success: true,
+        message: "Already submitted.",
+        status: submission.status,
+        submittedAt: submission.submittedAt ? submission.submittedAt.toISOString() : new Date().toISOString(),
+        isFinalSubmission: prog.isFinalSubmission,
+        contestId: submission.contestId,
+        nextTaskId: prog.nextTaskId,
+        nextPhaseId: prog.nextPhaseId,
+      };
     }
 
     const now = new Date();
@@ -1391,23 +1488,40 @@ export async function submitAssessmentAction(
       },
     });
 
-    function safeRevalidatePath(path: string) {
+    // 6. Compute progression to guide redirect vs advancement
+    const progression = await determineContestProgression(submission.contestId, submission.taskId, submission.userId);
+
+    function safeRevalidatePath(path: string, type?: "layout" | "page") {
       try {
-        revalidatePath(path);
+        if (type) {
+          revalidatePath(path, type);
+        } else {
+          revalidatePath(path);
+        }
       } catch {
         // Fallback for runner environments
       }
     }
 
     safeRevalidatePath("/assessment");
+    safeRevalidatePath("/assessment", "layout");
     safeRevalidatePath("/dashboard");
+    safeRevalidatePath("/dashboard", "layout");
+    safeRevalidatePath(`/dashboard/contests/${submission.contestId}`);
+    safeRevalidatePath(`/dashboard/leaderboard`);
+    safeRevalidatePath(`/assessment/${submission.contestId}/${submission.phaseId}/${submission.taskId}`);
     safeRevalidatePath("/admin/contests");
+    safeRevalidatePath("/admin/submissions");
 
     return {
       success: true,
       status: updated.status,
       submittedAt: submittedAt.toISOString(),
       isLate,
+      isFinalSubmission: progression.isFinalSubmission,
+      contestId: submission.contestId,
+      nextTaskId: progression.nextTaskId,
+      nextPhaseId: progression.nextPhaseId,
     };
   } catch (error) {
     console.error("Error submitting assessment:", error);

@@ -196,6 +196,23 @@ describe("Evaluator Manual & Rubric Grading Workflow Tests", () => {
     // Assign candidate
     await assignParticipantAction(contestId, testCandidateEmail, "Rubric Test Candidate");
 
+    // Assign evaluator to contest and candidate
+    const contestEval = await prisma.contestEvaluator.create({
+      data: {
+        contestId,
+        userId: evaluatorUser.id,
+      },
+    });
+
+    await prisma.evaluatorCandidateAssignment.create({
+      data: {
+        contestId,
+        contestEvaluatorId: contestEval.id,
+        evaluatorId: evaluatorUser.id,
+        participantId: candidateUser.id,
+      },
+    });
+
     // 3. Candidate creates answers and submits task
     setTestSession(candidateSession);
     const assessment = await getTaskAssessmentData(contestId, taskId);

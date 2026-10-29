@@ -1,11 +1,10 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { BrandLogo } from "@/components/ui/brand-logo";
-import { DEMO_CANDIDATE } from "@/lib/demo-data";
-import { logoutAction } from "@/app/actions/auth-actions";
+import { logoutAction, getCurrentUserSession } from "@/app/actions/auth-actions";
 
 interface ParticipantHeaderProps {
   onToggleMobileNav?: () => void;
@@ -19,6 +18,25 @@ export function ParticipantHeader({
   const pathname = usePathname();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [candidateUser, setCandidateUser] = useState<{ name: string; initials: string }>({
+    name: "Candidate",
+    initials: "CD",
+  });
+
+  useEffect(() => {
+    getCurrentUserSession().then((session) => {
+      if (session) {
+        const name = session.name || "Candidate";
+        const initials = name
+          .split(" ")
+          .map((n) => n[0])
+          .slice(0, 2)
+          .join("")
+          .toUpperCase() || "CD";
+        setCandidateUser({ name, initials });
+      }
+    });
+  }, []);
 
   const navLinks = [
     { label: "My Contests", href: "/dashboard/contests" },
@@ -107,11 +125,11 @@ export function ParticipantHeader({
           {/* Profile Lockup */}
           <div className="flex items-center gap-space-sm pl-space-xs border-l border-[#e2e8f0]">
             <div className="w-8 h-8 rounded-full bg-primary-fixed text-on-primary-fixed flex items-center justify-center font-label-sm font-semibold shrink-0">
-              {DEMO_CANDIDATE.avatarInitials}
+              {candidateUser.initials}
             </div>
             <div className="hidden sm:flex flex-col text-left">
               <span className="font-label-sm text-on-surface font-medium leading-tight">
-                {DEMO_CANDIDATE.name}
+                {candidateUser.name}
               </span>
               <span className="font-label-xs text-secondary leading-tight">
                 Candidate

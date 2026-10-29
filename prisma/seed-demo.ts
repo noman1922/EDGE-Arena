@@ -1,5 +1,5 @@
 /**
- * ACI Career EDGE Assess / EDGE-Arena — Development Seed Script
+ * ACI Career EDGE Assess — Development Seed Script
  * 
  * Provisions initial cohort and isolated administrative/evaluator accounts.
  * Does NOT seed demo contest questions, answer keys, or fake assessment submissions.
@@ -34,7 +34,13 @@ async function main() {
   const DEMO_ADMIN_ID = "00000000-0000-4000-8000-000000000000";
   const admin = await prisma.user.upsert({
     where: { email: "admin.demo@example.com" },
-    update: { role: UserRole.ADMIN },
+    update: {
+      role: UserRole.ADMIN,
+      passwordHash: defaultCreds.hash,
+      passwordSalt: defaultCreds.salt,
+      mustChangePassword: false,
+      isActive: true,
+    },
     create: {
       id: DEMO_ADMIN_ID,
       email: "admin.demo@example.com",
@@ -42,6 +48,10 @@ async function main() {
       role: UserRole.ADMIN,
       institution: "ACI Career EDGE Academy Central",
       cohortId: cohort.id,
+      passwordHash: defaultCreds.hash,
+      passwordSalt: defaultCreds.salt,
+      mustChangePassword: false,
+      isActive: true,
     },
   });
 
@@ -64,7 +74,13 @@ async function main() {
   const DEMO_EVALUATOR_ID = "00000000-0000-4000-8000-000000000001";
   const evaluator = await prisma.user.upsert({
     where: { email: "evaluator.demo@example.com" },
-    update: { role: UserRole.EVALUATOR },
+    update: {
+      role: UserRole.EVALUATOR,
+      passwordHash: defaultCreds.hash,
+      passwordSalt: defaultCreds.salt,
+      mustChangePassword: false,
+      isActive: true,
+    },
     create: {
       id: DEMO_EVALUATOR_ID,
       email: "evaluator.demo@example.com",
@@ -72,6 +88,10 @@ async function main() {
       role: UserRole.EVALUATOR,
       institution: "Leadership Evaluation Panel",
       cohortId: cohort.id,
+      passwordHash: defaultCreds.hash,
+      passwordSalt: defaultCreds.salt,
+      mustChangePassword: false,
+      isActive: true,
     },
   });
 
@@ -93,7 +113,13 @@ async function main() {
   const DEMO_CANDIDATE_ID = "00000000-0000-4000-8000-000000000002";
   const candidate = await prisma.user.upsert({
     where: { email: "candidate.demo@example.com" },
-    update: { role: UserRole.PARTICIPANT },
+    update: {
+      role: UserRole.PARTICIPANT,
+      passwordHash: defaultCreds.hash,
+      passwordSalt: defaultCreds.salt,
+      mustChangePassword: false,
+      isActive: true,
+    },
     create: {
       id: DEMO_CANDIDATE_ID,
       email: "candidate.demo@example.com",
@@ -102,6 +128,10 @@ async function main() {
       role: UserRole.PARTICIPANT,
       institution: "National Campus Cluster A",
       cohortId: cohort.id,
+      passwordHash: defaultCreds.hash,
+      passwordSalt: defaultCreds.salt,
+      mustChangePassword: false,
+      isActive: true,
     },
   });
 

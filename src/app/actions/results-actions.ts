@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { requireRole } from "@/lib/auth";
+import { getContestPenalties, calculateCandidateFinalScore } from "@/lib/monitoring";
 
 export interface AdminLeaderboardRow {
   userId: string;
@@ -14,6 +15,8 @@ export interface AdminLeaderboardRow {
   submittedAt: string | null;
   autoGradeScore: number | null;
   manualGradeScore: number | null;
+  rawScore: number;
+  penalties: number;
   finalScore: number;
   rank: number;
   percentile: number;
@@ -28,9 +31,66 @@ export interface AdminResultsOverview {
   isPublished: boolean;
   totalEnrolled: number;
   totalSubmissions: number;
+  unsubmittedCount: number;
+  pendingEvaluationCount: number;
   gradedCount: number;
+  finalizedCount: number;
   rows: AdminLeaderboardRow[];
 }
+
+async function fetchContestLeaderboardData(contestId: string) {
+  return prisma.contest.findUnique({
+    where: { id: contestId },
+    select: {
+      id: true,
+      title: true,
+      track: true,
+      isPublished: true,
+      _count: {
+        select: {
+          participants: true,
+        },
+      },
+      submissions: {
+        select: {
+          id: true,
+          userId: true,
+          status: true,
+          autoGradeScore: true,
+          manualGradeScore: true,
+          finalScore: true,
+          submittedAt: true,
+          task: {
+            select: {
+              questions: { select: { type: true } },
+              rubrics: { select: { id: true } },
+            },
+          },
+          user: {
+            select: {
+              name: true,
+              email: true,
+              candidateId: true,
+              institution: true,
+            },
+          },
+        },
+      },
+      results: {
+        select: {
+          userId: true,
+          totalScore: true,
+          rank: true,
+          percentile: true,
+          isCertified: true,
+          publishedAt: true,
+        },
+      },
+    },
+  });
+}
+
+type ContestLeaderboardData = NonNullable<Awaited<ReturnType<typeof fetchContestLeaderboardData>>>;
 
 export async function getAdminLeaderboardAndResults(
   contestId?: string
@@ -38,62 +98,50 @@ export async function getAdminLeaderboardAndResults(
   try {
     await requireRole(["ADMIN"]);
 
-    const contests = await prisma.contest.findMany({
+    const isAll = contestId === "ALL";
+    const knownTargetId = isAll ? undefined : (contestId && contestId !== "ALL" ? contestId : undefined);
+
+    const contestsPromise = prisma.contest.findMany({
       select: { id: true, title: true },
       orderBy: { createdAt: "desc" },
     });
 
-    if (contests.length === 0) {
-      return { contests: [], current: null };
-    }
+    let contests: Array<{ id: string; title: string }>;
+    let contest: ContestLeaderboardData | null = null;
+    let contestPenalties: any[] = [];
 
-    const selectedContestId = contestId || contests[0].id;
-    const contest = await prisma.contest.findUnique({
-      where: { id: selectedContestId },
-      select: {
-        id: true,
-        title: true,
-        track: true,
-        isPublished: true,
-        participants: {
-          select: {
-            id: true,
-          },
-        },
-        submissions: {
-          select: {
-            id: true,
-            userId: true,
-            status: true,
-            autoGradeScore: true,
-            manualGradeScore: true,
-            finalScore: true,
-            submittedAt: true,
-            user: {
-              select: {
-                name: true,
-                email: true,
-                candidateId: true,
-                institution: true,
-              },
-            },
-          },
-        },
-        results: {
-          select: {
-            userId: true,
-            totalScore: true,
-            rank: true,
-            percentile: true,
-            isCertified: true,
-            publishedAt: true,
-          },
-        },
-      },
-    });
+    if (knownTargetId) {
+      const [cList, cTarget, cPenalties] = await Promise.all([
+        contestsPromise,
+        fetchContestLeaderboardData(knownTargetId),
+        getContestPenalties(knownTargetId),
+      ]);
+
+      contests = cList;
+      contest = cTarget;
+      contestPenalties = cPenalties;
+    } else {
+      contests = await contestsPromise;
+      if (contests.length === 0) {
+        return { contests: [], current: null };
+      }
+      const selectedContestId = contests[0].id;
+      const [cTarget, cPenalties] = await Promise.all([
+        fetchContestLeaderboardData(selectedContestId),
+        getContestPenalties(selectedContestId),
+      ]);
+      contest = cTarget;
+      contestPenalties = cPenalties;
+    }
 
     if (!contest) {
       return { contests, current: null };
+    }
+
+    // Group penalties by candidate
+    const penaltiesByUser: Record<string, number> = {};
+    for (const p of contestPenalties) {
+      penaltiesByUser[p.userId] = (penaltiesByUser[p.userId] || 0) + p.points;
     }
 
     // Group submissions by candidate (userId)
@@ -106,9 +154,10 @@ export async function getAdminLeaderboardAndResults(
       candidateMap.get(sub.userId)!.push(sub);
     }
 
-    const totalEnrolled = contest.participants.length;
+    const totalEnrolled = contest._count.participants;
     const totalCandidatesWithSubmissions = candidateMap.size;
     let gradedCandidateCount = 0;
+    let pendingEvaluationCount = 0;
 
     const candidateRows: Array<{
       userId: string;
@@ -118,6 +167,8 @@ export async function getAdminLeaderboardAndResults(
       submittedAt: Date | null;
       autoGradeScore: number;
       manualGradeScore: number;
+      rawScore: number;
+      penalties: number;
       finalScore: number;
     }> = [];
 
@@ -125,22 +176,31 @@ export async function getAdminLeaderboardAndResults(
       const primary = userSubs[0];
       let autoSum = 0;
       let manualSum = 0;
-      let finalSum = 0;
       let allGraded = true;
       let hasGradingInProgress = false;
       let latestSubmittedAt: Date | null = null;
 
       for (const s of userSubs) {
+        const requiresManualGrading =
+          (s.task?.questions || []).some((q) => q.type === "WRITTEN" || q.type === "FILE_UPLOAD") ||
+          (s.task?.rubrics || []).length > 0;
+
         if (s.status === "GRADING_IN_PROGRESS") {
           hasGradingInProgress = true;
           allGraded = false;
-        } else if (s.status !== "GRADED" && s.status !== "PUBLISHED") {
-          allGraded = false;
+        } else if (requiresManualGrading) {
+          if (s.status !== "GRADED" && s.status !== "PUBLISHED") {
+            allGraded = false;
+          }
+        } else {
+          // MCQ-only task: auto-graded upon submission
+          if (s.status !== "GRADED" && s.status !== "PUBLISHED" && s.status !== "SUBMITTED") {
+            allGraded = false;
+          }
         }
 
         if (s.autoGradeScore !== null) autoSum += Number(s.autoGradeScore);
         if (s.manualGradeScore !== null) manualSum += Number(s.manualGradeScore);
-        if (s.finalScore !== null) finalSum += Number(s.finalScore);
 
         if (s.submittedAt && (!latestSubmittedAt || s.submittedAt > latestSubmittedAt)) {
           latestSubmittedAt = s.submittedAt;
@@ -153,7 +213,15 @@ export async function getAdminLeaderboardAndResults(
         ? "GRADED"
         : "SUBMITTED";
 
-      if (overallStatus === "GRADED") gradedCandidateCount++;
+      if (overallStatus === "GRADED" || userSubs.some((s) => s.status === "PUBLISHED")) {
+        gradedCandidateCount++;
+      } else {
+        pendingEvaluationCount++;
+      }
+
+      const rawScore = autoSum + manualSum;
+      const userPenalties = penaltiesByUser[userId] || 0;
+      const computedFinal = calculateCandidateFinalScore(rawScore, userPenalties);
 
       candidateRows.push({
         userId,
@@ -163,9 +231,14 @@ export async function getAdminLeaderboardAndResults(
         submittedAt: latestSubmittedAt,
         autoGradeScore: autoSum,
         manualGradeScore: manualSum,
-        finalScore: finalSum,
+        rawScore,
+        penalties: userPenalties,
+        finalScore: computedFinal,
       });
     }
+
+    const unsubmittedCount = Math.max(0, totalEnrolled - totalCandidatesWithSubmissions);
+    const finalizedCount = gradedCandidateCount;
 
     // Sort candidate attempts by finalScore DESC, submittedAt ASC for tie-breaking
     candidateRows.sort((a, b) => {
@@ -201,6 +274,8 @@ export async function getAdminLeaderboardAndResults(
         submittedAt: cand.submittedAt ? cand.submittedAt.toISOString() : null,
         autoGradeScore: cand.autoGradeScore,
         manualGradeScore: cand.manualGradeScore,
+        rawScore: cand.rawScore,
+        penalties: cand.penalties,
         finalScore,
         rank,
         percentile,
@@ -218,7 +293,10 @@ export async function getAdminLeaderboardAndResults(
         isPublished: contest.isPublished,
         totalEnrolled,
         totalSubmissions: totalCandidatesWithSubmissions,
+        unsubmittedCount,
+        pendingEvaluationCount,
         gradedCount: gradedCandidateCount,
+        finalizedCount,
         rows,
       },
     };
@@ -328,10 +406,33 @@ export async function getAdminSubmissionsList(
   try {
     await requireRole(["ADMIN"]);
 
-    const contests = await prisma.contest.findMany({
+    const isAll = contestId === "ALL";
+    const knownActiveId = isAll ? undefined : (contestId && contestId !== "ALL" ? contestId : undefined);
+
+    const contestsPromise = prisma.contest.findMany({
       select: { id: true, title: true },
       orderBy: { createdAt: "desc" },
     });
+
+    let contests: Array<{ id: string; title: string }>;
+    let activeContestId: string | undefined;
+
+    if (knownActiveId) {
+      activeContestId = knownActiveId;
+      contests = await contestsPromise;
+    } else {
+      contests = await contestsPromise;
+      if (contests.length === 0) {
+        return {
+          contests: [],
+          selectedContestId: "",
+          contestTitle: "No Contests Available",
+          metrics: { totalSubmissions: 0, inReview: 0, graded: 0, averageScore: 0 },
+          submissions: [],
+        };
+      }
+      activeContestId = isAll ? undefined : contests[0]?.id;
+    }
 
     if (contests.length === 0) {
       return {
@@ -343,17 +444,23 @@ export async function getAdminSubmissionsList(
       };
     }
 
-    const activeContestId = contestId || contests[0].id;
-    const selectedContest = contests.find((c) => c.id === activeContestId) || contests[0];
+    const selectedContest = isAll
+      ? null
+      : contests.find((c) => c.id === activeContestId) || contests[0];
 
     const submissions = await prisma.submission.findMany({
       where: {
-        contestId: activeContestId,
+        ...(activeContestId ? { contestId: activeContestId } : {}),
         status: { not: "DRAFT" },
       },
       select: {
         id: true,
         contestId: true,
+        contest: {
+          select: {
+            title: true,
+          },
+        },
         taskId: true,
         userId: true,
         status: true,
@@ -376,6 +483,15 @@ export async function getAdminSubmissionsList(
             id: true,
             title: true,
             totalPoints: true,
+            questions: {
+              select: {
+                id: true,
+                questionNumber: true,
+                prompt: true,
+                type: true,
+                points: true,
+              },
+            },
             rubrics: {
               select: {
                 id: true,
@@ -397,15 +513,6 @@ export async function getAdminSubmissionsList(
             fileKey: true,
             score: true,
             isCorrect: true,
-            question: {
-              select: {
-                id: true,
-                questionNumber: true,
-                prompt: true,
-                type: true,
-                points: true,
-              },
-            },
           },
         },
         evaluations: {
@@ -413,14 +520,6 @@ export async function getAdminSubmissionsList(
             rubricId: true,
             scoreAwarded: true,
             comments: true,
-            rubric: {
-              select: {
-                id: true,
-                name: true,
-                maxPoints: true,
-                weightPercentage: true,
-              },
-            },
           },
         },
       },
@@ -454,11 +553,21 @@ export async function getAdminSubmissionsList(
       const allEvaluations: AdminSubmissionDetail["evaluations"] = [];
 
       for (const sub of userSubs) {
+        const requiresManualGrading =
+          (sub.task?.questions || []).some((q) => q.type === "WRITTEN" || q.type === "FILE_UPLOAD") ||
+          (sub.task?.rubrics || []).length > 0;
+
         if (sub.status === "GRADING_IN_PROGRESS") {
           hasGradingInProgress = true;
           allGraded = false;
-        } else if (sub.status !== "GRADED" && sub.status !== "PUBLISHED") {
-          allGraded = false;
+        } else if (requiresManualGrading) {
+          if (sub.status !== "GRADED" && sub.status !== "PUBLISHED") {
+            allGraded = false;
+          }
+        } else {
+          if (sub.status !== "GRADED" && sub.status !== "PUBLISHED" && sub.status !== "SUBMITTED") {
+            allGraded = false;
+          }
         }
 
         if (sub.autoGradeScore !== null) totalAuto += Number(sub.autoGradeScore);
@@ -482,14 +591,16 @@ export async function getAdminSubmissionsList(
           }
         }
 
+        const questionsMap = new Map((sub.task?.questions || []).map((q) => [q.id, q]));
         for (const ans of sub.answers) {
+          const q = questionsMap.get(ans.questionId);
           allAnswers.push({
             id: ans.id,
             questionId: ans.questionId,
-            questionNumber: ans.question.questionNumber,
-            questionPrompt: ans.question.prompt,
-            questionType: ans.question.type,
-            points: ans.question.points,
+            questionNumber: q?.questionNumber ?? 1,
+            questionPrompt: q?.prompt ?? "",
+            questionType: q?.type ?? "MCQ",
+            points: q?.points ?? 1,
             selectedOption: ans.selectedOption,
             writtenText: ans.writtenText,
             wordCount: ans.wordCount,
@@ -525,7 +636,7 @@ export async function getAdminSubmissionsList(
       mappedSubmissions.push({
         id: primary.id,
         contestId: primary.contestId,
-        contestTitle: selectedContest.title,
+        contestTitle: primary.contest?.title || selectedContest?.title || "Contest",
         taskId: primary.taskId,
         taskTitle: userSubs.length > 1 ? `${userSubs.length} Assessment Modules` : primary.task.title,
         taskPoints: totalPoints,
@@ -558,8 +669,8 @@ export async function getAdminSubmissionsList(
 
     return {
       contests,
-      selectedContestId: selectedContest.id,
-      contestTitle: selectedContest.title,
+      selectedContestId: isAll ? "ALL" : (selectedContest?.id || ""),
+      contestTitle: isAll ? "All Contests (Global Scope)" : (selectedContest?.title || "Contest Submissions"),
       metrics: { totalSubmissions, inReview, graded, averageScore },
       submissions: mappedSubmissions,
     };

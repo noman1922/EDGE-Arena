@@ -18,6 +18,13 @@ import {
 } from "@/lib/contest-lifecycle";
 import { revalidatePath } from "next/cache";
 import { requireRole } from "@/lib/auth";
+import { recordAuditLog } from "@/lib/audit";
+import {
+  getContestPenalties,
+  calculateCandidateFinalScore,
+  type ContestPenaltyItem,
+} from "@/lib/monitoring";
+import { formatMarksInWords } from "@/lib/marks-formatter";
 
 function safeRevalidatePath(path: string) {
   try {
@@ -130,20 +137,37 @@ export async function getEvaluatorDashboardDataAction(
     const session = await requireRole(["EVALUATOR", "ADMIN"]);
     const now = new Date();
 
-    // 1. Resolve user to check explicit cohort / participant assignments
-    const user = await prisma.user.findUnique({
-      where: { id: session.userId },
+    // 1. Resolve user to check explicit contest assignments
+    const user = await prisma.user.findFirst({
+      where: {
+        OR: [{ id: session.userId }, { email: session.email }],
+      },
       include: {
-        participants: { select: { contestId: true } },
+        contestEvaluations: { select: { contestId: true } },
       },
     });
 
-    const explicitlyAssignedContestIds = new Set(user?.participants.map((p) => p.contestId) || []);
+    let assignedContestIds: string[] = [];
+    if (session.role === "EVALUATOR") {
+      assignedContestIds = user?.contestEvaluations.map((ce) => ce.contestId) || [];
+      // Evaluators with zero assigned contests must see empty dashboard
+      if (assignedContestIds.length === 0) {
+        return {
+          activeContestsCount: 0,
+          totalSubmissionsCount: 0,
+          pendingCount: 0,
+          gradedCount: 0,
+          assignedContests: [],
+          submissions: [],
+        };
+      }
+    }
 
-    // 2. Fetch accessible contests for this evaluator (not DRAFT)
-    let contests = await prisma.contest.findMany({
+    // 2. Fetch accessible contests (not DRAFT, and restricted to assigned contests for evaluators)
+    const contests = await prisma.contest.findMany({
       where: {
         status: { not: ContestStatus.DRAFT },
+        ...(session.role === "EVALUATOR" ? { id: { in: assignedContestIds } } : {}),
       },
       select: {
         id: true,
@@ -157,15 +181,6 @@ export async function getEvaluatorDashboardDataAction(
       },
       orderBy: { createdAt: "desc" },
     });
-
-    // If evaluator has explicit cohort or participant assignments, filter to assigned
-    if (user?.cohortId || explicitlyAssignedContestIds.size > 0) {
-      contests = contests.filter(
-        (c) =>
-          (user?.cohortId && c.cohortId === user.cohortId) ||
-          explicitlyAssignedContestIds.has(c.id)
-      );
-    }
 
     const assignedContests: EvaluatorContestItem[] = contests.map((c) => {
       const active = isContestActive(c, now);
@@ -191,7 +206,7 @@ export async function getEvaluatorDashboardDataAction(
 
     const activeContestsCount = assignedContests.filter((c) => c.isActive).length;
 
-    // 3. Submissions for grading (optionally scoped to selectedContestId)
+    // 3. Submissions for grading (strictly scoped to evaluator's assigned candidates)
     const submissions = await getSubmissionsForGrading(selectedContestId);
     const pendingCount = submissions.filter(
       (s) => s.status === "SUBMITTED" || s.status === "GRADING_IN_PROGRESS"
@@ -225,12 +240,52 @@ export async function getSubmissionsForGrading(
   contestId?: string
 ): Promise<SubmissionToGrade[]> {
   try {
-    await requireRole(["EVALUATOR", "ADMIN"]);
+    const session = await requireRole(["EVALUATOR", "ADMIN"]);
 
-    // 1. Fetch all submissions matching contest filter and active grading states
+    let assignedContestIds: string[] = [];
+    let assignedParticipantIds: string[] = [];
+
+    if (session.role === "EVALUATOR") {
+      const user = await prisma.user.findFirst({
+        where: {
+          OR: [{ id: session.userId }, { email: session.email }],
+        },
+        include: {
+          contestEvaluations: { select: { contestId: true } },
+          evaluatorAssignedCandidates: { select: { contestId: true, participantId: true } },
+        },
+      });
+
+      assignedContestIds = user?.contestEvaluations.map((ce) => ce.contestId) || [];
+      if (assignedContestIds.length === 0) {
+        return [];
+      }
+
+      if (contestId && !assignedContestIds.includes(contestId)) {
+        return [];
+      }
+
+      const relevantAssignments = (user?.evaluatorAssignedCandidates || []).filter(
+        (a) => !contestId || a.contestId === contestId
+      );
+      assignedParticipantIds = relevantAssignments.map((a) => a.participantId);
+
+      if (assignedParticipantIds.length === 0) {
+        return [];
+      }
+    }
+
+    // 1. Fetch submissions matching contest and candidate assignment filters
     const submissions = await prisma.submission.findMany({
       where: {
-        ...(contestId ? { contestId } : {}),
+        ...(session.role === "EVALUATOR"
+          ? {
+              contestId: contestId ? contestId : { in: assignedContestIds },
+              userId: { in: assignedParticipantIds },
+            }
+          : contestId
+          ? { contestId }
+          : {}),
         status: { in: ["SUBMITTED", "GRADING_IN_PROGRESS", "GRADED"] },
       },
       select: {
@@ -615,6 +670,39 @@ export async function gradeSubmissionAction(input: GradeSubmissionInput) {
       return { success: false, error: "Submission not found." };
     }
 
+    // Strict Evaluator Assignment Enforcement:
+    // Evaluators can only grade candidates explicitly allocated to them in this contest.
+    if (session.role === "EVALUATOR") {
+      const contestEval = await prisma.contestEvaluator.findFirst({
+        where: {
+          contestId: baseSub.contestId,
+          userId: evaluator.id,
+        },
+      });
+
+      if (!contestEval) {
+        return {
+          success: false,
+          error: "Unauthorized: You are not assigned to evaluate this contest.",
+        };
+      }
+
+      const candidateAssignment = await prisma.evaluatorCandidateAssignment.findFirst({
+        where: {
+          contestId: baseSub.contestId,
+          evaluatorId: evaluator.id,
+          participantId: baseSub.userId,
+        },
+      });
+
+      if (!candidateAssignment) {
+        return {
+          success: false,
+          error: "Unauthorized: You are not assigned to evaluate this candidate.",
+        };
+      }
+    }
+
     // 4. Fetch all tasks and submissions for this candidate in this contest
     const candidateSubmissions = await prisma.submission.findMany({
       where: {
@@ -931,9 +1019,38 @@ export async function saveRubricScoreAction(input: SaveRubricScoreInput) {
   });
 }
 
+export interface PublishResultsOptions {
+  isFinalCertification?: boolean;
+}
+
+export interface PublishResultsResult {
+  success: boolean;
+  publishedCount: number;
+  totalEnrolled: number;
+  unsubmittedCount: number;
+  pendingEvaluationCount: number;
+  isPublished: boolean;
+  isFinalCertification: boolean;
+  error?: string;
+}
+
+/**
+ * Publishes contest results and updates official leaderboard standings.
+ *
+ * PROGRESSIVE LEADERBOARD PUBLICATION:
+ * - Allows an ADMIN to publish an update as soon as at least one eligible candidate result is graded and finalized.
+ * - Does NOT require all enrolled participants to submit before publishing an update.
+ * - Each update includes all currently eligible, finalized results for the contest (not just newly graded participants).
+ * - Repeated updates can be executed at any time (recomputing ranks & percentiles consistently).
+ * - Enrolled participants who have not submitted remain unsubmitted.
+ * - Submitted participants awaiting grading remain pending evaluation.
+ * - Neither group is assigned a score of zero.
+ * - Permanent final certification & locking is kept separate, preserving finalization safeguards.
+ */
 export async function publishContestResultsAction(
-  contestId: string
-) {
+  contestId: string,
+  options?: PublishResultsOptions
+): Promise<PublishResultsResult> {
   try {
     const session = await requireRole(["ADMIN"]);
     const requesterEmail = session.email;
@@ -946,6 +1063,12 @@ export async function publishContestResultsAction(
     if (!requester || !checkUserPermission(requester.role, "PUBLISH_RESULTS")) {
       return {
         success: false,
+        publishedCount: 0,
+        totalEnrolled: 0,
+        unsubmittedCount: 0,
+        pendingEvaluationCount: 0,
+        isPublished: false,
+        isFinalCertification: false,
         error: "Unauthorized: Only platform administrators can publish contest results and official rankings.",
       };
     }
@@ -956,7 +1079,13 @@ export async function publishContestResultsAction(
       include: {
         phases: {
           include: {
-            tasks: true,
+            tasks: {
+              include: {
+                questions: true,
+                rubrics: true,
+              },
+              orderBy: { taskNumber: "asc" },
+            },
           },
           orderBy: { phaseNumber: "asc" },
         },
@@ -968,63 +1097,198 @@ export async function publishContestResultsAction(
     });
 
     if (!contest) {
-      return { success: false, error: "Contest not found." };
-    }
-
-    if (contest.participants.length === 0) {
       return {
         success: false,
+        publishedCount: 0,
+        totalEnrolled: 0,
+        unsubmittedCount: 0,
+        pendingEvaluationCount: 0,
+        isPublished: false,
+        isFinalCertification: false,
+        error: "Contest not found.",
+      };
+    }
+
+    const totalEnrolled = contest.participants.length;
+    if (totalEnrolled === 0) {
+      return {
+        success: false,
+        publishedCount: 0,
+        totalEnrolled: 0,
+        unsubmittedCount: 0,
+        pendingEvaluationCount: 0,
+        isPublished: false,
+        isFinalCertification: false,
         error: "Cannot publish: No participants enrolled in this contest.",
       };
     }
 
     // Calculate maximum points for contest across all tasks
-    const contestTotalPoints = contest.phases.reduce((acc, ph) => {
-      return acc + ph.tasks.reduce((tAcc, t) => tAcc + t.totalPoints, 0);
-    }, 0) || 100;
+    const contestTotalPoints =
+      contest.phases.reduce((acc, ph) => {
+        return acc + ph.tasks.reduce((tAcc, t) => tAcc + t.totalPoints, 0);
+      }, 0) || 100;
 
-    // 3. For each candidate, evaluate grading completion and total contest score
-    interface CandidateRankingRow {
+    // Collect all required contest tasks to validate individual completion
+    const allContestTasks: Array<{
+      id: string;
+      title: string;
+      phaseNumber: number;
+      taskNumber: number;
+      requiresManualGrading: boolean;
+    }> = [];
+
+    for (const ph of contest.phases) {
+      for (const t of ph.tasks) {
+        const hasManualQuestions = t.questions.some(
+          (q) => q.type === "WRITTEN" || q.type === "FILE_UPLOAD"
+        );
+        const hasRubrics = (t.rubrics?.length || 0) > 0;
+        allContestTasks.push({
+          id: t.id,
+          title: t.title,
+          phaseNumber: ph.phaseNumber,
+          taskNumber: t.taskNumber,
+          requiresManualGrading: hasManualQuestions || hasRubrics,
+        });
+      }
+    }
+
+    // Load confirmed penalties for contest
+    const contestPenalties = await getContestPenalties(contestId);
+    const penaltiesByUser: Record<string, number> = {};
+    for (const p of contestPenalties) {
+      penaltiesByUser[p.userId] = (penaltiesByUser[p.userId] || 0) + p.points;
+    }
+
+    interface FinalizedCandidateRow {
       userId: string;
       name: string;
+      rawScore: number;
+      penalties: number;
       totalScore: number;
       latestSubmittedAt: Date | null;
       submissions: Array<{ id: string }>;
     }
 
-    const candidateRows: CandidateRankingRow[] = [];
+    interface CandidateDiagnoseInfo {
+      userId: string;
+      name: string;
+      taskTitle: string;
+    }
 
+    const finalizedCandidates: FinalizedCandidateRow[] = [];
+    const unsubmittedCandidates: CandidateDiagnoseInfo[] = [];
+    const pendingEvaluationCandidates: CandidateDiagnoseInfo[] = [];
+
+    // 3. For each candidate, evaluate grading completion and total contest score
     for (const participant of contest.participants) {
       const userSubmissions = await prisma.submission.findMany({
         where: { contestId, userId: participant.userId },
-        include: { task: true },
+        include: {
+          task: {
+            include: {
+              questions: true,
+              rubrics: true,
+            },
+          },
+        },
       });
 
-      // Check if any submission is pending grading
-      const unfinalized = userSubmissions.find(
-        (s) => s.status === "SUBMITTED" || s.status === "GRADING_IN_PROGRESS"
-      );
-      if (unfinalized) {
-        return {
-          success: false,
-          error: `Cannot publish: Candidate "${participant.user.name}" has unfinalized submissions (${unfinalized.task.title}). Please finalize grading before publishing.`,
-        };
+      const submissionByTaskId = new Map(userSubmissions.map((s) => [s.taskId, s]));
+
+      // Check task submission completeness
+      let candidateHasAllTasksSubmitted = true;
+      let missingTaskTitle = "";
+
+      for (const t of allContestTasks) {
+        const sub = submissionByTaskId.get(t.id);
+        const isSubmitted =
+          sub &&
+          (sub.status === "SUBMITTED" ||
+            sub.status === "GRADING_IN_PROGRESS" ||
+            sub.status === "GRADED" ||
+            sub.status === "PUBLISHED");
+
+        if (!isSubmitted) {
+          candidateHasAllTasksSubmitted = false;
+          missingTaskTitle = t.title;
+          break;
+        }
       }
 
-      // Sum final scores of graded submissions
+      if (!candidateHasAllTasksSubmitted) {
+        unsubmittedCandidates.push({
+          userId: participant.userId,
+          name: participant.user.name,
+          taskTitle: missingTaskTitle,
+        });
+        continue;
+      }
+
+      // Check if all submitted tasks are finalized/graded
+      let candidateHasAllTasksGraded = true;
+      let unfinalizedTaskTitle = "";
+
+      for (const t of allContestTasks) {
+        const sub = submissionByTaskId.get(t.id);
+        if (!sub) continue;
+
+        if (t.requiresManualGrading) {
+          const isGraded =
+            (sub.status === "GRADED" || sub.status === "PUBLISHED") &&
+            sub.manualGradeScore !== null;
+
+          if (!isGraded) {
+            candidateHasAllTasksGraded = false;
+            unfinalizedTaskTitle = t.title;
+            break;
+          }
+        } else {
+          // MCQ-only / auto-graded task
+          // If evaluator actively set GRADING_IN_PROGRESS, it is not finalized yet
+          if (sub.status === "GRADING_IN_PROGRESS") {
+            candidateHasAllTasksGraded = false;
+            unfinalizedTaskTitle = t.title;
+            break;
+          } else if (sub.status === "SUBMITTED") {
+            // Uncontested MCQ submission: promote to GRADED with autoGradeScore
+            const finalScore = sub.autoGradeScore !== null ? Number(sub.autoGradeScore) : 0;
+            await prisma.submission.update({
+              where: { id: sub.id },
+              data: {
+                status: "GRADED",
+                finalScore,
+              },
+            });
+            sub.status = "GRADED";
+            sub.finalScore = finalScore as any;
+          }
+        }
+      }
+
+      if (!candidateHasAllTasksGraded) {
+        pendingEvaluationCandidates.push({
+          userId: participant.userId,
+          name: participant.user.name,
+          taskTitle: unfinalizedTaskTitle,
+        });
+        continue;
+      }
+
+      // Candidate has completed all tasks and all tasks are fully graded!
       const graded = userSubmissions.filter(
         (s) => s.status === "GRADED" || s.status === "PUBLISHED"
       );
 
-      let totalScore = 0;
+      let rawScore = 0;
       let latestSubmittedAt: Date | null = null;
 
       if (graded.length > 0) {
-        totalScore = graded.reduce(
+        rawScore = graded.reduce(
           (sum, s) => sum + (s.finalScore !== null ? Number(s.finalScore) : 0),
           0
         );
-        totalScore = Math.min(contestTotalPoints, Math.max(0, Math.round(totalScore * 100) / 100));
 
         for (const s of graded) {
           if (s.submittedAt && (!latestSubmittedAt || s.submittedAt > latestSubmittedAt)) {
@@ -1033,25 +1297,96 @@ export async function publishContestResultsAction(
         }
       }
 
-      candidateRows.push({
+      const userPenalties = penaltiesByUser[participant.userId] || 0;
+      const finalComputedScore = calculateCandidateFinalScore(rawScore, userPenalties);
+      const boundedScore = Math.min(contestTotalPoints, finalComputedScore);
+
+      finalizedCandidates.push({
         userId: participant.userId,
         name: participant.user.name,
-        totalScore,
+        rawScore,
+        penalties: userPenalties,
+        totalScore: boundedScore,
         latestSubmittedAt,
         submissions: userSubmissions.map((s) => ({ id: s.id })),
       });
     }
 
-    const hasAnyGraded = candidateRows.some((c) => c.totalScore > 0 || c.submissions.length > 0);
-    if (!hasAnyGraded) {
-      return {
-        success: false,
-        error: "Cannot publish: No graded submissions found for this contest.",
-      };
+    const isFinalCertification = options?.isFinalCertification ?? false;
+
+    // Strict validation for permanent final certification / locking
+    if (isFinalCertification) {
+      if (unsubmittedCandidates.length > 0) {
+        const cand = unsubmittedCandidates[0];
+        return {
+          success: false,
+          publishedCount: 0,
+          totalEnrolled,
+          unsubmittedCount: unsubmittedCandidates.length,
+          pendingEvaluationCount: pendingEvaluationCandidates.length,
+          isPublished: contest.isPublished,
+          isFinalCertification: true,
+          error: `Cannot finalize contest: Candidate "${cand.name}" has unsubmitted assessments (${cand.taskTitle}). Please ensure all tasks are submitted before final certification.`,
+        };
+      }
+      if (pendingEvaluationCandidates.length > 0) {
+        const cand = pendingEvaluationCandidates[0];
+        return {
+          success: false,
+          publishedCount: 0,
+          totalEnrolled,
+          unsubmittedCount: unsubmittedCandidates.length,
+          pendingEvaluationCount: pendingEvaluationCandidates.length,
+          isPublished: contest.isPublished,
+          isFinalCertification: true,
+          error: `Cannot finalize contest: Candidate "${cand.name}" has unfinalized submissions (${cand.taskTitle}). Please finalize grading before final certification.`,
+        };
+      }
+    } else {
+      // Progressive Leaderboard update mode
+      if (finalizedCandidates.length === 0) {
+        // If no candidate is finalized, provide clear feedback (matching diagnostic expectations)
+        if (pendingEvaluationCandidates.length > 0) {
+          const cand = pendingEvaluationCandidates[0];
+          return {
+            success: false,
+            publishedCount: 0,
+            totalEnrolled,
+            unsubmittedCount: unsubmittedCandidates.length,
+            pendingEvaluationCount: pendingEvaluationCandidates.length,
+            isPublished: contest.isPublished,
+            isFinalCertification: false,
+            error: `Cannot publish: Candidate "${cand.name}" has unfinalized submissions (${cand.taskTitle}). Please finalize grading before publishing.`,
+          };
+        }
+        if (unsubmittedCandidates.length > 0) {
+          const cand = unsubmittedCandidates[0];
+          return {
+            success: false,
+            publishedCount: 0,
+            totalEnrolled,
+            unsubmittedCount: unsubmittedCandidates.length,
+            pendingEvaluationCount: pendingEvaluationCandidates.length,
+            isPublished: contest.isPublished,
+            isFinalCertification: false,
+            error: `Cannot publish: Candidate "${cand.name}" has unsubmitted assessments (${cand.taskTitle}). Please ensure all tasks are submitted before publishing.`,
+          };
+        }
+        return {
+          success: false,
+          publishedCount: 0,
+          totalEnrolled,
+          unsubmittedCount: unsubmittedCandidates.length,
+          pendingEvaluationCount: pendingEvaluationCandidates.length,
+          isPublished: contest.isPublished,
+          isFinalCertification: false,
+          error: "Cannot publish: No graded submissions found for this contest.",
+        };
+      }
     }
 
-    // 4. Sort candidates deterministically (totalScore DESC, submittedAt ASC)
-    candidateRows.sort((a, b) => {
+    // 4. Sort eligible finalized candidates deterministically (totalScore DESC, latestSubmittedAt ASC)
+    finalizedCandidates.sort((a, b) => {
       if (b.totalScore !== a.totalScore) {
         return b.totalScore - a.totalScore;
       }
@@ -1060,30 +1395,31 @@ export async function publishContestResultsAction(
       return timeA - timeB;
     });
 
-    // 5. Compute standard competition ranks (1224 ranking) and percentiles
-    const totalCandidates = candidateRows.length;
+    // 5. Compute standard competition ranks (1224 ranking) and percentiles across all currently finalized candidates
+    const totalCandidates = finalizedCandidates.length;
     const now = new Date();
     let currentRank = 1;
 
     for (let i = 0; i < totalCandidates; i++) {
-      if (i > 0 && candidateRows[i].totalScore < candidateRows[i - 1].totalScore) {
+      if (i > 0 && finalizedCandidates[i].totalScore < finalizedCandidates[i - 1].totalScore) {
         currentRank = i + 1;
       }
       const rank = currentRank;
-      const percentile = totalCandidates > 1
-        ? Math.round(((totalCandidates - rank) / (totalCandidates - 1)) * 100 * 100) / 100
-        : 100.0;
-      const isCertified = candidateRows[i].totalScore >= Math.round(contestTotalPoints * 0.5);
+      const percentile =
+        totalCandidates > 1
+          ? Math.round(((totalCandidates - rank) / (totalCandidates - 1)) * 100 * 100) / 100
+          : 100.0;
+      const isCertified = finalizedCandidates[i].totalScore >= Math.round(contestTotalPoints * 0.5);
 
       await prisma.cohortResult.upsert({
         where: {
           contestId_userId: {
             contestId,
-            userId: candidateRows[i].userId,
+            userId: finalizedCandidates[i].userId,
           },
         },
         update: {
-          totalScore: candidateRows[i].totalScore,
+          totalScore: finalizedCandidates[i].totalScore,
           rank,
           percentile,
           isCertified,
@@ -1092,8 +1428,8 @@ export async function publishContestResultsAction(
         },
         create: {
           contestId,
-          userId: candidateRows[i].userId,
-          totalScore: candidateRows[i].totalScore,
+          userId: finalizedCandidates[i].userId,
+          totalScore: finalizedCandidates[i].totalScore,
           rank,
           percentile,
           isCertified,
@@ -1101,8 +1437,8 @@ export async function publishContestResultsAction(
         },
       });
 
-      // Update submissions to PUBLISHED status
-      for (const s of candidateRows[i].submissions) {
+      // Update submissions to PUBLISHED status for this finalized candidate
+      for (const s of finalizedCandidates[i].submissions) {
         await prisma.submission.update({
           where: { id: s.id },
           data: { status: "PUBLISHED" },
@@ -1110,12 +1446,36 @@ export async function publishContestResultsAction(
       }
     }
 
-    // 6. Update Contest status to published and completed
+    // 6. Update Contest status
+    // If all enrolled candidates are finalized or explicit final certification was requested, mark COMPLETED.
+    // Otherwise keep contest LIVE so remaining participants can continue submitting!
+    const isAllEnrolledFinalized = totalEnrolled > 0 && finalizedCandidates.length === totalEnrolled;
+    const shouldMarkCompleted = isFinalCertification || isAllEnrolledFinalized;
+
     await prisma.contest.update({
       where: { id: contestId },
       data: {
         isPublished: true,
-        status: "COMPLETED",
+        ...(shouldMarkCompleted ? { status: "COMPLETED" } : {}),
+      },
+    });
+
+    // 7. Audit Log: preserve publication history and audit each update
+    await recordAuditLog({
+      actorId: session.userId,
+      action: shouldMarkCompleted ? "CERTIFY_AND_LOCK_CONTEST" : "PUBLISH_LEADERBOARD_UPDATE",
+      targetType: "CONTEST",
+      targetId: contestId,
+      metadata: {
+        contestId,
+        contestTitle: contest.title,
+        publishedCount: totalCandidates,
+        totalEnrolled,
+        unsubmittedCount: unsubmittedCandidates.length,
+        pendingEvaluationCount: pendingEvaluationCandidates.length,
+        isFinalCertification: shouldMarkCompleted,
+        timestamp: now.toISOString(),
+        adminEmail: session.email,
       },
     });
 
@@ -1133,10 +1493,424 @@ export async function publishContestResultsAction(
     return {
       success: true,
       publishedCount: totalCandidates,
+      totalEnrolled,
+      unsubmittedCount: unsubmittedCandidates.length,
+      pendingEvaluationCount: pendingEvaluationCandidates.length,
       isPublished: true,
+      isFinalCertification: shouldMarkCompleted,
     };
   } catch (error) {
     console.error("Error publishing contest results:", error);
-    return { success: false, error: error instanceof Error ? error.message : "Failed to publish contest results" };
+    return {
+      success: false,
+      publishedCount: 0,
+      totalEnrolled: 0,
+      unsubmittedCount: 0,
+      pendingEvaluationCount: 0,
+      isPublished: false,
+      isFinalCertification: false,
+      error: error instanceof Error ? error.message : "Failed to publish contest results",
+    };
   }
 }
+
+/**
+ * Explicit helper to publish a progressive leaderboard update.
+ * Re-ranks all currently eligible finalized candidates without locking the contest.
+ */
+export async function publishLeaderboardUpdateAction(contestId: string): Promise<PublishResultsResult> {
+  return publishContestResultsAction(contestId, { isFinalCertification: false });
+}
+
+/**
+ * Explicit helper to perform final certification and lock the contest.
+ * Verifies all enrolled candidates have submitted and are graded before locking.
+ */
+export async function certifyAndLockContestAction(contestId: string): Promise<PublishResultsResult> {
+  return publishContestResultsAction(contestId, { isFinalCertification: true });
+}
+
+export interface ParticipantMonitoringEventView {
+  id: string;
+  timestamp: string;
+  eventType: string;
+  status: string;
+  details?: string | null;
+  severity: "INFO" | "WARNING" | "HIGH";
+  penaltyApplied?: number;
+  penaltyReason?: string;
+  hasEvidence?: boolean;
+  eventId?: string;
+}
+
+export interface ParticipantMonitoringDataResult {
+  success: boolean;
+  error?: string;
+  candidateName?: string;
+  candidateId?: string;
+  candidateEmail?: string;
+  contestTitle?: string;
+  events?: ParticipantMonitoringEventView[];
+  penalties?: ContestPenaltyItem[];
+  totalPenalties?: number;
+  alertCount?: number;
+}
+
+/**
+ * Feature 1: Participant-specific monitoring telemetry for the evaluator detail panel.
+ * Strictly verifies evaluator authorization and scopes telemetry events to the selected candidate attempt only.
+ */
+export async function getParticipantMonitoringForEvaluatorAction(
+  submissionId: string
+): Promise<ParticipantMonitoringDataResult> {
+  try {
+    const session = await requireRole(["EVALUATOR", "ADMIN"]);
+
+    if (!submissionId) {
+      return { success: false, error: "Submission ID is required." };
+    }
+
+    const submission = await prisma.submission.findUnique({
+      where: { id: submissionId },
+      include: {
+        contest: { select: { id: true, title: true } },
+        task: { select: { id: true, title: true } },
+        user: { select: { id: true, name: true, email: true, candidateId: true } },
+      },
+    });
+
+    if (!submission) {
+      return { success: false, error: "Submission not found." };
+    }
+
+    // Role-based candidate access verification
+    if (session.role === "EVALUATOR") {
+      const evalUser = await prisma.user.findFirst({
+        where: { OR: [{ id: session.userId }, { email: session.email }] },
+        include: {
+          contestEvaluations: { where: { contestId: submission.contest.id } },
+          evaluatorAssignedCandidates: {
+            where: {
+              contestId: submission.contest.id,
+              participantId: submission.userId,
+            },
+          },
+        },
+      });
+
+      if (!evalUser || evalUser.contestEvaluations.length === 0) {
+        return { success: false, error: "Unauthorized: You are not assigned to evaluate this contest." };
+      }
+
+      if (evalUser.evaluatorAssignedCandidates.length === 0) {
+        return { success: false, error: "Unauthorized: You are not assigned to evaluate this candidate." };
+      }
+    }
+
+    // Load monitoring events for this candidate attempt only
+    const auditEvents = await prisma.auditLog.findMany({
+      where: {
+        action: "MONITORING_EVENT",
+        targetType: "CONTEST_PARTICIPANT",
+        actorId: submission.userId,
+      },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+    });
+
+    const candidateEvents: ParticipantMonitoringEventView[] = [];
+    let alertCount = 0;
+
+    for (const log of auditEvents) {
+      const meta = (log.metadata || {}) as Record<string, unknown>;
+      if (meta.contestId === submission.contest.id) {
+        const eventType = (meta.eventType as string) || "UNKNOWN";
+        const isAlert = eventType === "TAB_SWITCH" || eventType === "FULLSCREEN_EXIT";
+        if (isAlert) alertCount++;
+
+        let severity: "INFO" | "WARNING" | "HIGH" = "INFO";
+        if (isAlert) {
+          severity = "HIGH";
+        } else if (
+          (eventType === "CAMERA_STATUS" || eventType === "MIC_STATUS") &&
+          typeof meta.status === "string" &&
+          (meta.status.includes("Denied") || meta.status.includes("Unavailable") || meta.status.includes("Disabled"))
+        ) {
+          severity = "WARNING";
+        }
+
+        candidateEvents.push({
+          id: log.id,
+          timestamp: (meta.timestamp as string) || log.createdAt.toISOString(),
+          eventType,
+          status: (meta.status as string) || "Recorded",
+          details: (meta.details as string) || null,
+          severity,
+          penaltyApplied: typeof meta.penaltyApplied === "number" ? meta.penaltyApplied : undefined,
+          penaltyReason: (meta.penaltyReason as string) || undefined,
+          hasEvidence: Boolean(meta.hasScreenCapture || meta.hasCameraCapture || meta.evidenceRecorded),
+          eventId: meta.eventId as string | undefined,
+        });
+      }
+    }
+
+    // Load candidate's penalties and deductions
+    const penalties = await getContestPenalties(submission.contest.id, submission.userId);
+    const totalPenalties = penalties.reduce((sum, p) => sum + p.points, 0);
+
+    return {
+      success: true,
+      candidateName: submission.user.name,
+      candidateId: submission.user.candidateId || `ACI-${submission.userId.slice(0, 4).toUpperCase()}`,
+      candidateEmail: submission.user.email,
+      contestTitle: submission.contest.title,
+      events: candidateEvents,
+      penalties,
+      totalPenalties,
+      alertCount,
+    };
+  } catch (error) {
+    console.error("Error fetching participant monitoring events:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to load monitoring data.",
+    };
+  }
+}
+
+export interface DeductMarksInput {
+  submissionId: string;
+  amount: number;
+  reason: string;
+  idempotencyKey?: string;
+  confirmPublishedOverride?: boolean;
+}
+
+export interface DeductMarksResult {
+  success: boolean;
+  error?: string;
+  duplicate?: boolean;
+  deductionId?: string;
+  originalScore?: number;
+  deductionAmount?: number;
+  adjustedScore?: number;
+  reason?: string;
+  timestamp?: string;
+  spelledMarks?: string;
+}
+
+/**
+ * Feature 2: Safe Marks Deduction
+ * Applies an auditable score deduction with strict server-side validation, duplicate protection,
+ * and published-result safeguards. Original MCQ answers and answer keys are never mutated.
+ */
+export async function deductMarksAction(input: DeductMarksInput): Promise<DeductMarksResult> {
+  try {
+    const session = await requireRole(["EVALUATOR", "ADMIN"]);
+
+    // 1. Validate submission and relationships
+    if (!input.submissionId) {
+      return { success: false, error: "Submission ID is required." };
+    }
+
+    const submission = await prisma.submission.findUnique({
+      where: { id: input.submissionId },
+      include: {
+        contest: { select: { id: true, title: true, isPublished: true } },
+        task: { select: { id: true, title: true, totalPoints: true } },
+        user: { select: { id: true, name: true, email: true } },
+      },
+    });
+
+    if (!submission) {
+      return { success: false, error: "Submission not found." };
+    }
+
+    // 2. Evaluator assignment authorization check
+    if (session.role === "EVALUATOR") {
+      const evalUser = await prisma.user.findFirst({
+        where: { OR: [{ id: session.userId }, { email: session.email }] },
+        include: {
+          contestEvaluations: { where: { contestId: submission.contest.id } },
+          evaluatorAssignedCandidates: {
+            where: {
+              contestId: submission.contest.id,
+              participantId: submission.userId,
+            },
+          },
+        },
+      });
+
+      if (!evalUser || evalUser.contestEvaluations.length === 0) {
+        return { success: false, error: "Unauthorized: You are not assigned to evaluate this contest." };
+      }
+
+      if (evalUser.evaluatorAssignedCandidates.length === 0) {
+        return { success: false, error: "Unauthorized: You are not assigned to evaluate this candidate." };
+      }
+    }
+
+    // 3. Numeric and precision validation
+    const amount = Number(input.amount);
+    if (typeof amount !== "number" || isNaN(amount) || amount <= 0) {
+      return { success: false, error: "Deduction amount must be a positive number greater than 0." };
+    }
+
+    // Check precision: max 2 decimal places
+    if (Math.round(amount * 100) / 100 !== amount) {
+      return { success: false, error: "Deduction amount cannot have more than 2 decimal places." };
+    }
+
+    // 4. Mandatory reason validation
+    const reason = (input.reason || "").trim();
+    if (!reason || reason.length < 5) {
+      return { success: false, error: "A mandatory deduction reason is required (at least 5 characters)." };
+    }
+
+    // 5. Eligible score bounds validation
+    const currentScore =
+      submission.finalScore !== null
+        ? Number(submission.finalScore)
+        : submission.autoGradeScore !== null
+        ? Number(submission.autoGradeScore)
+        : 0;
+
+    if (amount > currentScore) {
+      return {
+        success: false,
+        error: `Deduction amount (${amount} marks) exceeds the candidate's eligible score (${currentScore} marks). Cannot reduce score below zero.`,
+      };
+    }
+
+    // 6. Publication safeguards check
+    const cohortResult = await prisma.cohortResult.findUnique({
+      where: {
+        contestId_userId: {
+          contestId: submission.contest.id,
+          userId: submission.userId,
+        },
+      },
+    });
+
+    const isPublished = submission.contest.isPublished || Boolean(cohortResult);
+
+    if (isPublished) {
+      if (session.role !== "ADMIN") {
+        return {
+          success: false,
+          error: "Cannot deduct marks: This assessment has already been published. Score corrections on published results require Administrator authorization and leaderboard republishing.",
+        };
+      }
+
+      if (!input.confirmPublishedOverride) {
+        return {
+          success: false,
+          error: "This assessment result is already published. Explicit confirmation for score correction and leaderboard republishing is required.",
+        };
+      }
+    }
+
+    // 7. Duplicate click and retry protection (Idempotency)
+    const idempotencyKey = input.idempotencyKey || `deduct_${Date.now()}_${amount}_${submission.userId}`;
+    const dedupTargetId = `${submission.contest.id}:${submission.id}:${idempotencyKey}:MANUAL_DEDUCTION`;
+
+    const existingDeduction = await prisma.auditLog.findFirst({
+      where: {
+        targetType: "CONTEST_PENALTY",
+        targetId: dedupTargetId,
+      },
+    });
+
+    if (existingDeduction) {
+      const meta = (existingDeduction.metadata || {}) as Record<string, unknown>;
+      return {
+        success: true,
+        duplicate: true,
+        deductionId: existingDeduction.id,
+        originalScore: Number(meta.originalScore || currentScore),
+        deductionAmount: Number(meta.points || amount),
+        adjustedScore: Number(meta.adjustedScore || Math.max(0, currentScore - amount)),
+        reason: (meta.reason as string) || reason,
+        timestamp: existingDeduction.createdAt.toISOString(),
+        spelledMarks: formatMarksInWords(Number(meta.points || amount)),
+      };
+    }
+
+    // 8. Compute adjusted score
+    const adjustedScore = Math.max(0, Math.round((currentScore - amount) * 100) / 100);
+    const spelledMarks = formatMarksInWords(amount);
+
+    // 9. Record auditable adjustment in AuditLog
+    const nowIso = new Date().toISOString();
+    const auditRecord = await prisma.auditLog.create({
+      data: {
+        action: isPublished ? "APPLY_PUBLISHED_SCORE_CORRECTION" : "APPLY_SCORE_DEDUCTION",
+        targetType: "CONTEST_PENALTY",
+        targetId: dedupTargetId,
+        actorId: session.userId,
+        metadata: {
+          contestId: submission.contest.id,
+          userId: submission.userId,
+          submissionId: submission.id,
+          penaltyType: "MANUAL_DEDUCTION",
+          points: amount,
+          reason,
+          originalScore: currentScore,
+          adjustedScore,
+          evaluatorId: session.userId,
+          evaluatorEmail: session.email,
+          evaluatorName: session.name || session.email,
+          idempotencyKey,
+          isPublishedCorrection: isPublished,
+          spelledMarks,
+          timestamp: nowIso,
+        },
+      },
+    });
+
+    // 10. Update Submission with adjusted score (without touching MCQ answers or autoGradeScore!)
+    await prisma.submission.update({
+      where: { id: submission.id },
+      data: {
+        finalScore: adjustedScore,
+      },
+    });
+
+    // 11. If already published and authorized by ADMIN, update CohortResult
+    if (isPublished && cohortResult) {
+      const updatedTotal = Math.max(0, Math.round((Number(cohortResult.totalScore) - amount) * 100) / 100);
+      await prisma.cohortResult.update({
+        where: { id: cohortResult.id },
+        data: {
+          totalScore: updatedTotal,
+          updatedAt: new Date(),
+        },
+      });
+    }
+
+    safeRevalidatePath("/evaluator");
+    safeRevalidatePath("/evaluator/monitoring");
+    safeRevalidatePath("/admin/results");
+    safeRevalidatePath("/admin/submissions");
+    safeRevalidatePath("/dashboard/results");
+    safeRevalidatePath("/dashboard/leaderboard");
+
+    return {
+      success: true,
+      deductionId: auditRecord.id,
+      originalScore: currentScore,
+      deductionAmount: amount,
+      adjustedScore,
+      reason,
+      timestamp: nowIso,
+      spelledMarks,
+    };
+  } catch (error) {
+    console.error("Error applying marks deduction:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to apply marks deduction.",
+    };
+  }
+}
+

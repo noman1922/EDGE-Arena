@@ -235,43 +235,13 @@ export async function getParticipantLeaderboard(
       };
     }
 
-    // If not certified/published yet: return clean provisional leaderboard with Candidate IDs (masking unpublished scores)
-    const candidateMap = new Map<string, typeof contest.submissions>();
-    for (const sub of contest.submissions) {
-      if (!candidateMap.has(sub.userId)) {
-        candidateMap.set(sub.userId, []);
-      }
-      candidateMap.get(sub.userId)!.push(sub);
-    }
-
-    let userRank: number | null = null;
-    let rankIndex = 1;
-    const rows: ParticipantLeaderboardRow[] = [];
-
-    for (const [userId, userSubs] of candidateMap.entries()) {
-      const isCurrent = userId === session.userId;
-      const rank = rankIndex++;
-      if (isCurrent) userRank = rank;
-
-      const sub = userSubs[0];
-      rows.push({
-        userId: sub.userId,
-        candidateName: sub.user.name,
-        candidateId: isCurrent
-          ? `${sub.user.candidateId || "YOU"} (You)`
-          : sub.user.candidateId || `ACI-CAND-${sub.userId.slice(0, 4).toUpperCase()}`,
-        rank,
-        finalScore: 0,
-        isCurrentUser: isCurrent,
-        isCertified: false,
-      });
-    }
-
+    // If results are not certified/published yet, return empty rows and currentUserRank: null.
+    // In strict adherence to assessment integrity protocol: do not expose unpublished scores or rankings.
     return {
       contestTitle: contest.title,
-      isPublished: contest.isPublished,
-      currentUserRank: userRank,
-      rows,
+      isPublished: false,
+      currentUserRank: null,
+      rows: [],
       contestsList: enrolledContests,
     };
   } catch (error) {
@@ -344,8 +314,8 @@ export async function getParticipantScorecard(
     const cohortResult = contest.results[0];
     const isPublished = contest.isPublished;
 
-    // Strict security: if contest results are not published, do not expose scores
-    if (!isPublished) {
+    // Strict security: if contest results are not published or this participant's result has not been certified, do not expose scores
+    if (!isPublished || !cohortResult) {
       return {
         contestTitle: contest.title,
         track: contest.track,

@@ -54,15 +54,15 @@ export default function ParticipantDashboardPage() {
           <header className="flex flex-col md:flex-row md:items-end justify-between gap-space-md bg-surface-container-lowest p-space-lg sm:p-space-xl rounded-lg border border-[#e2e8f0] shadow-2xs relative overflow-hidden">
             <div className="flex flex-col gap-space-xs z-10">
               <div className="inline-flex items-center gap-space-xs font-label-xs uppercase tracking-wider text-secondary">
-                <span>Candidate ID: {candidate?.candidateId ?? "DEMO-CANDIDATE-01"}</span>
+                <span>Candidate ID: {candidate?.candidateId || "Enrolled Candidate"}</span>
                 <span>·</span>
-                <span>{candidate?.cohort ?? "Campus Leadership Programme 2025"}</span>
+                <span>{candidate?.cohort || "Official Assessment Cohort"}</span>
               </div>
               <h1 className="font-display-lg text-on-surface tracking-tight">
-                Welcome back, {candidate?.name ?? "Demo Candidate"}
+                Welcome back, {candidate?.name || "Candidate"}
               </h1>
               <p className="font-body-md text-secondary">
-                {candidate?.institution ?? "National Campus Leadership Diagnostic Track"}
+                {candidate?.institution || "Verified Candidate Track"}
               </p>
             </div>
 

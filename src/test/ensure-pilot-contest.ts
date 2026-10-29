@@ -97,6 +97,45 @@ export async function ensurePilotContest() {
     },
   });
 
+  // Assign demo evaluator to pilot contest and Sarah Jenkins
+  const evaluatorUser = await prisma.user.findFirst({ where: { email: PILOT_EVALUATOR_EMAIL } });
+  if (evaluatorUser) {
+    const contestEvaluator = await prisma.contestEvaluator.upsert({
+      where: {
+        contestId_userId: {
+          contestId: PILOT_CONTEST_ID,
+          userId: evaluatorUser.id,
+        },
+      },
+      update: {},
+      create: {
+        id: "00000000-0000-4000-8000-000000000003",
+        contestId: PILOT_CONTEST_ID,
+        userId: evaluatorUser.id,
+      },
+    });
+
+    await prisma.evaluatorCandidateAssignment.upsert({
+      where: {
+        contestId_evaluatorId_participantId: {
+          contestId: PILOT_CONTEST_ID,
+          evaluatorId: evaluatorUser.id,
+          participantId,
+        },
+      },
+      update: {
+        contestEvaluatorId: contestEvaluator.id,
+      },
+      create: {
+        id: "00000000-0000-4000-8000-000000000004",
+        contestId: PILOT_CONTEST_ID,
+        contestEvaluatorId: contestEvaluator.id,
+        evaluatorId: evaluatorUser.id,
+        participantId,
+      },
+    });
+  }
+
   // Ensure Phase 1
   let phase1 = await prisma.phase.findFirst({
     where: { contestId: PILOT_CONTEST_ID, phaseNumber: 1 },

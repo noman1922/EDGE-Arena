@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import {
   getSubmissionsForGrading,
@@ -8,15 +8,20 @@ import {
   publishContestResultsAction,
   type SubmissionToGrade,
 } from "@/app/actions/evaluator-actions";
-import { getAdminOverviewSummaryAction, getAdminContestOptions, type AdminContestOption } from "@/app/actions/contest-actions";
+import {
+  getAdminOverviewSummaryAction,
+  type AdminOverviewSummaryResult,
+} from "@/app/actions/contest-actions";
+import { getCurrentUserSession } from "@/app/actions/auth-actions";
+import { useAdminContest } from "@/context/admin-contest-context";
 
 export default function AdminOverviewPage() {
+  const { contests, selectedContestId, selectedContest, setSelectedContestId } = useAdminContest();
   const [filterTab, setFilterTab] = useState<"All" | "Pending" | "Graded">("All");
   const [searchTerm, setSearchTerm] = useState("");
   const [submissions, setSubmissions] = useState<SubmissionToGrade[]>([]);
-  const [contests, setContests] = useState<AdminContestOption[]>([]);
-  const [enrolledCount, setEnrolledCount] = useState<number>(0);
-  const [activeContestsCount, setActiveContestsCount] = useState<number>(0);
+  const [summary, setSummary] = useState<AdminOverviewSummaryResult | null>(null);
+  const [currentAdminEmail, setCurrentAdminEmail] = useState<string>("admin@career-edge.internal");
   const [isLoading, setIsLoading] = useState(true);
 
   // Grading Drawer State
@@ -30,28 +35,33 @@ export default function AdminOverviewPage() {
   const [isPublishing, setIsPublishing] = useState(false);
   const [publishMessage, setPublishMessage] = useState<string | null>(null);
 
-  const loadData = async () => {
+  const loadData = useCallback(async (scopeId?: string) => {
     try {
       setIsLoading(true);
-      const [subs, summary, contestList] = await Promise.all([
-        getSubmissionsForGrading(),
-        getAdminOverviewSummaryAction(),
-        getAdminContestOptions(),
+      const targetScope = scopeId ?? selectedContestId;
+      const targetContestId = targetScope && targetScope !== "ALL" ? targetScope : undefined;
+
+      const [subs, summaryData, session] = await Promise.all([
+        getSubmissionsForGrading(targetContestId),
+        getAdminOverviewSummaryAction(targetContestId),
+        getCurrentUserSession(),
       ]);
+
       setSubmissions(subs);
-      setEnrolledCount(summary.totalEnrolled);
-      setActiveContestsCount(summary.activeContests);
-      setContests(contestList);
+      setSummary(summaryData);
+      if (session?.email) {
+        setCurrentAdminEmail(session.email);
+      }
     } catch (err) {
       console.error("Failed to load admin overview data:", err);
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [selectedContestId]);
 
   useEffect(() => {
-    loadData();
-  }, []);
+    loadData(selectedContestId);
+  }, [selectedContestId, loadData]);
 
   const openGradingDrawer = (sub: SubmissionToGrade) => {
     setSelectedSub(sub);
@@ -84,7 +94,7 @@ export default function AdminOverviewPage() {
 
       const res = await saveRubricScoreAction({
         submissionId: selectedSub.id,
-        evaluatorEmail: "evaluator.demo@example.com",
+        evaluatorEmail: currentAdminEmail,
         scores: scorePayload,
       });
 
@@ -149,7 +159,8 @@ export default function AdminOverviewPage() {
 
   const pendingCount = submissions.filter((s) => s.status === "SUBMITTED").length;
   const gradedCount = submissions.filter((s) => s.status === "GRADED").length;
-  const totalEnrolled = enrolledCount;
+  const totalEnrolled = summary?.totalEnrolled ?? 0;
+  const isGlobalScope = !selectedContestId || selectedContestId === "ALL";
 
   return (
     <div className="flex flex-col w-full pb-space-xl">
@@ -176,7 +187,7 @@ export default function AdminOverviewPage() {
           </div>
           <h1 className="font-display-lg text-on-surface">Evaluation Console</h1>
           <p className="font-body-md text-secondary mt-1">
-            Diagnostic benchmark evaluations, candidate submissions, and official cohort ranking publication
+            Contest benchmark evaluations, candidate submissions, and official cohort ranking publication
           </p>
         </div>
 
@@ -189,7 +200,7 @@ export default function AdminOverviewPage() {
             <span className="material-symbols-outlined text-[18px] text-secondary">
               refresh
             </span>
-            <span>Refresh Telemetry</span>
+            <span>Refresh Data</span>
           </button>
           <Link
             href="/admin/contests"
@@ -203,7 +214,7 @@ export default function AdminOverviewPage() {
 
       {/* Metric Cards Strip */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-space-md mb-space-xl">
-        {/* Stat 1 */}
+        {/* Stat 1: Active Contests */}
         <div className="p-space-lg bg-surface-container-lowest rounded-lg border border-[#e2e8f0] shadow-2xs flex flex-col justify-between">
           <div className="flex items-center justify-between text-secondary mb-3">
             <span className="font-label-sm uppercase tracking-wide">Active Contests</span>
@@ -213,37 +224,70 @@ export default function AdminOverviewPage() {
           </div>
           <div>
             <div className="font-display-lg text-on-surface tracking-tight leading-none mb-2 tabular-nums">
-              {activeContestsCount !== undefined
-                ? activeContestsCount
-                : contests.filter((c) => c.status.toUpperCase() === "LIVE").length}{" "}
+              {summary ? summary.activeContests : contests.filter((c) => c.status.toUpperCase() === "LIVE").length}{" "}
               <span className="font-headline-sm font-normal text-secondary">
-                / {contests.length}
+                / {summary ? summary.totalContests : contests.length}
               </span>
             </div>
             <div className="font-body-sm text-secondary flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-primary-container"></span>
-              <span>{contests.length} benchmarks in database</span>
+              <span>{summary ? summary.totalContests : contests.length} total contests configured</span>
             </div>
           </div>
         </div>
 
-        {/* Stat 2 */}
+        {/* Stat 2: Enrolled Candidates (Interactive Dropdown & De-duplicated Count) */}
         <div className="p-space-lg bg-surface-container-lowest rounded-lg border border-[#e2e8f0] shadow-2xs flex flex-col justify-between">
-          <div className="flex items-center justify-between text-secondary mb-3">
-            <span className="font-label-sm uppercase tracking-wide">Enrolled Candidates</span>
-            <span className="material-symbols-outlined text-[18px] text-secondary">group</span>
+          <div className="flex items-center justify-between text-secondary mb-2">
+            <div className="flex items-center gap-1.5">
+              <span className="font-label-sm uppercase tracking-wide">Enrolled Candidates</span>
+              {isGlobalScope ? (
+                <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-surface-container-high text-secondary">
+                  Global
+                </span>
+              ) : (
+                <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-on-tertiary-container text-primary-container">
+                  Contest
+                </span>
+              )}
+            </div>
+            <select
+              id="enrolled-candidates-scope-filter"
+              aria-label="Filter enrolled candidates by contest"
+              value={selectedContestId}
+              onChange={(e) => setSelectedContestId(e.target.value)}
+              className="px-2 py-0.5 text-xs bg-surface-container-low border border-[#e2e8f0] rounded text-on-surface font-label-xs focus:outline-none focus:border-primary-container max-w-[130px] truncate"
+            >
+              <option value="ALL">All Contests</option>
+              {contests.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.title}
+                </option>
+              ))}
+            </select>
           </div>
           <div>
-            <div className="font-display-lg text-on-surface tracking-tight leading-none mb-2 tabular-nums">
+            <div className="font-display-lg text-on-surface tracking-tight leading-none mb-1 tabular-nums">
               {totalEnrolled}
             </div>
-            <div className="font-body-sm text-secondary">
-              Campus Leadership Programme (CLP-2025)
-            </div>
+            {isGlobalScope ? (
+              <div className="font-body-sm text-secondary truncate">
+                Unique candidates across all contests
+              </div>
+            ) : (
+              <div className="font-body-sm text-secondary flex flex-col">
+                <span className="font-medium text-on-surface truncate">
+                  {selectedContest?.title || summary?.selectedContestTitle || "Selected Contest"}
+                </span>
+                <span className="text-[11px] text-secondary">
+                  Global unique total: {summary?.globalUniqueEnrolled ?? 0}
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Stat 3 */}
+        {/* Stat 3: Pending Evaluations */}
         <div className="p-space-lg bg-surface-container-lowest rounded-lg border border-[#e2e8f0] shadow-2xs flex flex-col justify-between">
           <div className="flex items-center justify-between text-secondary mb-3">
             <span className="font-label-sm uppercase tracking-wide">Pending Evaluations</span>
@@ -261,7 +305,7 @@ export default function AdminOverviewPage() {
           </div>
         </div>
 
-        {/* Stat 4 */}
+        {/* Stat 4: Graded & Verified */}
         <div className="p-space-lg bg-surface-container-lowest rounded-lg border border-[#e2e8f0] shadow-2xs flex flex-col justify-between">
           <div className="flex items-center justify-between text-secondary mb-3">
             <span className="font-label-sm uppercase tracking-wide">Graded & Verified</span>
@@ -313,6 +357,23 @@ export default function AdminOverviewPage() {
               ))}
             </div>
           </div>
+
+          {/* Contest Scope Notification Banner */}
+          {selectedContest && (
+            <div className="flex items-center justify-between px-3 py-2 bg-on-tertiary-container/30 border border-primary-container/20 rounded font-label-xs text-on-surface">
+              <div className="flex items-center gap-2 truncate">
+                <span className="material-symbols-outlined text-[16px] text-primary-container">filter_alt</span>
+                <span>Active Scope: <strong className="text-on-surface">{selectedContest.title}</strong></span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedContestId("ALL")}
+                className="text-primary-container hover:underline font-semibold shrink-0 ml-2"
+              >
+                Clear Filter (Show All)
+              </button>
+            </div>
+          )}
 
           {/* Submissions List */}
           <div className="bg-surface-container-lowest rounded-lg border border-[#e2e8f0] shadow-2xs divide-y divide-[#f1f5f9] overflow-hidden">
@@ -471,7 +532,7 @@ export default function AdminOverviewPage() {
           onClick={() => setSelectedSub(null)}
         >
           <div
-            className="w-full max-w-2xl bg-surface-container-lowest h-full shadow-2xl p-space-lg flex flex-col justify-between border-l border-[#e2e8f0]"
+            className="w-full sm:w-[94vw] md:w-[75vw] lg:w-[48vw] lg:min-w-[680px] lg:max-w-[920px] xl:max-w-[1020px] 2xl:max-w-[1150px] bg-surface-container-lowest h-full shadow-2xl p-space-lg flex flex-col justify-between border-l border-[#e2e8f0]"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex flex-col overflow-y-auto pr-1">

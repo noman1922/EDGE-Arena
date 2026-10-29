@@ -362,8 +362,26 @@ export async function getFileDownloadUrlAction(
             error: "Forbidden: You are not authorized to view this participant's submission file.",
           };
         }
+      } else if (session.role === "EVALUATOR") {
+        const evalUser = await prisma.user.findFirst({
+          where: { OR: [{ id: session.userId }, { email: session.email }] },
+        });
+        const evalId = evalUser?.id || session.userId;
+        const assignment = await prisma.evaluatorCandidateAssignment.findFirst({
+          where: {
+            contestId: answer.submission.contestId,
+            evaluatorId: evalId,
+            participantId: answer.submission.userId,
+          },
+        });
+        if (!assignment) {
+          return {
+            success: false,
+            error: "Forbidden: You are not assigned to evaluate this candidate.",
+          };
+        }
       }
-      // EVALUATOR and ADMIN are authorized to review candidate submissions
+      // ADMIN is authorized to review all candidate submissions
       try {
         const signedUrl = await getSignedDownloadUrl(fileKey, 3600);
         return {
@@ -421,24 +439,60 @@ export async function getFileDownloadUrlAction(
             };
           }
         }
+      } else if (session.role === "EVALUATOR") {
+        const contestId = reference.task?.phase?.contestId;
+        if (contestId) {
+          const evalUser = await prisma.user.findFirst({
+            where: { OR: [{ id: session.userId }, { email: session.email }] },
+          });
+          const evalId = evalUser?.id || session.userId;
+          const contestEval = await prisma.contestEvaluator.findFirst({
+            where: {
+              contestId,
+              userId: evalId,
+            },
+          });
+          if (!contestEval) {
+            return {
+              success: false,
+              error: "Forbidden: You are not assigned to this contest.",
+            };
+          }
+        }
       }
 
-      const signedUrl = await getSignedDownloadUrl(fileKey, 3600);
-      return {
-        success: true,
-        downloadUrl: signedUrl,
-        fileName: reference.title || "reference.pdf",
-      };
+      try {
+        const signedUrl = await getSignedDownloadUrl(fileKey, 3600);
+        return {
+          success: true,
+          downloadUrl: signedUrl,
+          fileName: reference.title || "reference.pdf",
+        };
+      } catch {
+        return {
+          success: true,
+          downloadUrl: `/api/files/${fileKey}`,
+          fileName: reference.title || "reference.pdf",
+        };
+      }
     }
 
     // 3. Fallback check for admin access to any valid key in storage
     if (session.role === "ADMIN") {
-      const signedUrl = await getSignedDownloadUrl(fileKey, 3600);
-      return {
-        success: true,
-        downloadUrl: signedUrl,
-        fileName: "document.pdf",
-      };
+      try {
+        const signedUrl = await getSignedDownloadUrl(fileKey, 3600);
+        return {
+          success: true,
+          downloadUrl: signedUrl,
+          fileName: "document.pdf",
+        };
+      } catch {
+        return {
+          success: true,
+          downloadUrl: `/api/files/${fileKey}`,
+          fileName: "document.pdf",
+        };
+      }
     }
 
     return {

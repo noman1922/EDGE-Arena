@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
+import dynamic from "next/dynamic";
 import {
   getAdminParticipants,
   createParticipantAccountAction,
@@ -10,8 +11,15 @@ import {
   type BulkImportResult,
 } from "@/app/actions/participant-actions";
 import { getAdminContestOptions, type AdminContestOption } from "@/app/actions/contest-actions";
+import { useAdminContest } from "@/context/admin-contest-context";
+
+const ImportParticipantsModal = dynamic(
+  () => import("@/components/modals/import-participants-modal").then((m) => m.ImportParticipantsModal),
+  { ssr: false }
+);
 
 export default function AdminParticipantsPage() {
+  const { contests: contextContests } = useAdminContest();
   const [participants, setParticipants] = useState<AdminParticipantItem[]>([]);
   const [contests, setContests] = useState<AdminContestOption[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -31,6 +39,9 @@ export default function AdminParticipantsPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
 
+  // Dedicated Import Participants Modal State
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+
   // Bulk Import Modal State
   const [isBulkModalOpen, setIsBulkModalOpen] = useState(false);
   const [bulkCsvText, setBulkCsvText] = useState("");
@@ -43,12 +54,16 @@ export default function AdminParticipantsPage() {
   // Status Action State
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
 
-  // Load contest options once on mount
+  // Sync contest options from AdminContestContext (avoid duplicate database fetch)
   useEffect(() => {
-    getAdminContestOptions().then((list) => {
-      setContests(list);
-    });
-  }, []);
+    if (contextContests && contextContests.length > 0) {
+      setContests(contextContests);
+    } else {
+      getAdminContestOptions().then((list) => {
+        setContests(list);
+      });
+    }
+  }, [contextContests]);
 
   // Debounce search input by 300ms
   useEffect(() => {
@@ -76,7 +91,10 @@ export default function AdminParticipantsPage() {
 
   const handleCreateAccount = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !email.trim()) return;
+    if (!name.trim() || !email.trim() || !initialPassword.trim()) {
+      setModalError("Name, email address, and initial password are required.");
+      return;
+    }
 
     try {
       setIsSubmitting(true);
@@ -84,11 +102,11 @@ export default function AdminParticipantsPage() {
       const res = await createParticipantAccountAction({
         name: name.trim(),
         email: email.trim(),
-        role,
+        role: "PARTICIPANT",
         institution,
         candidateId: candidateId.trim() || undefined,
         assignContestId: assignContestId || undefined,
-        initialPassword: initialPassword.trim() || undefined,
+        initialPassword: initialPassword.trim(),
       });
 
       if (res.success) {
@@ -112,15 +130,17 @@ export default function AdminParticipantsPage() {
 
   const handleDownloadTemplate = () => {
     const csvContent =
-      "Name,Email,Role,CandidateId,Institution,InitialPassword\n" +
-      '"Sarah Jenkins","s.jenkins@campus.edu","PARTICIPANT","ACI-3001-SJ","Faculty of Science","SecureEdge#2025"\n' +
-      '"Dr. Aris Thorne","a.thorne@faculty.edu","EVALUATOR","","Academic Examination Board","EvalAccess#2025"\n';
+      "Name,Email,Password,Team Number\n" +
+      "K. M. Shajin,kmshajin.bd@gmail.com,CL0103,Team 1\n" +
+      "Sk Ishraaq Arefin,ishraaqarefin@gmail.com,CL0111,Team 1\n" +
+      "Ahmad Fahim Shahriar,Fahim.eee.00724105131005@aust.edu,CL0101,Team 1\n" +
+      "Khatune Jannat Bonna,khatunejannatb@gmail.com,CL0121,Team 1\n";
 
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.setAttribute("href", url);
-    link.setAttribute("download", "edge_arena_users_template.csv");
+    link.setAttribute("download", "cl_participant_roster_template.csv");
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -217,19 +237,14 @@ export default function AdminParticipantsPage() {
             <span>CSV Template</span>
           </button>
 
-          {/* Bulk Import */}
+          {/* Import Participants (CSV) */}
           <button
-            onClick={() => {
-              setBulkResult(null);
-              setBulkGeneralError(null);
-              setBulkCsvText("");
-              setIsBulkModalOpen(true);
-            }}
+            onClick={() => setIsImportModalOpen(true)}
             type="button"
-            className="inline-flex items-center gap-1.5 px-3 py-2 bg-surface-container hover:bg-surface-container-high text-on-surface font-label-sm font-medium rounded border border-[#e2e8f0] transition-colors cursor-pointer"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-primary-container/10 hover:bg-primary-container/20 text-primary-container font-label-sm font-semibold rounded border border-primary-container/30 transition-colors cursor-pointer"
           >
-            <span className="material-symbols-outlined text-[18px] text-primary-container">upload_file</span>
-            <span>Bulk CSV Import</span>
+            <span className="material-symbols-outlined text-[18px]">group_add</span>
+            <span>Import Participants (CSV)</span>
           </button>
 
           {/* Enroll Single */}
@@ -303,7 +318,7 @@ export default function AdminParticipantsPage() {
                 <th className="py-3 px-4 font-semibold">User / Profile</th>
                 <th className="py-3 px-4 font-semibold">Role</th>
                 <th className="py-3 px-4 font-semibold">Candidate ID</th>
-                <th className="py-3 px-4 font-semibold">Institution</th>
+                <th className="py-3 px-4 font-semibold">Team / Institution</th>
                 <th className="py-3 px-4 font-semibold">Assigned Contests</th>
                 <th className="py-3 px-4 font-semibold">Submissions</th>
                 <th className="py-3 px-4 font-semibold">Status</th>
@@ -456,45 +471,34 @@ export default function AdminParticipantsPage() {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="font-label-xs uppercase text-secondary font-semibold block mb-1">
-                    Role
-                  </label>
-                  <select
-                    value={role}
-                    onChange={(e) => setRole(e.target.value as any)}
-                    className="w-full px-2.5 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface focus:outline-none focus:border-primary-container"
-                  >
-                    <option value="PARTICIPANT">Participant</option>
-                    <option value="EVALUATOR">Evaluator</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="font-label-xs uppercase text-secondary font-semibold block mb-1">
-                    Candidate ID
-                  </label>
-                  <input
-                    type="text"
-                    value={candidateId}
-                    onChange={(e) => setCandidateId(e.target.value)}
-                    placeholder="Auto-generated if blank"
-                    className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface focus:outline-none focus:border-primary-container"
-                  />
-                </div>
+              <div>
+                <label className="font-label-xs uppercase text-secondary font-semibold block mb-1">
+                  Candidate ID / Code
+                </label>
+                <input
+                  type="text"
+                  value={candidateId}
+                  onChange={(e) => setCandidateId(e.target.value)}
+                  placeholder="Auto-generated if blank (e.g. ACI-4001-JD)"
+                  className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface focus:outline-none focus:border-primary-container"
+                />
               </div>
 
               <div>
                 <label className="font-label-xs uppercase text-secondary font-semibold block mb-1">
-                  Initial Password (Optional / Defaults to Secure Default)
+                  Initial Password <span className="text-error">*</span>
                 </label>
                 <input
-                  type="text"
+                  type="password"
+                  required
                   value={initialPassword}
                   onChange={(e) => setInitialPassword(e.target.value)}
-                  placeholder="Leave blank for auto-generated initial password"
+                  placeholder="Minimum 8 characters"
                   className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface focus:outline-none focus:border-primary-container"
                 />
+                <span className="text-[11px] text-secondary mt-1 block">
+                  The candidate will be forced to change this password on their first login.
+                </span>
               </div>
 
               <div>
@@ -693,6 +697,17 @@ export default function AdminParticipantsPage() {
           </div>
         </div>
       )}
+
+      {/* Dedicated Import Participants (CSV) Modal */}
+      <ImportParticipantsModal
+        isOpen={isImportModalOpen}
+        contests={contests}
+        onClose={() => setIsImportModalOpen(false)}
+        onImportComplete={async () => {
+          setActionSuccess("Participant roster imported and synced successfully.");
+          await loadParticipants();
+        }}
+      />
     </div>
   );
 }

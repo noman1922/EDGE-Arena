@@ -58,8 +58,28 @@ export async function GET(
             { status: 403, headers: { "Content-Type": "application/json" } }
           );
         }
+      } else if (session.role === "EVALUATOR") {
+        const evalUser = await prisma.user.findFirst({
+          where: { OR: [{ id: session.userId }, { email: session.email }] },
+        });
+        const evalId = evalUser?.id || session.userId;
+        const assignment = await prisma.evaluatorCandidateAssignment.findFirst({
+          where: {
+            contestId: answer.submission.contestId,
+            evaluatorId: evalId,
+            participantId: answer.submission.userId,
+          },
+        });
+        if (!assignment) {
+          return new NextResponse(
+            JSON.stringify({
+              error: "Forbidden: You are not assigned to evaluate this candidate.",
+            }),
+            { status: 403, headers: { "Content-Type": "application/json" } }
+          );
+        }
       }
-      // Evaluators and Admins are permitted to inspect submission answers
+      // Admins are permitted to inspect all submission answers
     } else {
       // Check if it's a reference material
       const reference = await prisma.referenceMaterial.findFirst({
@@ -99,6 +119,28 @@ export async function GET(
               { status: 403, headers: { "Content-Type": "application/json" } }
             );
           }
+        } else if (session.role === "EVALUATOR") {
+          const contestId = reference.task?.phase?.contestId;
+          if (contestId) {
+            const evalUser = await prisma.user.findFirst({
+              where: { OR: [{ id: session.userId }, { email: session.email }] },
+            });
+            const evalId = evalUser?.id || session.userId;
+            const contestEval = await prisma.contestEvaluator.findFirst({
+              where: {
+                contestId,
+                userId: evalId,
+              },
+            });
+            if (!contestEval) {
+              return new NextResponse(
+                JSON.stringify({
+                  error: "Forbidden: You are not assigned to this contest.",
+                }),
+                { status: 403, headers: { "Content-Type": "application/json" } }
+              );
+            }
+          }
         }
       } else if (session.role !== "ADMIN") {
         return new NextResponse(
@@ -112,14 +154,22 @@ export async function GET(
     const { buffer, contentType, contentLength } = await downloadFromStorage(fileKey);
 
     const safeFileName = resolvedFileName.replace(/["\r\n]/g, "_");
+    const searchParams = _request.nextUrl.searchParams;
+    const isDownload =
+      searchParams.get("download") === "1" ||
+      searchParams.get("dl") === "1" ||
+      searchParams.get("attachment") === "1";
+
+    const dispositionType = isDownload ? "attachment" : "inline";
 
     return new Response(new Uint8Array(buffer), {
       status: 200,
       headers: {
         "Content-Type": contentType || "application/pdf",
         "Content-Length": contentLength.toString(),
-        "Content-Disposition": `inline; filename="${safeFileName}"`,
-        "Cache-Control": "private, no-cache, no-store, must-revalidate",
+        "Content-Disposition": `${dispositionType}; filename="${safeFileName}"`,
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "private, max-age=3600, must-revalidate",
         "X-Content-Type-Options": "nosniff",
       },
     });
@@ -131,3 +181,4 @@ export async function GET(
     );
   }
 }
+

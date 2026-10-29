@@ -16,7 +16,16 @@ import {
   type TaskBuilderQuestion,
 } from "@/app/actions/task-builder-actions";
 import { getAdminContestOptions, type AdminContestOption } from "@/app/actions/contest-actions";
-import { DeleteConfirmationModal } from "@/components/modals/delete-confirmation-modal";
+import dynamic from "next/dynamic";
+
+const DeleteConfirmationModal = dynamic(
+  () => import("@/components/modals/delete-confirmation-modal").then((m) => m.DeleteConfirmationModal),
+  { ssr: false }
+);
+const EditQuestionModal = dynamic(
+  () => import("@/components/modals/edit-question-modal").then((m) => m.EditQuestionModal),
+  { ssr: false }
+);
 
 export default function AdminTasksPage() {
   const [contests, setContests] = useState<AdminContestOption[]>([]);
@@ -25,6 +34,10 @@ export default function AdminTasksPage() {
   const [phases, setPhases] = useState<TaskBuilderPhase[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [activeTask, setActiveTask] = useState<TaskBuilderTask | null>(null);
+
+  // Edit Question Modal State
+  const [isEditQuestionModalOpen, setIsEditQuestionModalOpen] = useState(false);
+  const [editingQuestion, setEditingQuestion] = useState<TaskBuilderQuestion | null>(null);
 
   // Modal States
   const [isPhaseModalOpen, setIsPhaseModalOpen] = useState(false);
@@ -247,6 +260,16 @@ export default function AdminTasksPage() {
     } finally {
       setIsSubmittingQuestion(false);
     }
+  };
+
+  const handleOpenEditQuestion = (q: TaskBuilderQuestion) => {
+    setEditingQuestion(q);
+    setIsEditQuestionModalOpen(true);
+  };
+
+  const handleEditQuestionSuccess = async (_updatedId: string, message: string) => {
+    setFeedbackMsg({ type: "success", text: message });
+    await loadPhasesAndTasks(selectedContestId);
   };
 
   const handleDeleteQuestion = (questionId: string, qPromptText?: string) => {
@@ -688,13 +711,24 @@ export default function AdminTasksPage() {
                               </div>
                             </div>
 
-                            <button
-                              onClick={() => handleDeleteQuestion(q.id, q.prompt)}
-                              className="p-1 rounded text-secondary hover:text-error hover:bg-error/10 transition-colors cursor-pointer"
-                              title="Delete Question"
-                            >
-                              <span className="material-symbols-outlined text-[18px]">delete</span>
-                            </button>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => handleOpenEditQuestion(q)}
+                                className="p-1.5 rounded-md text-secondary hover:text-primary-container hover:bg-primary-fixed/30 transition-colors cursor-pointer"
+                                title="Edit Question"
+                              >
+                                <span className="material-symbols-outlined text-[18px]">edit</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteQuestion(q.id, q.prompt)}
+                                className="p-1.5 rounded-md text-secondary hover:text-error hover:bg-error/10 transition-colors cursor-pointer"
+                                title="Delete Question"
+                              >
+                                <span className="material-symbols-outlined text-[18px]">delete</span>
+                              </button>
+                            </div>
                           </div>
                         </div>
                       ))}
@@ -1111,6 +1145,19 @@ export default function AdminTasksPage() {
           </div>
         </div>
       )}
+
+      {/* Edit Question Modal */}
+      <EditQuestionModal
+        isOpen={isEditQuestionModalOpen}
+        question={editingQuestion}
+        taskId={activeTask?.id || ""}
+        contestId={selectedContestId}
+        onClose={() => {
+          setIsEditQuestionModalOpen(false);
+          setEditingQuestion(null);
+        }}
+        onSuccess={handleEditQuestionSuccess}
+      />
 
       {/* Universal Delete Confirmation Modal */}
       <DeleteConfirmationModal

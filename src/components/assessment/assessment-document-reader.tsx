@@ -16,7 +16,6 @@ import {
 import {
   uploadSubmissionAttachmentAction,
   deleteSubmissionAttachmentAction,
-  getFileDownloadUrlAction,
 } from "@/app/actions/file-actions";
 import {
   getContestMonitoringSettingsAction,
@@ -194,32 +193,164 @@ export function AssessmentDocumentReader({
   );
 
   useEffect(() => {
+    if (initialTaskId && initialTaskId !== currentTaskId) {
+      setCurrentTaskId(initialTaskId);
+    }
+  }, [initialTaskId, currentTaskId]);
+
+  useEffect(() => {
     loadData(currentTaskId);
   }, [loadData, currentTaskId]);
 
-  // Telemetry: Tab switch and fullscreen listeners
+  // Safari BFCache restore listener
+  useEffect(() => {
+    const handlePageShow = (e: PageTransitionEvent) => {
+      if (e.persisted) {
+        loadData(currentTaskId);
+      }
+    };
+    window.addEventListener("pageshow", handlePageShow);
+    return () => window.removeEventListener("pageshow", handlePageShow);
+  }, [loadData, currentTaskId]);
+
+  // Video stream and canvas refs for permission-based evidence capture
+  const cameraStreamRef = useRef<MediaStream | null>(null);
+  const cameraVideoRef = useRef<HTMLVideoElement | null>(null);
+  const cameraPermittedRef = useRef<boolean>(false);
+
+  // Helper to capture a frame from the permitted camera stream (ONLY if cameraCaptureEnabled and candidate consented)
+  const captureCameraStill = useCallback((): string | undefined => {
+    if (!monitoringSettings.cameraCaptureEnabled && !monitoringSettings.cameraEnabled) {
+      return undefined;
+    }
+    if (!cameraPermittedRef.current || !cameraVideoRef.current) {
+      return undefined;
+    }
+    try {
+      const video = cameraVideoRef.current;
+      if (video.videoWidth === 0 || video.videoHeight === 0) return undefined;
+      const canvas = document.createElement("canvas");
+      canvas.width = 320;
+      canvas.height = 240;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return undefined;
+      ctx.drawImage(video, 0, 0, 320, 240);
+      return canvas.toDataURL("image/jpeg", 0.65);
+    } catch {
+      return undefined;
+    }
+  }, [monitoringSettings.cameraCaptureEnabled, monitoringSettings.cameraEnabled]);
+
+  // Helper to capture in-browser assessment snapshot (ONLY if screenCaptureEnabled)
+  const captureScreenSnapshot = useCallback((): string | undefined => {
+    if (!monitoringSettings.screenCaptureEnabled) {
+      return undefined;
+    }
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = 480;
+      canvas.height = 320;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return undefined;
+
+      // Dark slate canvas background
+      ctx.fillStyle = "#0f172a";
+      ctx.fillRect(0, 0, 480, 320);
+
+      // Header bar
+      ctx.fillStyle = "#1e293b";
+      ctx.fillRect(0, 0, 480, 44);
+
+      ctx.fillStyle = "#10b981";
+      ctx.font = "bold 13px sans-serif";
+      ctx.fillText("ACI Career EDGE Assess · Proctoring Evidence Capture", 16, 27);
+
+      ctx.fillStyle = "#e2e8f0";
+      ctx.font = "bold 15px sans-serif";
+      ctx.fillText(data?.task?.title || "Assessment Reader", 16, 75);
+
+      ctx.fillStyle = "#94a3b8";
+      ctx.font = "12px sans-serif";
+      ctx.fillText(`Contest: ${data?.contest?.title || "Active Contest"}`, 16, 100);
+      ctx.fillText(
+        `Candidate ID: ${
+          data?.user?.id
+            ? `ACI-${data.user.id.substring(0, 6).toUpperCase()}`
+            : "Active Candidate"
+        }`,
+        16,
+        120
+      );
+      ctx.fillText(`Captured: ${new Date().toISOString()}`, 16, 140);
+
+      // Event alert banner
+      ctx.fillStyle = "#7f1d1d";
+      ctx.fillRect(16, 160, 448, 60);
+      ctx.strokeStyle = "#ef4444";
+      ctx.strokeRect(16, 160, 448, 60);
+
+      ctx.fillStyle = "#fecaca";
+      ctx.font = "bold 12px sans-serif";
+      ctx.fillText("CRITICAL MONITORING TELEMETRY ALERT", 28, 185);
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "11px sans-serif";
+      ctx.fillText("Window blur / fullscreen exit recorded under contest integrity disclosure.", 28, 205);
+
+      return canvas.toDataURL("image/jpeg", 0.7);
+    } catch {
+      return undefined;
+    }
+  }, [monitoringSettings.screenCaptureEnabled, data]);
+
+  // Clean up media streams on unmount
+  useEffect(() => {
+    return () => {
+      if (cameraStreamRef.current) {
+        cameraStreamRef.current.getTracks().forEach((t) => t.stop());
+        cameraStreamRef.current = null;
+      }
+    };
+  }, []);
+
+  // Telemetry: Tab switch and fullscreen listeners with permission-based evidence capture
   useEffect(() => {
     if (!hasConsented || submitted || !data?.task?.contestId) return;
     const activeContestId = data.task.contestId;
 
     const handleVisibility = () => {
       if (document.hidden && monitoringSettings.tabSwitchEnabled) {
+        const eventId = `evt_blur_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+        const screenCaptureData = captureScreenSnapshot();
+        const cameraCaptureData = captureCameraStill();
+
         recordMonitoringEventAction({
           contestId: activeContestId,
+          eventId,
           eventType: "TAB_SWITCH",
           status: "Tab switch detected",
           details: `Window blur / tab switch detected at ${new Date().toLocaleTimeString()}`,
+          screenCaptureData,
+          cameraCaptureData,
+          captureSuccess: true,
         });
       }
     };
 
     const handleFullscreen = () => {
       if (!document.fullscreenElement && monitoringSettings.fullscreenEnabled) {
+        const eventId = `evt_fs_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+        const screenCaptureData = captureScreenSnapshot();
+        const cameraCaptureData = captureCameraStill();
+
         recordMonitoringEventAction({
           contestId: activeContestId,
+          eventId,
           eventType: "FULLSCREEN_EXIT",
           status: "Fullscreen exit recorded",
           details: `Fullscreen exited at ${new Date().toLocaleTimeString()}`,
+          screenCaptureData,
+          cameraCaptureData,
+          captureSuccess: true,
         });
       }
     };
@@ -231,7 +362,7 @@ export function AssessmentDocumentReader({
       document.removeEventListener("visibilitychange", handleVisibility);
       document.removeEventListener("fullscreenchange", handleFullscreen);
     };
-  }, [hasConsented, submitted, data?.task?.contestId, monitoringSettings]);
+  }, [hasConsented, submitted, data?.task?.contestId, monitoringSettings, captureScreenSnapshot, captureCameraStill]);
 
   // Handle MCQ selection with instant autosave
   const handleSelectOption = async (questionId: string, optKey: string) => {
@@ -304,35 +435,60 @@ export function AssessmentDocumentReader({
     }
   };
 
-  // Navigate to another unit
+  // Navigate to another unit with progression completion
   const handleNavigateToTask = async (targetTask: AssessmentTaskNavOption) => {
     if (!targetTask || targetTask.id === data?.task?.id) return;
-    if (targetTask.isLocked) {
-      alert(targetTask.unlockRequirementText || "This unit is locked. Please complete preceding units first.");
-      return;
-    }
+
     await flushCurrentDrafts();
 
-    // Auto-finalize current unit submission if questions are answered
-    if (data?.submission?.id && !isReadOnly) {
+    // Auto-finalize current unit submission if questions are answered and moving forward
+    if (data?.submission?.id && !isReadOnly && !submitted) {
       const allQuestionsAnswered = (questions || []).every((q) => {
         if (q.type === "MCQ") return Boolean(selectedOptions[q.id]);
         if (q.type === "WRITTEN") return Boolean(writtenResponses[q.id]?.trim());
-        return Boolean(uploadedFiles[q.id]);
+        if (q.type === "FILE_UPLOAD") return Boolean(uploadedFiles[q.id]);
+        return true;
       });
+
       if (allQuestionsAnswered) {
-        await submitAssessmentAction(data.submission.id).catch(() => {});
+        setIsSubmitting(true);
+        try {
+          const subRes = await submitAssessmentAction(data.submission.id);
+          if (!subRes.success) {
+            setIsSubmitting(false);
+            alert(`Submission error: ${subRes.error || "Failed to submit assessment"}`);
+            return;
+          }
+          setSubmitted(true);
+          const targetContestId = subRes.contestId || data?.contest?.id || initialContestId;
+          if (subRes.isFinalSubmission && targetContestId) {
+            window.location.href = `/dashboard/leaderboard?contestId=${targetContestId}`;
+            return;
+          } else if (subRes.nextTaskId && subRes.nextPhaseId && targetContestId) {
+            window.location.href = `/assessment/${targetContestId}/${subRes.nextPhaseId}/${subRes.nextTaskId}`;
+            return;
+          }
+        } catch (e) {
+          setIsSubmitting(false);
+          alert(`Submission error: ${e instanceof Error ? e.message : "Failed to submit assessment"}`);
+          return;
+        } finally {
+          setIsSubmitting(false);
+        }
+      } else if (targetTask.isLocked) {
+        alert(
+          targetTask.unlockRequirementText ||
+            "Please complete all questions in the current unit before advancing to the next unit."
+        );
+        return;
       }
+    } else if (targetTask.isLocked) {
+      alert(targetTask.unlockRequirementText || "This unit is locked. Please complete preceding units first.");
+      return;
     }
 
     const targetUrl = `/assessment/${data?.contest?.id || initialContestId}/${targetTask.phaseId}/${targetTask.id}`;
-    if (initialContestId && initialPhaseId && initialTaskId) {
-      router.push(targetUrl);
-    } else {
-      setCurrentTaskId(targetTask.id);
-      loadData(targetTask.id);
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    }
+    window.location.href = targetUrl;
   };
 
   // Upload file handler
@@ -439,19 +595,6 @@ export function AssessmentDocumentReader({
     }
   };
 
-  // Open file in new tab
-  const handleOpenFile = async (fileKey: string) => {
-    try {
-      const res = await getFileDownloadUrlAction(fileKey);
-      if (res.success && res.downloadUrl) {
-        window.open(res.downloadUrl, "_blank", "noopener,noreferrer");
-      } else {
-        window.open(`/api/files/${fileKey}`, "_blank", "noopener,noreferrer");
-      }
-    } catch {
-      window.open(`/api/files/${fileKey}`, "_blank", "noopener,noreferrer");
-    }
-  };
 
   // Consent & start assessment
   const handleAcknowledgeAndStart = async () => {
@@ -463,29 +606,41 @@ export function AssessmentDocumentReader({
         return;
       }
 
-      // Camera request if enabled
+      // Camera request ONLY if contest enables camera or camera capture
       if (
-        monitoringSettings.cameraEnabled &&
+        (monitoringSettings.cameraCaptureEnabled || monitoringSettings.cameraEnabled) &&
         typeof navigator !== "undefined" &&
         navigator.mediaDevices?.getUserMedia
       ) {
         try {
-          const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-          stream.getTracks().forEach((t) => t.stop());
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 640 }, height: { ideal: 480 } },
+          });
+          cameraStreamRef.current = stream;
+          cameraPermittedRef.current = true;
+          if (cameraVideoRef.current) {
+            cameraVideoRef.current.srcObject = stream;
+            cameraVideoRef.current.play().catch(() => {});
+          }
           await recordMonitoringEventAction({
             contestId: activeContestId,
             eventType: "CAMERA_STATUS",
             status: "Permission Granted",
-            details: "Camera permission granted by candidate",
+            details: "Camera permission granted and active for evidence capture",
           });
         } catch {
+          cameraPermittedRef.current = false;
           await recordMonitoringEventAction({
             contestId: activeContestId,
             eventType: "CAMERA_STATUS",
             status: "Unavailable",
-            details: "Camera access unavailable or declined",
+            details: "Camera access unavailable or declined by candidate",
+            captureSuccess: false,
+            captureFailureReason: "Browser permission declined or media device unavailable",
           });
         }
+      } else {
+        cameraPermittedRef.current = false;
       }
 
       // Microphone request if enabled
@@ -561,12 +716,32 @@ export function AssessmentDocumentReader({
         setLastSaved(
           `Finalized at ${new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit" })}`
         );
+
+        // Clean up camera stream
+        if (cameraStreamRef.current) {
+          cameraStreamRef.current.getTracks().forEach((t) => t.stop());
+          cameraStreamRef.current = null;
+        }
+
+        // Redirect directly to leaderboard if final contest submission
+        const targetContestId = res.contestId || data?.contest?.id || initialContestId;
+        if (res.isFinalSubmission && targetContestId) {
+          window.location.href = `/dashboard/leaderboard?contestId=${targetContestId}`;
+          return;
+        } else if (res.nextTaskId && res.nextPhaseId && targetContestId) {
+          // Proceed to next required task/phase for intermediate submission
+          window.location.href = `/assessment/${targetContestId}/${res.nextPhaseId}/${res.nextTaskId}`;
+          return;
+        }
+
+        window.location.href = `/dashboard/contests/${targetContestId}`;
       } else {
-        alert(`Submission error: ${res.error}`);
+        // Prevent premature redirection on failure
+        alert(`Submission error: ${res.error || "Failed to finalize submission. Please try again."}`);
       }
     } catch (err) {
       console.error("Submit error:", err);
-      alert("An unexpected error occurred during submission.");
+      alert(`Submission error: ${err instanceof Error ? err.message : "An unexpected error occurred during submission."}`);
     } finally {
       setIsSubmitting(false);
     }
@@ -682,14 +857,55 @@ export function AssessmentDocumentReader({
                   is instantly saved to your encrypted draft record.
                 </p>
               </div>
-              <div className="flex items-start gap-2.5">
-                <span className="material-symbols-outlined text-[#15803d] text-[18px] shrink-0 mt-0.5">
-                  policy
+
+              {/* Contest-Configured Monitoring Penalties */}
+              <div className="pt-2 border-t border-[#e2e8f0] flex flex-col gap-2">
+                <span className="text-xs font-bold uppercase tracking-wider text-[#15803d] flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-[16px]">gavel</span>
+                  Contest Integrity Rules & Penalties
                 </span>
-                <p>
-                  <strong>Integrity Guidelines:</strong> Tab switching, copy-paste telemetry, and
-                  window unfocus events are logged for accreditation auditing.
-                </p>
+
+                {monitoringSettings.enableAlertPenalties ? (
+                  <div className="flex items-start gap-2 text-xs text-[#7f1d1d] bg-rose-50/80 p-2.5 rounded-lg border border-rose-200">
+                    <span className="material-symbols-outlined text-[16px] text-rose-600 shrink-0 mt-0.5">
+                      warning
+                    </span>
+                    <p>
+                      <strong>Monitoring Alert Penalty ({monitoringSettings.alertPenaltyPoints || 5} pts):</strong> Each confirmed alert (tab switch, window blur, or leaving fullscreen) deducts {monitoringSettings.alertPenaltyPoints || 5} points from your final score.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="flex items-start gap-2 text-xs text-[#545f73]">
+                    <span className="material-symbols-outlined text-[16px] text-[#545f73] shrink-0 mt-0.5">
+                      info
+                    </span>
+                    <p>
+                      <strong>Telemetry Logging:</strong> Fullscreen and focus events are neutrally recorded without direct score deductions.
+                    </p>
+                  </div>
+                )}
+
+                {monitoringSettings.enableAiPenalties && (
+                  <div className="flex items-start gap-2 text-xs text-amber-900 bg-amber-50/80 p-2.5 rounded-lg border border-amber-200">
+                    <span className="material-symbols-outlined text-[16px] text-amber-600 shrink-0 mt-0.5">
+                      smart_toy
+                    </span>
+                    <p>
+                      <strong>AI Answer Policy ({monitoringSettings.aiPenaltyPoints || 10} pts):</strong> AI-generated written responses verified under authorized review incur a {monitoringSettings.aiPenaltyPoints || 10}-point deduction.
+                    </p>
+                  </div>
+                )}
+
+                {/* Evidence Capture Disclosure */}
+                <div className="text-[11px] text-[#545f73] bg-white p-2 rounded border border-[#e2e8f0] flex flex-col gap-1">
+                  <span className="font-semibold text-[#191c1e]">Evidence Capture Permissions:</span>
+                  <span>
+                    • Screen Capture: {monitoringSettings.screenCaptureEnabled ? "In-app assessment screenshot recorded on alert events" : "Disabled"}
+                  </span>
+                  <span>
+                    • Camera Frame: {monitoringSettings.cameraCaptureEnabled ? "Still frame recorded on alert events only with your explicit browser permission" : "Disabled"}
+                  </span>
+                </div>
               </div>
             </div>
 
@@ -712,7 +928,7 @@ export function AssessmentDocumentReader({
                   </>
                 ) : (
                   <>
-                    <span>I Agree & Begin Unit</span>
+                    <span>I Acknowledge Rules & Begin Unit</span>
                     <span className="material-symbols-outlined text-[16px]">arrow_forward</span>
                   </>
                 )}
@@ -721,6 +937,15 @@ export function AssessmentDocumentReader({
           </div>
         </div>
       )}
+
+      {/* Invisible Video Element for Camera Evidence Frame Capture */}
+      <video
+        ref={cameraVideoRef}
+        autoPlay
+        muted
+        playsInline
+        style={{ position: "fixed", top: -9999, left: -9999, width: 1, height: 1, opacity: 0, pointerEvents: "none" }}
+      />
 
       {/* Sticky Top HUD */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-[#e2e8f0] shadow-2xs text-[#191c1e]">
@@ -913,14 +1138,27 @@ export function AssessmentDocumentReader({
                         </div>
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={() => handleOpenFile(ref.fileKey)}
-                        className="px-2.5 py-1 rounded-md text-xs font-medium bg-white border border-[#e2e8f0] text-[#191c1e] hover:text-[#15803d] hover:border-[#15803d] transition-colors shrink-0 flex items-center gap-1 cursor-pointer"
-                      >
-                        <span>View</span>
-                        <span className="material-symbols-outlined text-[14px]">open_in_new</span>
-                      </button>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <a
+                          href={`/api/files/${ref.fileKey}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-2.5 py-1 rounded-md text-xs font-medium bg-white border border-[#e2e8f0] text-[#191c1e] hover:text-[#15803d] hover:border-[#15803d] transition-colors shrink-0 flex items-center gap-1 cursor-pointer"
+                          title="Open PDF in new tab"
+                        >
+                          <span className="material-symbols-outlined text-[14px]">visibility</span>
+                          <span>Open PDF</span>
+                        </a>
+                        <a
+                          href={`/api/files/${ref.fileKey}?download=1`}
+                          download={ref.title || "reference.pdf"}
+                          className="px-2.5 py-1 rounded-md text-xs font-medium bg-[#f2f4f6] border border-[#e2e8f0] text-[#545f73] hover:text-[#191c1e] transition-colors shrink-0 flex items-center gap-1 cursor-pointer"
+                          title="Download PDF"
+                        >
+                          <span className="material-symbols-outlined text-[14px]">download</span>
+                          <span className="hidden sm:inline">Download</span>
+                        </a>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -1136,14 +1374,26 @@ export function AssessmentDocumentReader({
                         </div>
 
                         <div className="flex items-center gap-2 shrink-0 self-end sm:self-auto">
-                          <button
-                            type="button"
-                            onClick={() => handleOpenFile(uploadedFiles[q.id].fileKey)}
-                            className="px-3 py-1.5 rounded-lg border border-[#e2e8f0] text-xs font-medium text-[#191c1e] hover:bg-[#f2f4f6] transition-colors flex items-center gap-1 cursor-pointer"
+                          <a
+                            href={`/api/files/${uploadedFiles[q.id].fileKey}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="px-3 py-1.5 rounded-lg border border-[#e2e8f0] bg-white text-xs font-medium text-[#191c1e] hover:bg-[#f2f4f6] transition-colors flex items-center gap-1 cursor-pointer"
+                            title="Open uploaded PDF in new tab"
                           >
                             <span className="material-symbols-outlined text-[15px]">visibility</span>
-                            <span>View PDF</span>
-                          </button>
+                            <span>Open PDF</span>
+                          </a>
+
+                          <a
+                            href={`/api/files/${uploadedFiles[q.id].fileKey}?download=1`}
+                            download={uploadedFiles[q.id].name}
+                            className="px-3 py-1.5 rounded-lg border border-[#e2e8f0] bg-[#f8fafc] text-xs font-medium text-[#545f73] hover:text-[#191c1e] transition-colors flex items-center gap-1 cursor-pointer"
+                            title="Download PDF deliverable"
+                          >
+                            <span className="material-symbols-outlined text-[15px]">download</span>
+                            <span className="hidden sm:inline">Download</span>
+                          </a>
 
                           {!isReadOnly && (
                             <button
@@ -1288,9 +1538,19 @@ export function AssessmentDocumentReader({
                 onClick={() => handleNavigateToTask(nextTask)}
                 className="px-5 py-2 rounded-lg bg-[#15803d] hover:bg-[#166534] text-white font-medium text-xs sm:text-sm transition-colors shadow-2xs flex items-center gap-1.5 cursor-pointer"
               >
-                <span className="hidden sm:inline">Next Unit</span>
-                <span className="sm:hidden">Next</span>
-                <span className="material-symbols-outlined text-[16px]">arrow_forward</span>
+                {nextTask.phaseId !== data.phase?.id ? (
+                  <>
+                    <span className="hidden sm:inline">Submit & Enter Phase {nextTask.phaseNumber}</span>
+                    <span className="sm:hidden">Phase {nextTask.phaseNumber}</span>
+                    <span className="material-symbols-outlined text-[16px]">arrow_forward</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="hidden sm:inline">Save & Next Unit</span>
+                    <span className="sm:hidden">Next</span>
+                    <span className="material-symbols-outlined text-[16px]">arrow_forward</span>
+                  </>
+                )}
               </button>
             ) : (
               <button

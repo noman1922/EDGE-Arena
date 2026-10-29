@@ -52,8 +52,18 @@ export interface AdminContestOption {
  */
 export async function getAdminContestOptions(): Promise<AdminContestOption[]> {
   try {
-    await requireRole(["ADMIN", "EVALUATOR"]);
+    const session = await requireRole(["ADMIN", "EVALUATOR"]);
+    let whereClause = {};
+    if (session.role === "EVALUATOR") {
+      const evalUser = await prisma.user.findFirst({
+        where: { OR: [{ id: session.userId }, { email: session.email }] },
+        include: { contestEvaluations: { select: { contestId: true } } },
+      });
+      const contestIds = evalUser?.contestEvaluations.map((c) => c.contestId) || [];
+      whereClause = { id: { in: contestIds } };
+    }
     return await prisma.contest.findMany({
+      where: whereClause,
       select: {
         id: true,
         title: true,
@@ -68,27 +78,175 @@ export async function getAdminContestOptions(): Promise<AdminContestOption[]> {
   }
 }
 
+export interface AdminOverviewSummaryResult {
+  scope: string; // "ALL" or specific contestId
+  selectedContestTitle?: string;
+  totalEnrolled: number; // Unique enrolled candidates for the selected scope
+  globalUniqueEnrolled: number; // Total unique candidates enrolled across any contest (never double-counted)
+  contestSpecificEnrollments: number; // Enrollments in the specified contest (or 0 if ALL)
+  activeContests: number;
+  totalContests: number;
+  submittedCount: number;
+  unsubmittedCount: number;
+  pendingEvaluationCount: number;
+  finalizedCount: number;
+}
+
 /**
  * Fast scalar counts for admin overview metrics.
+ * Prevents double-counting candidates enrolled across multiple contests in global totals,
+ * and scopes to specific contests when requested.
  */
-export async function getAdminOverviewSummaryAction(): Promise<{
-  totalEnrolled: number;
-  totalContests: number;
-  activeContests: number;
-}> {
+export async function getAdminOverviewSummaryAction(
+  contestId?: string
+): Promise<AdminOverviewSummaryResult> {
   try {
     await requireRole(["ADMIN"]);
-    const [totalEnrolled, totalContests, contests] = await Promise.all([
-      prisma.contestParticipant.count(),
-      prisma.contest.count(),
-      prisma.contest.findMany({ select: { status: true, startDate: true, endDate: true } }),
-    ]);
+
+    const targetContestId = contestId && contestId !== "ALL" ? contestId : undefined;
+
+    let globalUniqueParticipants: Array<{ userId: string }>;
+    let totalContests: number;
+    let contests: Array<{ id: string; status: ContestStatus; startDate: Date; endDate: Date }>;
+    let targetContest: { id: string; title: string } | null = null;
+    let contestParticipants: Array<{ userId: string }> = [];
+    let submissions: Array<{ userId: string; status: string }>;
+
+    if (targetContestId) {
+      const [pUnique, tCount, cList, tContest, cParticipants, cSubmissions] = await Promise.all([
+        prisma.contestParticipant.findMany({
+          select: { userId: true },
+          distinct: ["userId"],
+        }),
+        prisma.contest.count(),
+        prisma.contest.findMany({ select: { id: true, status: true, startDate: true, endDate: true } }),
+        prisma.contest.findUnique({
+          where: { id: targetContestId },
+          select: { id: true, title: true },
+        }),
+        prisma.contestParticipant.findMany({
+          where: { contestId: targetContestId },
+          select: { userId: true },
+          distinct: ["userId"],
+        }),
+        prisma.submission.findMany({
+          where: {
+            contestId: targetContestId,
+            status: { not: "DRAFT" },
+          },
+          select: {
+            userId: true,
+            status: true,
+          },
+        }),
+      ]);
+      globalUniqueParticipants = pUnique;
+      totalContests = tCount;
+      contests = cList;
+      targetContest = tContest;
+      contestParticipants = cParticipants;
+      submissions = cSubmissions;
+    } else {
+      const [pUnique, tCount, cList, allSubmissions] = await Promise.all([
+        prisma.contestParticipant.findMany({
+          select: { userId: true },
+          distinct: ["userId"],
+        }),
+        prisma.contest.count(),
+        prisma.contest.findMany({ select: { id: true, status: true, startDate: true, endDate: true } }),
+        prisma.submission.findMany({
+          where: { status: { not: "DRAFT" } },
+          select: { userId: true, status: true },
+        }),
+      ]);
+      globalUniqueParticipants = pUnique;
+      totalContests = tCount;
+      contests = cList;
+      submissions = allSubmissions;
+    }
+
+    const globalUniqueEnrolled = globalUniqueParticipants.length;
     const now = new Date();
     const activeContests = contests.filter((c) => isContestActive(c, now)).length;
-    return { totalEnrolled, totalContests, activeContests };
+
+    let totalEnrolled = globalUniqueEnrolled;
+    let contestSpecificEnrollments = 0;
+    let selectedContestTitle: string | undefined = undefined;
+    let submittedCount = 0;
+    let unsubmittedCount = 0;
+    let pendingEvaluationCount = 0;
+    let finalizedCount = 0;
+
+    if (targetContestId && targetContest) {
+      selectedContestTitle = targetContest.title;
+      contestSpecificEnrollments = contestParticipants.length;
+      totalEnrolled = contestSpecificEnrollments;
+
+      const userSubmissions = new Map<string, string[]>();
+      for (const s of submissions) {
+        if (!userSubmissions.has(s.userId)) userSubmissions.set(s.userId, []);
+        userSubmissions.get(s.userId)!.push(s.status);
+      }
+
+      submittedCount = userSubmissions.size;
+      unsubmittedCount = Math.max(0, totalEnrolled - submittedCount);
+
+      for (const [, statuses] of userSubmissions.entries()) {
+        const isGraded = statuses.every((st) => st === "GRADED" || st === "PUBLISHED");
+        if (isGraded) {
+          finalizedCount++;
+        } else {
+          pendingEvaluationCount++;
+        }
+      }
+    } else {
+      // Global scope across all contests
+      const userSubmissions = new Map<string, string[]>();
+      for (const s of submissions) {
+        if (!userSubmissions.has(s.userId)) userSubmissions.set(s.userId, []);
+        userSubmissions.get(s.userId)!.push(s.status);
+      }
+
+      submittedCount = userSubmissions.size;
+      unsubmittedCount = Math.max(0, totalEnrolled - submittedCount);
+
+      for (const [, statuses] of userSubmissions.entries()) {
+        const isGraded = statuses.every((st) => st === "GRADED" || st === "PUBLISHED");
+        if (isGraded) {
+          finalizedCount++;
+        } else {
+          pendingEvaluationCount++;
+        }
+      }
+    }
+
+    return {
+      scope: targetContestId || "ALL",
+      selectedContestTitle,
+      totalEnrolled,
+      globalUniqueEnrolled,
+      contestSpecificEnrollments,
+      activeContests,
+      totalContests,
+      submittedCount,
+      unsubmittedCount,
+      pendingEvaluationCount,
+      finalizedCount,
+    };
   } catch (err) {
     console.error("Failed to load overview summary:", err);
-    return { totalEnrolled: 0, totalContests: 0, activeContests: 0 };
+    return {
+      scope: contestId || "ALL",
+      totalEnrolled: 0,
+      globalUniqueEnrolled: 0,
+      contestSpecificEnrollments: 0,
+      totalContests: 0,
+      activeContests: 0,
+      submittedCount: 0,
+      unsubmittedCount: 0,
+      pendingEvaluationCount: 0,
+      finalizedCount: 0,
+    };
   }
 }
 
@@ -141,6 +299,11 @@ export async function getAdminContests(): Promise<AdminContestListItem[]> {
           orderBy: { submittedAt: "desc" },
           take: 20,
         },
+        _count: {
+          select: {
+            participants: true,
+          },
+        },
         participants: {
           select: {
             id: true,
@@ -151,6 +314,8 @@ export async function getAdminContests(): Promise<AdminContestListItem[]> {
               select: { name: true, email: true },
             },
           },
+          orderBy: { enrolledAt: "desc" },
+          take: 100,
         },
       },
       orderBy: { createdAt: "desc" },
@@ -170,8 +335,8 @@ export async function getAdminContests(): Promise<AdminContestListItem[]> {
         ? `Phase ${activePhase.phaseNumber}: ${activePhase.title}`
         : "Initial Setup";
 
-      // Calculate submissions vs total participants
-      const totalParticipants = c.participants.length;
+      // Calculate submissions vs total participants using database counts
+      const totalParticipants = c._count?.participants ?? c.participants.length;
       const submittedCount = c.submissions.filter((s) => s.status !== "DRAFT").length;
 
       // Rubrics from tasks

@@ -2,7 +2,6 @@
 
 import React, { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
-import { DEMO_METRICS } from "@/lib/demo-data";
 import {
   getAdminContests,
   createContestAction,
@@ -24,11 +23,20 @@ import {
   getContestMonitoringSettingsAction,
   saveContestMonitoringSettingsAction,
 } from "@/app/actions/monitoring-actions";
+import dynamic from "next/dynamic";
 import {
   type ContestMonitoringSettings,
   DEFAULT_MONITORING_SETTINGS,
 } from "@/lib/monitoring";
-import { DeleteConfirmationModal } from "@/components/modals/delete-confirmation-modal";
+
+const DeleteConfirmationModal = dynamic(
+  () => import("@/components/modals/delete-confirmation-modal").then((m) => m.DeleteConfirmationModal),
+  { ssr: false }
+);
+const EvaluatorAllocationPanel = dynamic(
+  () => import("@/components/admin/evaluator-allocation-panel").then((m) => m.EvaluatorAllocationPanel),
+  { ssr: false }
+);
 
 /**
  * Returns a YYYY-MM-DDTHH:mm string in Asia/Dhaka timezone (UTC+6)
@@ -362,7 +370,7 @@ export default function ContestManagementPage() {
 
   const handleDownloadCsvTemplate = () => {
     const csvContent =
-      "# EDGE-Arena Contest Participant Enrollment Template\n" +
+      "# ACI Career EDGE Assess Contest Participant Enrollment Template\n" +
       "# INSTRUCTION: Only existing PARTICIPANT accounts created by Admin (via Admin > Participants) can be enrolled.\n" +
       "# COLUMNS: Email (required if no CandidateId), CandidateId (required if no Email), Notes (optional)\n" +
       "# You may supply Email, CandidateId, or both (if both are provided, they must match the same account).\n" +
@@ -623,8 +631,8 @@ export default function ContestManagementPage() {
           </div>
 
           <div className="px-space-sm py-1 bg-surface-container-low rounded border border-[#e2e8f0] font-label-xs text-on-surface flex items-center gap-1">
-            <span className="material-symbols-outlined text-[16px] text-secondary">groups</span>
-            <span>Cohort CLP-2025</span>
+            <span className="material-symbols-outlined text-[16px] text-secondary">workspace_premium</span>
+            <span>{contests.length} {contests.length === 1 ? "Contest" : "Contests"} Configured</span>
           </div>
         </div>
       </div>
@@ -835,15 +843,22 @@ export default function ContestManagementPage() {
           </div>
           <div className="flex items-baseline gap-space-xs">
             <span className="font-display-lg text-on-surface tabular-nums">
-              {DEMO_METRICS.evaluationVelocity.value}
+              {contests.reduce((acc, c) => acc + c.total, 0) > 0
+                ? Math.round(
+                    (contests.reduce((acc, c) => acc + c.submitted, 0) /
+                      contests.reduce((acc, c) => acc + c.total, 0)) *
+                      100
+                  )
+                : 100}
+              %
             </span>
             <span className="font-label-xs text-primary-container font-semibold flex items-center">
-              <span className="material-symbols-outlined text-[14px]">arrow_upward</span>
-              {DEMO_METRICS.evaluationVelocity.change}
+              {contests.reduce((acc, c) => acc + c.submitted, 0)} /{" "}
+              {contests.reduce((acc, c) => acc + c.total, 0)} Submissions
             </span>
           </div>
           <p className="font-body-sm text-secondary mt-1">
-            Real-time auto-grading and rubric matrix synchronization.
+            Real-time candidate submission tracking and evaluation synchronization.
           </p>
         </div>
 
@@ -1052,12 +1067,12 @@ export default function ContestManagementPage() {
           onClick={() => setSelectedContest(null)}
         >
           <div
-            className="w-full max-w-xl bg-surface-container-lowest h-full shadow-2xl p-space-lg flex flex-col justify-between border-l border-[#e2e8f0]"
+            className="w-full sm:w-[94vw] md:w-[75vw] lg:w-[48vw] lg:min-w-[680px] lg:max-w-[920px] xl:max-w-[1020px] 2xl:max-w-[1150px] bg-surface-container-lowest h-full shadow-2xl flex flex-col border-l border-[#e2e8f0] overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex flex-col overflow-y-auto pr-1">
-              {/* Drawer Header */}
-              <div className="flex items-center justify-between pb-space-md border-b border-[#f1f5f9]">
+            {/* Drawer Header (Fixed at top) */}
+            <div className="shrink-0 px-6 py-4 border-b border-[#f1f5f9] bg-surface-container-lowest z-10">
+              <div className="flex items-center justify-between">
                 <div className="flex items-center gap-space-xs flex-wrap">
                   <select
                     value={selectedContest.status}
@@ -1082,7 +1097,7 @@ export default function ContestManagementPage() {
                     <span className="material-symbols-outlined text-[13px]">edit</span>
                     Edit
                   </button>
-                  <span className="font-label-xs text-secondary font-mono truncate max-w-[140px]">
+                  <span className="font-label-xs text-secondary font-mono truncate max-w-[180px]">
                     ID: {selectedContest.id.slice(0, 8)}...
                   </span>
                 </div>
@@ -1094,9 +1109,12 @@ export default function ContestManagementPage() {
                   <span className="material-symbols-outlined text-[20px]">close</span>
                 </button>
               </div>
+            </div>
 
+            {/* Scrollable Content Body */}
+            <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4 space-y-4 overscroll-contain">
               {/* Title Lockup */}
-              <h2 className="font-headline-lg text-on-surface tracking-tight mt-3">
+              <h2 className="font-headline-lg text-on-surface tracking-tight mt-1">
                 {selectedContest.name}
               </h2>
               <p className="font-body-md text-secondary mt-1">{selectedContest.stage}</p>
@@ -1687,6 +1705,13 @@ export default function ContestManagementPage() {
                 </div>
               </div>
 
+              {/* Evaluator Allocation & Candidate Workload Hub */}
+              <EvaluatorAllocationPanel
+                contestId={selectedContest.id}
+                contestTitle={selectedContest.name}
+                onUpdate={fetchContests}
+              />
+
               {/* Evaluation Rubrics */}
               <div className="flex flex-col gap-space-sm mt-space-md">
                 <span className="font-label-xs uppercase tracking-wider text-secondary font-semibold">
@@ -1799,44 +1824,127 @@ export default function ContestManagementPage() {
                     />
                   </label>
 
-                  {/* 5. Live Screen Sharing */}
-                  <div className="flex items-center justify-between p-2 rounded bg-surface-container-lowest/60 border border-[#e2e8f0] opacity-75">
+                  {/* 5. Screen Capture Evidence */}
+                  <label className="flex items-center justify-between p-2 rounded bg-surface-container-lowest border border-[#e2e8f0] cursor-pointer hover:border-primary-container/40">
                     <div className="flex items-center gap-2">
-                      <span className="material-symbols-outlined text-[18px] text-secondary">screen_share</span>
+                      <span className="material-symbols-outlined text-[18px] text-secondary">screenshot_monitor</span>
                       <div className="flex flex-col">
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-semibold text-on-surface">Live Screen Streaming</span>
-                          <span className="px-1.5 py-0.2 bg-amber-100 text-amber-800 rounded text-[9px] font-bold uppercase">Not Available</span>
-                        </div>
-                        <span className="text-[10px] text-secondary">Requires WebRTC cluster. Telemetry events active instead.</span>
+                        <span className="font-semibold text-on-surface">Screen Capture on Alert</span>
+                        <span className="text-[10px] text-secondary">Capture active window screenshot on fullscreen exit or blur</span>
                       </div>
                     </div>
                     <input
                       type="checkbox"
-                      disabled
-                      checked={false}
-                      className="w-4 h-4 text-secondary rounded cursor-not-allowed"
+                      checked={monitoringSettings.screenCaptureEnabled}
+                      onChange={(e) => setMonitoringSettings((prev) => ({ ...prev, screenCaptureEnabled: e.target.checked }))}
+                      className="w-4 h-4 text-primary-container rounded cursor-pointer"
                     />
+                  </label>
+
+                  {/* 6. Camera Still Capture Evidence */}
+                  <label className="flex items-center justify-between p-2 rounded bg-surface-container-lowest border border-[#e2e8f0] cursor-pointer hover:border-primary-container/40">
+                    <div className="flex items-center gap-2">
+                      <span className="material-symbols-outlined text-[18px] text-secondary">photo_camera</span>
+                      <div className="flex flex-col">
+                        <span className="font-semibold text-on-surface">Camera Still Image on Alert</span>
+                        <span className="text-[10px] text-secondary">Capture camera snapshot on alert if browser permission granted</span>
+                      </div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={monitoringSettings.cameraCaptureEnabled}
+                      onChange={(e) => setMonitoringSettings((prev) => ({ ...prev, cameraCaptureEnabled: e.target.checked }))}
+                      className="w-4 h-4 text-primary-container rounded cursor-pointer"
+                    />
+                  </label>
+
+                  {/* 7. Monitoring Alert Penalty Deduction */}
+                  <div className="p-2.5 rounded bg-surface-container-lowest border border-[#e2e8f0] flex flex-col gap-2">
+                    <label className="flex items-center justify-between cursor-pointer">
+                      <div className="flex items-center gap-2">
+                        <span className="material-symbols-outlined text-[18px] text-rose-600">gavel</span>
+                        <div className="flex flex-col">
+                          <span className="font-semibold text-on-surface">Monitoring Alert Penalty</span>
+                          <span className="text-[10px] text-secondary">Deduct points per confirmed alert (minimum final score 0)</span>
+                        </div>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={monitoringSettings.enableAlertPenalties}
+                        onChange={(e) => setMonitoringSettings((prev) => ({ ...prev, enableAlertPenalties: e.target.checked }))}
+                        className="w-4 h-4 text-primary-container rounded cursor-pointer"
+                      />
+                    </label>
+                    {monitoringSettings.enableAlertPenalties && (
+                      <div className="flex items-center justify-between pt-1 border-t border-[#f1f5f9] text-[11px]">
+                        <span className="text-secondary">Points deducted per alert:</span>
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            min="1"
+                            max="50"
+                            value={monitoringSettings.alertPenaltyPoints}
+                            onChange={(e) => setMonitoringSettings((prev) => ({ ...prev, alertPenaltyPoints: Math.max(1, parseInt(e.target.value) || 5) }))}
+                            className="w-14 px-1.5 py-0.5 text-right font-mono rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface"
+                          />
+                          <span className="text-secondary">pts</span>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
-                  {/* 6. Live Webcam Streaming */}
-                  <div className="flex items-center justify-between p-2 rounded bg-surface-container-lowest/60 border border-[#e2e8f0] opacity-75">
-                    <div className="flex items-center gap-2">
-                      <span className="material-symbols-outlined text-[18px] text-secondary">nest_cam_wired_stand</span>
-                      <div className="flex flex-col">
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-semibold text-on-surface">Live Video Broadcasting</span>
-                          <span className="px-1.5 py-0.2 bg-amber-100 text-amber-800 rounded text-[9px] font-bold uppercase">Not Available</span>
+                  {/* 8. AI Written Answer Violation Penalty */}
+                  <div className="p-2.5 rounded bg-surface-container-lowest border border-[#e2e8f0] flex flex-col gap-2">
+                    <label className="flex items-center justify-between cursor-pointer">
+                      <div className="flex items-center gap-2">
+                        <span className="material-symbols-outlined text-[18px] text-rose-600">psychology</span>
+                        <div className="flex flex-col">
+                          <span className="font-semibold text-on-surface">AI Answer Violation Penalty</span>
+                          <span className="text-[10px] text-secondary">Deduct points upon manual, authorized confirmation of AI usage</span>
                         </div>
-                        <span className="text-[10px] text-secondary">Requires media gateway. Telemetry events active instead.</span>
                       </div>
+                      <input
+                        type="checkbox"
+                        checked={monitoringSettings.enableAiPenalties}
+                        onChange={(e) => setMonitoringSettings((prev) => ({ ...prev, enableAiPenalties: e.target.checked }))}
+                        className="w-4 h-4 text-primary-container rounded cursor-pointer"
+                      />
+                    </label>
+                    {monitoringSettings.enableAiPenalties && (
+                      <div className="flex items-center justify-between pt-1 border-t border-[#f1f5f9] text-[11px]">
+                        <span className="text-secondary">Points deducted for confirmed AI violation:</span>
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            min="1"
+                            max="100"
+                            value={monitoringSettings.aiPenaltyPoints}
+                            onChange={(e) => setMonitoringSettings((prev) => ({ ...prev, aiPenaltyPoints: Math.max(1, parseInt(e.target.value) || 10) }))}
+                            className="w-14 px-1.5 py-0.5 text-right font-mono rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface"
+                          />
+                          <span className="text-secondary">pts</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 9. Retention Period */}
+                  <div className="flex items-center justify-between p-2 rounded bg-surface-container-lowest border border-[#e2e8f0] text-[11px]">
+                    <div className="flex items-center gap-2">
+                      <span className="material-symbols-outlined text-[18px] text-secondary">auto_delete</span>
+                      <span className="text-secondary font-medium">Evidence Retention Policy:</span>
                     </div>
-                    <input
-                      type="checkbox"
-                      disabled
-                      checked={false}
-                      className="w-4 h-4 text-secondary rounded cursor-not-allowed"
-                    />
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        min="7"
+                        max="365"
+                        value={monitoringSettings.evidenceRetentionDays}
+                        onChange={(e) => setMonitoringSettings((prev) => ({ ...prev, evidenceRetentionDays: Math.max(7, parseInt(e.target.value) || 90) }))}
+                        className="w-14 px-1.5 py-0.5 text-right font-mono rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface"
+                      />
+                      <span className="text-secondary">days</span>
+                    </div>
                   </div>
 
                   <div className="pt-2 flex items-center justify-end">
@@ -1853,8 +1961,8 @@ export default function ContestManagementPage() {
               </div>
             </div>
 
-            {/* Drawer Footer Actions */}
-            <div className="pt-space-md flex items-center justify-between border-t border-[#f1f5f9]">
+            {/* Drawer Footer Actions (Fixed at bottom) */}
+            <div className="shrink-0 px-6 py-3.5 border-t border-[#f1f5f9] bg-surface-container-lowest flex items-center justify-between gap-3 z-10 flex-wrap sm:flex-nowrap">
               <button
                 onClick={() => handleDeleteContest(selectedContest.id, selectedContest.name)}
                 className="px-3 py-1.5 rounded text-error hover:bg-error/10 font-label-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"

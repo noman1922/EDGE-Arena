@@ -12,7 +12,7 @@ export default function EvaluatorMonitoringPage() {
       {/* Top Header */}
       <header className="h-16 w-full border-b border-[#e2e8f0] bg-surface-container-lowest/90 backdrop-blur-xl px-4 sm:px-gutter flex items-center justify-between sticky top-0 z-30">
         <div className="flex items-center gap-4">
-          <BrandLogo showSubtitle={true} />
+          <BrandLogo showSubtitle={true} subtitleText="Evaluator Console" />
           <nav className="hidden md:flex items-center gap-1 pl-4 border-l border-[#e2e8f0]">
             <Link
               href="/evaluator"

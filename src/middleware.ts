@@ -18,7 +18,31 @@ export async function middleware(request: NextRequest) {
   const sessionCookie = request.cookies.get(SESSION_COOKIE_NAME)?.value;
   const session = sessionCookie ? await verifySessionToken(sessionCookie) : null;
 
-  // 1. Root route: redirect authenticated users to their role panel, or unauthenticated to /login
+  // 1. Password change mandatory interception:
+  // If user is flagged to change password, force redirect to /change-password
+  if (session?.mustChangePassword) {
+    if (pathname === "/change-password" || pathname.startsWith("/api/auth/logout")) {
+      return NextResponse.next();
+    }
+    // Block access to all other pages until password is changed
+    return NextResponse.redirect(new URL("/change-password", request.url));
+  }
+
+  // 2. Change password route guard:
+  // If user visits /change-password without a session, redirect to /login.
+  // If user already changed password (mustChangePassword is false), redirect to role destination.
+  if (pathname === "/change-password") {
+    if (!session) {
+      return NextResponse.redirect(new URL("/login", request.url));
+    }
+    if (!session.mustChangePassword) {
+      const destination = getRoleDestination(session.role);
+      return NextResponse.redirect(new URL(destination, request.url));
+    }
+    return NextResponse.next();
+  }
+
+  // 3. Root route: redirect authenticated users to their role panel, or unauthenticated to /login
   if (pathname === "/") {
     if (session) {
       const destination = getRoleDestination(session.role);
@@ -27,7 +51,7 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(new URL("/login", request.url));
   }
 
-  // 2. Login page: If already authenticated -> redirect to role panel
+  // 4. Login page: If already authenticated -> redirect to role panel
   if (pathname === "/login") {
     if (session) {
       const destination = getRoleDestination(session.role);
@@ -36,12 +60,12 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // 3. Unauthorized boundary page: always allow
+  // 5. Unauthorized boundary page: always allow
   if (pathname === "/unauthorized") {
     return NextResponse.next();
   }
 
-  // 4. Protected Routes - Require Authentication
+  // 6. Protected Routes - Require Authentication
   const isProtectedPath =
     pathname.startsWith("/admin") ||
     pathname.startsWith("/evaluator") ||
@@ -54,7 +78,7 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
-  // 5. Strict Role-Based Route Access Enforcement
+  // 7. Strict Role-Based Route Access Enforcement
   if (session) {
     // Admin panel: strictly ADMIN only
     if (pathname.startsWith("/admin")) {
@@ -109,7 +133,9 @@ export const config = {
     "/evaluator/:path*",
     "/dashboard/:path*",
     "/assessment/:path*",
+    "/change-password",
     "/login",
     "/unauthorized",
   ],
 };
+
