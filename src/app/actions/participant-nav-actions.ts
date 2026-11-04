@@ -3,6 +3,16 @@
 import { prisma } from "@/lib/prisma";
 import { ContestStatus, PhaseStatus } from "@prisma/client";
 import { requireRole } from "@/lib/auth";
+import { recordAuditLog } from "@/lib/audit";
+import { revalidatePath } from "next/cache";
+
+function safeRevalidatePath(path: string) {
+  try {
+    revalidatePath(path);
+  } catch {
+    // Runner environment fallback
+  }
+}
 import {
   getAuthoritativeContestDeadline,
   isContestActive,
@@ -414,5 +424,100 @@ export async function getParticipantProfile(): Promise<ParticipantProfileData | 
   } catch (error) {
     console.error("Error fetching participant profile:", error);
     return null;
+  }
+}
+
+export interface UpdateParticipantProfileInput {
+  name: string;
+  institution?: string | null;
+}
+
+export async function updateParticipantProfileAction(
+  input: UpdateParticipantProfileInput
+): Promise<{
+  success: boolean;
+  error?: string;
+  name?: string;
+  institution?: string | null;
+  user?: { id: string; name: string; institution: string | null };
+}> {
+  try {
+    const session = await requireRole(["PARTICIPANT"]);
+
+    if (!input || typeof input.name !== "string") {
+      return { success: false, error: "Full name is required." };
+    }
+
+    const trimmedName = input.name.trim();
+    if (trimmedName.length < 2) {
+      return { success: false, error: "Full name must be at least 2 characters long." };
+    }
+    if (trimmedName.length > 100) {
+      return { success: false, error: "Full name cannot exceed 100 characters." };
+    }
+
+    let trimmedInstitution: string | null = null;
+    if (input.institution !== undefined && input.institution !== null) {
+      if (typeof input.institution !== "string") {
+        return { success: false, error: "Invalid institution format." };
+      }
+      const inst = input.institution.trim();
+      if (inst.length > 150) {
+        return { success: false, error: "Affiliation / institution cannot exceed 150 characters." };
+      }
+      trimmedInstitution = inst.length > 0 ? inst : null;
+    }
+
+    const existingUser = await prisma.user.findUnique({
+      where: { id: session.userId },
+      select: { id: true, name: true, institution: true, email: true },
+    });
+
+    if (!existingUser) {
+      return { success: false, error: "Participant account not found." };
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: session.userId },
+      data: {
+        name: trimmedName,
+        institution: trimmedInstitution,
+      },
+      select: {
+        id: true,
+        name: true,
+        institution: true,
+      },
+    });
+
+    await recordAuditLog({
+      actorId: session.userId,
+      action: "UPDATE_PROFILE",
+      targetType: "USER",
+      targetId: session.userId,
+      metadata: {
+        oldName: existingUser.name,
+        newName: updated.name,
+        oldInstitution: existingUser.institution,
+        newInstitution: updated.institution,
+      },
+    });
+
+    safeRevalidatePath("/dashboard/profile");
+    safeRevalidatePath("/dashboard");
+    safeRevalidatePath("/admin/participants");
+
+    return {
+      success: true,
+      name: updated.name,
+      institution: updated.institution,
+      user: updated,
+    };
+  } catch (error) {
+    console.error("Error updating participant profile:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to update profile",
+    };
   }
 }

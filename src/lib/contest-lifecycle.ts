@@ -131,6 +131,83 @@ export interface ContestDeadlineCalculation {
   controllingSource: "PHASE_DEADLINE" | "CONTEST_END_DATE";
 }
 
+export interface AttemptDeadlineCalculation {
+  effectiveDeadline: Date;
+  effectiveDeadlineMs: number;
+  isConcluded: boolean;
+  secondsLeft: number;
+  controllingSource: "ATTEMPT_EXPIRY" | "PHASE_DEADLINE" | "CONTEST_END_DATE";
+  isAttemptExpired: boolean;
+}
+
+/**
+ * Computes the authoritative attempt deadline for an individual participant,
+ * harmonizing the participant's individual timer with phase and contest bounds.
+ */
+export function getAuthoritativeAttemptDeadline(
+  contest: {
+    status?: string | ContestStatus | null;
+    startDate?: Date | string;
+    endDate: Date | string;
+    durationMinutes?: number | null;
+  },
+  phase?: {
+    deadline?: Date | string | null;
+    status?: string | PhaseStatus | null;
+  } | null,
+  submission?: {
+    startedAt?: Date | string | null;
+    expiresAt?: Date | string | null;
+  } | null,
+  now: Date = new Date()
+): AttemptDeadlineCalculation {
+  const contestDeadline = getAuthoritativeContestDeadline(contest, phase, now);
+
+  if (submission?.expiresAt) {
+    const attemptExpiry = new Date(submission.expiresAt);
+    const attemptExpiryMs = attemptExpiry.getTime();
+
+    // If attempt expiry is earlier than the contest/phase deadline
+    if (!isNaN(attemptExpiryMs) && attemptExpiryMs < contestDeadline.effectiveDeadlineMs) {
+      const secondsLeft = Math.max(0, Math.floor((attemptExpiryMs - now.getTime()) / 1000));
+      return {
+        effectiveDeadline: attemptExpiry,
+        effectiveDeadlineMs: attemptExpiryMs,
+        isConcluded: contestDeadline.isConcluded || secondsLeft <= 0,
+        secondsLeft,
+        controllingSource: "ATTEMPT_EXPIRY",
+        isAttemptExpired: secondsLeft <= 0,
+      };
+    }
+  }
+
+  // Authoritative fallback: If submission has startedAt and contest has durationMinutes, but expiresAt was null
+  if (submission?.startedAt && contest.durationMinutes && !submission.expiresAt) {
+    const startedAtDate = new Date(submission.startedAt);
+    const calculatedExpiryMs = startedAtDate.getTime() + contest.durationMinutes * 60 * 1000;
+    const effectiveExpiryMs = Math.min(calculatedExpiryMs, contestDeadline.effectiveDeadlineMs);
+    const secondsLeft = Math.max(0, Math.floor((effectiveExpiryMs - now.getTime()) / 1000));
+    const attemptExpiry = new Date(effectiveExpiryMs);
+    return {
+      effectiveDeadline: attemptExpiry,
+      effectiveDeadlineMs: effectiveExpiryMs,
+      isConcluded: contestDeadline.isConcluded || secondsLeft <= 0,
+      secondsLeft,
+      controllingSource: "ATTEMPT_EXPIRY",
+      isAttemptExpired: secondsLeft <= 0,
+    };
+  }
+
+  return {
+    effectiveDeadline: contestDeadline.effectiveDeadline,
+    effectiveDeadlineMs: contestDeadline.effectiveDeadlineMs,
+    isConcluded: contestDeadline.isConcluded,
+    secondsLeft: contestDeadline.secondsLeft,
+    controllingSource: contestDeadline.controllingSource,
+    isAttemptExpired: contestDeadline.isConcluded,
+  };
+}
+
 /**
  * Computes the authoritative effective deadline and remaining seconds for participant assessment.
  * 

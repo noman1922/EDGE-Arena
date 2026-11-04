@@ -1,11 +1,21 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
-import { PhaseStatus, QuestionType } from "@prisma/client";
+import { PhaseStatus, QuestionType, Prisma } from "@prisma/client";
 import { requireRole } from "@/lib/auth";
 import { recordAuditLog } from "@/lib/audit";
 import { revalidatePath } from "next/cache";
+import { randomUUID } from "crypto";
 import { parseDhakaDateTime } from "@/lib/contest-lifecycle";
+import {
+  parseCsvText,
+  parseExcelBuffer,
+  validateMcqRows,
+  generateMcqCsvTemplate,
+  generateMcqExcelTemplateBase64,
+  ParsedMcqRow,
+  McqImportPreviewResult,
+} from "@/lib/bulk-mcq-parser";
 
 function safeRevalidatePath(path: string) {
   try {
@@ -46,6 +56,7 @@ export interface TaskBuilderTask {
   title: string;
   instructions: string | null;
   totalPoints: number;
+  durationMinutes?: number | null;
   questions: TaskBuilderQuestion[];
   rubrics: Array<{
     id: string;
@@ -128,6 +139,7 @@ export async function getContestPhasesAndTasks(
         title: t.title,
         instructions: t.instructions,
         totalPoints: t.totalPoints,
+        durationMinutes: t.durationMinutes,
         questions: t.questions.map((q) => ({
           id: q.id,
           questionNumber: q.questionNumber,
@@ -300,6 +312,166 @@ export async function updatePhaseDeadlineAction(phaseId: string, deadline: strin
   }
 }
 
+export interface UpdatePhaseInput {
+  phaseId: string;
+  title: string;
+  description?: string | null;
+  phaseNumber?: number;
+  weightPercentage?: number;
+  deadline?: string;
+  status?: "UPCOMING" | "OPEN" | "EVALUATING" | "CLOSED";
+}
+
+export async function updatePhaseAction(input: UpdatePhaseInput) {
+  try {
+    const session = await requireRole(["ADMIN"]);
+
+    if (!input || !input.phaseId) {
+      return { success: false, error: "Phase ID is required." };
+    }
+
+    const phase = await prisma.phase.findUnique({
+      where: { id: input.phaseId },
+      include: { contest: true },
+    });
+
+    if (!phase) {
+      return { success: false, error: "Phase not found." };
+    }
+
+    const trimmedTitle = input.title?.trim();
+    if (!trimmedTitle || trimmedTitle.length < 2) {
+      return { success: false, error: "Phase title must be at least 2 characters long." };
+    }
+    if (trimmedTitle.length > 120) {
+      return { success: false, error: "Phase title cannot exceed 120 characters." };
+    }
+
+    // Phase number uniqueness validation within the same contest
+    let targetPhaseNumber = phase.phaseNumber;
+    if (input.phaseNumber !== undefined && input.phaseNumber !== null) {
+      const num = Number(input.phaseNumber);
+      if (isNaN(num) || num < 1 || !Number.isInteger(num)) {
+        return { success: false, error: "Phase number must be a positive integer." };
+      }
+      if (num !== phase.phaseNumber) {
+        const conflict = await prisma.phase.findFirst({
+          where: {
+            contestId: phase.contestId,
+            phaseNumber: num,
+            id: { not: phase.id },
+          },
+        });
+        if (conflict) {
+          return {
+            success: false,
+            error: `Phase number ${num} is already used by phase "${conflict.title}" in this contest.`,
+          };
+        }
+        targetPhaseNumber = num;
+      }
+    }
+
+    // Weight percentage validation
+    let targetWeight = phase.weightPercentage;
+    if (input.weightPercentage !== undefined && input.weightPercentage !== null) {
+      const w = Number(input.weightPercentage);
+      if (isNaN(w) || w < 0 || w > 100) {
+        return { success: false, error: "Weight percentage must be between 0 and 100." };
+      }
+      targetWeight = new Prisma.Decimal(w);
+    }
+
+    // Deadline validation
+    let targetDeadline = phase.deadline;
+    if (input.deadline) {
+      const parsedDeadline = parseDhakaDateTime(input.deadline);
+      if (isNaN(parsedDeadline.getTime())) {
+        return { success: false, error: "Invalid deadline format." };
+      }
+      targetDeadline = parsedDeadline;
+
+      // Extend contest end date if phase deadline exceeds it
+      if (targetDeadline.getTime() > phase.contest.endDate.getTime()) {
+        await prisma.contest.update({
+          where: { id: phase.contestId },
+          data: { endDate: targetDeadline },
+        });
+      }
+    }
+
+    // Status validation
+    let targetStatus = phase.status;
+    if (input.status) {
+      const validStatuses = ["UPCOMING", "OPEN", "EVALUATING", "CLOSED"];
+      if (!validStatuses.includes(input.status)) {
+        return { success: false, error: "Invalid phase status." };
+      }
+      targetStatus = input.status as PhaseStatus;
+    }
+
+    // Description
+    const targetDescription = input.description !== undefined ? input.description?.trim() || null : phase.description;
+
+    // In-place update preserving ID, tasks, questions, submissions, scores
+    const updated = await prisma.phase.update({
+      where: { id: phase.id },
+      data: {
+        title: trimmedTitle,
+        description: targetDescription,
+        phaseNumber: targetPhaseNumber,
+        weightPercentage: targetWeight,
+        deadline: targetDeadline,
+        status: targetStatus,
+      },
+    });
+
+    await recordAuditLog({
+      actorId: session.userId,
+      action: "UPDATE_PHASE",
+      targetType: "PHASE",
+      targetId: phase.id,
+      metadata: {
+        contestId: phase.contestId,
+        oldTitle: phase.title,
+        newTitle: updated.title,
+        oldPhaseNumber: phase.phaseNumber,
+        newPhaseNumber: updated.phaseNumber,
+        oldStatus: phase.status,
+        newStatus: updated.status,
+        deadline: updated.deadline.toISOString(),
+      },
+    });
+
+    safeRevalidatePath("/admin/tasks");
+    safeRevalidatePath("/admin/contests");
+    safeRevalidatePath("/dashboard");
+    safeRevalidatePath("/dashboard/contests");
+    safeRevalidatePath(`/dashboard/contests/${phase.contestId}`);
+    safeRevalidatePath("/assessment");
+
+    return {
+      success: true,
+      phase: {
+        id: updated.id,
+        contestId: updated.contestId,
+        phaseNumber: updated.phaseNumber,
+        title: updated.title,
+        description: updated.description,
+        weightPercentage: Number(updated.weightPercentage),
+        deadline: updated.deadline.toISOString(),
+        status: updated.status,
+      },
+    };
+  } catch (error) {
+    console.error("Error updating phase:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to update phase",
+    };
+  }
+}
+
 export async function deletePhaseAction(phaseId: string) {
   try {
     const session = await requireRole(["ADMIN"]);
@@ -358,6 +530,7 @@ export interface CreateTaskInput {
   title: string;
   instructions?: string;
   totalPoints?: number;
+  durationMinutes?: number | null;
 }
 
 export async function createTaskAction(input: CreateTaskInput) {
@@ -371,6 +544,7 @@ export async function createTaskAction(input: CreateTaskInput) {
         title: input.title.trim(),
         instructions: input.instructions?.trim() || null,
         totalPoints: input.totalPoints || 100,
+        durationMinutes: input.durationMinutes ? Number(input.durationMinutes) : null,
       },
     });
 
@@ -379,7 +553,11 @@ export async function createTaskAction(input: CreateTaskInput) {
       action: "CREATE_TASK",
       targetType: "TASK",
       targetId: newTask.id,
-      metadata: { title: newTask.title, phaseId: input.phaseId },
+      metadata: {
+        title: newTask.title,
+        phaseId: input.phaseId,
+        durationMinutes: newTask.durationMinutes,
+      },
     });
 
     safeRevalidatePath("/admin/tasks");
@@ -391,6 +569,63 @@ export async function createTaskAction(input: CreateTaskInput) {
   } catch (error) {
     console.error("Error creating task:", error);
     return { success: false, error: error instanceof Error ? error.message : "Failed to create task" };
+  }
+}
+
+export interface UpdateTaskInput {
+  taskId: string;
+  title?: string;
+  instructions?: string | null;
+  totalPoints?: number;
+  durationMinutes?: number | null;
+}
+
+export async function updateTaskAction(input: UpdateTaskInput) {
+  try {
+    const session = await requireRole(["ADMIN"]);
+
+    const task = await prisma.task.findUnique({
+      where: { id: input.taskId },
+      include: { phase: true },
+    });
+
+    if (!task) {
+      return { success: false, error: "Task not found." };
+    }
+
+    const updated = await prisma.task.update({
+      where: { id: input.taskId },
+      data: {
+        ...(input.title !== undefined && { title: input.title.trim() }),
+        ...(input.instructions !== undefined && { instructions: input.instructions?.trim() || null }),
+        ...(input.totalPoints !== undefined && { totalPoints: input.totalPoints }),
+        ...(input.durationMinutes !== undefined && {
+          durationMinutes: input.durationMinutes ? Number(input.durationMinutes) : null,
+        }),
+      },
+    });
+
+    await recordAuditLog({
+      actorId: session.userId,
+      action: "UPDATE_TASK",
+      targetType: "TASK",
+      targetId: input.taskId,
+      metadata: {
+        title: updated.title,
+        durationMinutes: updated.durationMinutes,
+        phaseId: task.phaseId,
+      },
+    });
+
+    safeRevalidatePath("/admin/tasks");
+    safeRevalidatePath("/admin/contests");
+    safeRevalidatePath("/assessment");
+    safeRevalidatePath("/dashboard");
+
+    return { success: true, task: updated };
+  } catch (error) {
+    console.error("Error updating task:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Failed to update task" };
   }
 }
 
@@ -806,6 +1041,376 @@ export async function updateQuestionAction(input: UpdateQuestionInput): Promise<
     return {
       success: false,
       error: error instanceof Error ? error.message : "Failed to update question",
+    };
+  }
+}
+
+// ==========================================
+// BULK MCQ IMPORT ACTIONS (CSV & XLSX)
+// ==========================================
+
+export interface PreviewBulkMcqImportInput {
+  taskId: string;
+  fileBase64: string;
+  fileName: string;
+}
+
+export interface ExecuteBulkMcqImportInput {
+  taskId: string;
+  rows: Array<{
+    questionNumber?: number;
+    prompt: string;
+    instructions?: string;
+    points: number;
+    options: Array<{ optionKey: string; text: string; scopeTag?: string }>;
+    correctOptionKey: string;
+    explanation?: string;
+    scoringGuide?: string;
+  }>;
+}
+
+/**
+ * Downloads standard MCQ template in CSV or XLSX format.
+ */
+export async function getMcqTemplateAction(
+  format: "csv" | "xlsx"
+): Promise<{ success: boolean; data?: string; filename: string; mimeType: string; error?: string }> {
+  try {
+    await requireRole(["ADMIN"]);
+
+    if (format === "xlsx") {
+      const base64 = generateMcqExcelTemplateBase64();
+      return {
+        success: true,
+        data: base64,
+        filename: "mcq_bulk_import_template.xlsx",
+        mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      };
+    } else {
+      const csv = generateMcqCsvTemplate();
+      const base64 = Buffer.from(csv, "utf-8").toString("base64");
+      return {
+        success: true,
+        data: base64,
+        filename: "mcq_bulk_import_template.csv",
+        mimeType: "text/csv;charset=utf-8;",
+      };
+    }
+  } catch (error) {
+    return {
+      success: false,
+      filename: "template",
+      mimeType: "text/plain",
+      error: error instanceof Error ? error.message : "Failed to generate template",
+    };
+  }
+}
+
+/**
+ * Parses and validates an uploaded CSV or Excel file for MCQ import.
+ * Returns row-level validation results, error breakdown, and preview.
+ */
+export async function previewBulkMcqImportAction(
+  input: PreviewBulkMcqImportInput
+): Promise<McqImportPreviewResult & { error?: string }> {
+  try {
+    await requireRole(["ADMIN"]);
+
+    if (!input.taskId) {
+      return {
+        success: false,
+        totalRows: 0,
+        validRowsCount: 0,
+        invalidRowsCount: 0,
+        rows: [],
+        globalErrors: ["Task ID is required."],
+      };
+    }
+
+    if (!input.fileBase64) {
+      return {
+        success: false,
+        totalRows: 0,
+        validRowsCount: 0,
+        invalidRowsCount: 0,
+        rows: [],
+        globalErrors: ["File content is missing."],
+      };
+    }
+
+    const task = await prisma.task.findUnique({
+      where: { id: input.taskId },
+      include: {
+        questions: {
+          select: {
+            id: true,
+            questionNumber: true,
+            prompt: true,
+          },
+        },
+      },
+    });
+
+    if (!task) {
+      return {
+        success: false,
+        totalRows: 0,
+        validRowsCount: 0,
+        invalidRowsCount: 0,
+        rows: [],
+        globalErrors: ["Target task does not exist."],
+      };
+    }
+
+    const existingContext = {
+      existingQuestionNumbers: new Set(task.questions.map((q) => q.questionNumber)),
+      existingPromptsNormalized: new Set(
+        task.questions.map((q) => q.prompt.trim().toLowerCase().replace(/\s+/g, " "))
+      ),
+      maxExistingQuestionNumber: task.questions.reduce(
+        (max, q) => Math.max(max, q.questionNumber),
+        0
+      ),
+    };
+
+    const buffer = Buffer.from(input.fileBase64, "base64");
+    const lowerName = (input.fileName || "").toLowerCase();
+
+    let rawRows: string[][] = [];
+
+    if (lowerName.endsWith(".xlsx") || lowerName.endsWith(".xls")) {
+      rawRows = parseExcelBuffer(buffer);
+    } else if (lowerName.endsWith(".csv")) {
+      const text = buffer.toString("utf-8");
+      rawRows = parseCsvText(text);
+    } else {
+      // Auto-detect: attempt Excel first, then fallback to CSV text
+      try {
+        rawRows = parseExcelBuffer(buffer);
+      } catch {
+        const text = buffer.toString("utf-8");
+        rawRows = parseCsvText(text);
+      }
+    }
+
+    return validateMcqRows(rawRows, existingContext);
+  } catch (error) {
+    console.error("Error previewing bulk MCQ import:", error);
+    return {
+      success: false,
+      totalRows: 0,
+      validRowsCount: 0,
+      invalidRowsCount: 0,
+      rows: [],
+      globalErrors: [error instanceof Error ? error.message : "Failed to parse file"],
+    };
+  }
+}
+
+/**
+ * Executes transaction-safe bulk MCQ import.
+ * Never overwrites existing questions.
+ * Recalculates total points on the task upon success.
+ */
+export async function executeBulkMcqImportAction(
+  input: ExecuteBulkMcqImportInput
+): Promise<{ success: boolean; importedCount?: number; error?: string }> {
+  try {
+    const session = await requireRole(["ADMIN"]);
+
+    if (!input.taskId) {
+      return { success: false, error: "Task ID is required." };
+    }
+
+    if (!Array.isArray(input.rows) || input.rows.length === 0) {
+      return { success: false, error: "No valid question rows provided for import." };
+    }
+
+    if (input.rows.length > 200) {
+      return { success: false, error: "Maximum batch limit is 200 questions per import." };
+    }
+
+    const task = await prisma.task.findUnique({
+      where: { id: input.taskId },
+      include: {
+        phase: {
+          select: { contestId: true },
+        },
+      },
+    });
+
+    if (!task) {
+      return { success: false, error: "Target task does not exist." };
+    }
+
+    const importedQuestionIds: string[] = [];
+
+    await prisma.$transaction(
+      async (tx) => {
+        // 1. Fetch fresh list of existing questions within the transaction to prevent race conditions
+        const existingQuestions = await tx.question.findMany({
+          where: { taskId: input.taskId },
+          select: { id: true, questionNumber: true, prompt: true },
+        });
+
+        const existingNumbers = new Set(existingQuestions.map((q) => q.questionNumber));
+        const existingPrompts = new Set(
+          existingQuestions.map((q) => q.prompt.trim().toLowerCase().replace(/\s+/g, " "))
+        );
+        let maxQuestionNumber = existingQuestions.reduce(
+          (max, q) => Math.max(max, q.questionNumber),
+          0
+        );
+
+        // Verify no collision before constructing records
+        for (const row of input.rows) {
+          if (row.questionNumber !== undefined && existingNumbers.has(row.questionNumber)) {
+            throw new Error(
+              `Collision detected: Question number ${row.questionNumber} already exists in this task. Overwriting is not permitted.`
+            );
+          }
+          const normPrompt = row.prompt.trim().toLowerCase().replace(/\s+/g, " ");
+          if (existingPrompts.has(normPrompt)) {
+            throw new Error(
+              `Collision detected: Question prompt "${row.prompt.slice(0, 40)}..." already exists in this task.`
+            );
+          }
+        }
+
+        // 2. Prepare optimized batch records in memory using pre-generated UUIDs
+        const questionsToCreate: Array<{
+          id: string;
+          taskId: string;
+          questionNumber: number;
+          type: QuestionType;
+          prompt: string;
+          instructions: string | null;
+          points: number;
+          isMandatory: boolean;
+        }> = [];
+
+        const optionsToCreate: Array<{
+          id: string;
+          questionId: string;
+          optionKey: string;
+          text: string;
+          scopeTag: string | null;
+        }> = [];
+
+        const answerKeysToCreate: Array<{
+          id: string;
+          questionId: string;
+          correctOptionKey: string | null;
+          explanation: string | null;
+          scoringGuide: string | null;
+        }> = [];
+
+        for (const row of input.rows) {
+          let assignedNumber = row.questionNumber;
+          if (assignedNumber === undefined) {
+            maxQuestionNumber++;
+            while (existingNumbers.has(maxQuestionNumber)) {
+              maxQuestionNumber++;
+            }
+            assignedNumber = maxQuestionNumber;
+          }
+          existingNumbers.add(assignedNumber);
+
+          const questionId = randomUUID();
+          importedQuestionIds.push(questionId);
+
+          questionsToCreate.push({
+            id: questionId,
+            taskId: input.taskId,
+            questionNumber: assignedNumber,
+            type: QuestionType.MCQ,
+            prompt: row.prompt.trim(),
+            instructions: row.instructions?.trim() || null,
+            points: row.points || 10,
+            isMandatory: true,
+          });
+
+          for (const opt of row.options) {
+            optionsToCreate.push({
+              id: randomUUID(),
+              questionId,
+              optionKey: opt.optionKey,
+              text: opt.text.trim(),
+              scopeTag: opt.scopeTag || null,
+            });
+          }
+
+          if (row.correctOptionKey) {
+            answerKeysToCreate.push({
+              id: randomUUID(),
+              questionId,
+              correctOptionKey: row.correctOptionKey,
+              explanation: row.explanation?.trim() || null,
+              scoringGuide: row.scoringGuide?.trim() || null,
+            });
+          }
+        }
+
+        // 3. High-performance batch insertions via createMany (replaces 120+ sequential queries with 3 bulk operations)
+        await tx.question.createMany({
+          data: questionsToCreate,
+        });
+
+        if (optionsToCreate.length > 0) {
+          await tx.mcqOption.createMany({
+            data: optionsToCreate,
+          });
+        }
+
+        if (answerKeysToCreate.length > 0) {
+          await tx.questionAnswerKey.createMany({
+            data: answerKeysToCreate,
+          });
+        }
+
+        // 4. Recalculate task totalPoints via single fast aggregate query
+        const pointsSum = await tx.question.aggregate({
+          where: { taskId: input.taskId },
+          _sum: { points: true },
+        });
+        const newTotalPoints = pointsSum._sum.points ?? 0;
+
+        await tx.task.update({
+          where: { id: input.taskId },
+          data: { totalPoints: newTotalPoints },
+        });
+      },
+      {
+        maxWait: 10000, // 10s wait for connection slot from pool
+        timeout: 30000, // 30s interactive transaction timeout for large batches
+      }
+    );
+
+    // 4. Record audit log
+    await recordAuditLog({
+      actorId: session.userId,
+      action: "BULK_IMPORT_MCQ",
+      targetType: "TASK",
+      targetId: input.taskId,
+      metadata: {
+        contestId: task.phase.contestId,
+        importedCount: importedQuestionIds.length,
+        questionIds: importedQuestionIds,
+      },
+    });
+
+    safeRevalidatePath("/admin/tasks");
+    safeRevalidatePath("/assessment");
+
+    return {
+      success: true,
+      importedCount: importedQuestionIds.length,
+    };
+  } catch (error) {
+    console.error("Error executing bulk MCQ import:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to import questions",
     };
   }
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import Link from "next/link";
 import {
   getAdminSubmissionsList,
@@ -37,27 +37,76 @@ export default function AdminSubmissionsPage() {
   const [gradeSuccessMsg, setGradeSuccessMsg] = useState<string | null>(null);
   const [gradeErrorMsg, setGradeErrorMsg] = useState<string | null>(null);
 
-  const loadSubmissions = useCallback(async (contestId?: string) => {
+  const selectedSubmissionRef = useRef<AdminSubmissionDetail | null>(null);
+  useEffect(() => {
+    selectedSubmissionRef.current = selectedSubmission;
+  }, [selectedSubmission]);
+
+  const loadSubmissions = useCallback(async (contestId?: string, silent = false) => {
     try {
-      setIsLoading(true);
+      if (!silent) setIsLoading(true);
       const res = await getAdminSubmissionsList(contestId);
       setData(res);
-      if (selectedSubmission) {
-        const updated = res.submissions.find((s) => s.id === selectedSubmission.id);
+      if (selectedSubmissionRef.current) {
+        const updated = res.submissions.find((s) => s.id === selectedSubmissionRef.current?.id);
         if (updated) setSelectedSubmission(updated);
       }
     } catch (err) {
       console.error("Failed to load submissions:", err);
     } finally {
-      setIsLoading(false);
+      if (!silent) setIsLoading(false);
     }
-  }, [selectedSubmission]);
+  }, []);
 
   useEffect(() => {
     loadSubmissions(selectedContestId || undefined);
   }, [selectedContestId, loadSubmissions]);
 
-  const openInspector = (sub: AdminSubmissionDetail) => {
+  const closeInspector = useCallback(() => {
+    setSelectedSubmission(null);
+    setGradeSuccessMsg(null);
+    setGradeErrorMsg(null);
+  }, []);
+
+  // Prevent background scrolling and preserve layout when review drawer is open
+  useEffect(() => {
+    if (selectedSubmission) {
+      const originalOverflow = document.body.style.overflow;
+      const originalPaddingRight = document.body.style.paddingRight;
+      const scrollBarWidth = window.innerWidth - document.documentElement.clientWidth;
+      if (scrollBarWidth > 0) {
+        document.body.style.paddingRight = `${scrollBarWidth}px`;
+      }
+      document.body.style.overflow = "hidden";
+
+      return () => {
+        document.body.style.overflow = originalOverflow;
+        document.body.style.paddingRight = originalPaddingRight;
+      };
+    }
+  }, [selectedSubmission]);
+
+  // Close drawer on Escape key
+  useEffect(() => {
+    if (!selectedSubmission) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        closeInspector();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selectedSubmission, closeInspector]);
+
+  const handleBackdropClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.target === e.currentTarget) {
+      closeInspector();
+    }
+  };
+
+  const openInspector = useCallback((sub: AdminSubmissionDetail) => {
     setSelectedSubmission(sub);
     setGradeSuccessMsg(null);
     setGradeErrorMsg(null);
@@ -65,7 +114,7 @@ export default function AdminSubmissionsPage() {
     const initialQScore: Record<string, number> = {};
     const initialQFeedback: Record<string, string> = {};
 
-    sub.answers.forEach((ans) => {
+    (sub.answers || []).forEach((ans) => {
       initialQScore[ans.questionId] =
         ans.score !== null ? Number(ans.score) : 0;
       initialQFeedback[ans.questionId] = ans.feedback || "";
@@ -74,9 +123,9 @@ export default function AdminSubmissionsPage() {
     const initialRubricScores: Record<string, number> = {};
     const initialRubricComments: Record<string, string> = {};
 
-    sub.evaluations.forEach((ev) => {
+    (sub.evaluations || []).forEach((ev) => {
       initialRubricScores[ev.rubricId] =
-        ev.scoreAwarded !== undefined && ev.scoreAwarded !== null && ev.scoreAwarded > 0
+        ev.scoreAwarded !== undefined && ev.scoreAwarded !== null
           ? Number(ev.scoreAwarded)
           : Math.round(ev.maxPoints * 0.85);
       initialRubricComments[ev.rubricId] = ev.comments || "";
@@ -87,7 +136,7 @@ export default function AdminSubmissionsPage() {
     setOverallFeedback(sub.overallFeedback || "");
     setRubricScores(initialRubricScores);
     setRubricComments(initialRubricComments);
-  };
+  }, []);
 
   // Live Score Computations
   const { autoScore, manualScore, liveFinalScore } = useMemo(() => {
@@ -198,7 +247,7 @@ export default function AdminSubmissionsPage() {
             `Evaluation finalized! Locked Score: ${res.finalScore}/${maxPts} (Auto: ${res.autoGradeScore} pts • Manual: ${res.manualGradeScore} pts)`
           );
         }
-        await loadSubmissions(selectedContestId);
+        await loadSubmissions(selectedContestId, true);
       } else {
         setGradeErrorMsg(res.error || "Failed to record evaluation.");
       }
@@ -298,6 +347,7 @@ export default function AdminSubmissionsPage() {
         <div className="flex items-center gap-1.5 w-full sm:w-auto">
           {(["ALL", "SUBMITTED", "GRADED"] as const).map((s) => (
             <button
+              type="button"
               key={s}
               onClick={() => setStatusFilter(s)}
               className={`px-3 py-1.5 rounded font-label-xs font-semibold border transition-colors ${
@@ -410,6 +460,7 @@ export default function AdminSubmissionsPage() {
                     </td>
                     <td className="py-3.5 px-space-md text-center" onClick={(e) => e.stopPropagation()}>
                       <button
+                        type="button"
                         onClick={() => openInspector(sub)}
                         className="px-3 py-1 text-xs bg-surface-container-high hover:bg-surface-container text-on-surface font-semibold rounded border border-[#e2e8f0] inline-flex items-center gap-1 cursor-pointer"
                       >
@@ -428,11 +479,11 @@ export default function AdminSubmissionsPage() {
       {/* Slide-Over Drawer for Candidate Review & Grading */}
       {selectedSubmission && (
         <div
-          className="fixed inset-0 bg-inverse-surface/40 backdrop-blur-xs z-50 flex justify-end transition-opacity"
-          onClick={() => setSelectedSubmission(null)}
+          className="fixed inset-0 bg-black/40 backdrop-blur-xs z-[70] flex justify-end animate-in fade-in duration-200"
+          onClick={handleBackdropClick}
         >
           <div
-            className="w-full sm:w-[94vw] md:w-[75vw] lg:w-[48vw] lg:min-w-[680px] lg:max-w-[920px] xl:max-w-[1020px] 2xl:max-w-[1150px] bg-surface-container-lowest h-full shadow-2xl p-space-lg flex flex-col justify-between border-l border-[#e2e8f0] overflow-y-auto"
+            className="w-full sm:w-[94vw] md:w-[75vw] lg:w-[48vw] lg:min-w-[680px] lg:max-w-[920px] xl:max-w-[1020px] 2xl:max-w-[1150px] bg-surface-container-lowest h-full shadow-2xl p-space-lg flex flex-col justify-between border-l border-[#e2e8f0] overflow-y-auto animate-in slide-in-from-right duration-250"
             onClick={(e) => e.stopPropagation()}
           >
             <div>
@@ -463,10 +514,13 @@ export default function AdminSubmissionsPage() {
                   </p>
                 </div>
                 <button
-                  onClick={() => setSelectedSubmission(null)}
-                  className="text-secondary hover:text-on-surface p-1 cursor-pointer"
+                  type="button"
+                  onClick={closeInspector}
+                  className="text-secondary hover:text-on-surface p-1.5 rounded-lg hover:bg-surface-container-high transition-colors cursor-pointer"
+                  title="Close Review Drawer (Esc)"
+                  aria-label="Close Review Drawer"
                 >
-                  <span className="material-symbols-outlined text-[20px]">close</span>
+                  <span className="material-symbols-outlined text-[20px] block">close</span>
                 </button>
               </div>
 
@@ -510,14 +564,14 @@ export default function AdminSubmissionsPage() {
               <div className="space-y-space-md">
                 <div className="flex items-center justify-between pb-1 border-b border-[#e2e8f0]">
                   <span className="font-label-xs uppercase font-semibold text-secondary tracking-wider block">
-                    Candidate Responses ({selectedSubmission.answers.length} Questions)
+                    Candidate Responses ({(selectedSubmission.answers || []).length} Questions)
                   </span>
                   <span className="font-label-xs text-secondary">
                     Total Contest Points: {selectedSubmission.taskPoints || 100}
                   </span>
                 </div>
 
-                {selectedSubmission.answers.map((ans, idx) => {
+                {(selectedSubmission.answers || []).map((ans, idx) => {
                   const currentScore = questionScores[ans.questionId] ?? 0;
                   const isScoreInvalid = currentScore < 0 || currentScore > ans.points;
 
@@ -757,11 +811,11 @@ export default function AdminSubmissionsPage() {
                 })}
 
                 {/* Rubrics Breakdown & Scoring */}
-                {selectedSubmission.evaluations.length > 0 && (
+                {(selectedSubmission.evaluations || []).length > 0 && (
                   <div className="pt-space-md border-t border-[#e2e8f0]">
                     <div className="flex items-center justify-between pb-1 mb-space-xs">
                       <span className="font-label-xs uppercase font-semibold text-secondary tracking-wider block">
-                        Rubric Scoring Matrix ({selectedSubmission.evaluations.length} Criteria)
+                        Rubric Scoring Matrix ({(selectedSubmission.evaluations || []).length} Criteria)
                       </span>
                       <span className="font-label-xs text-primary-container font-semibold">
                         Weighted Total: {manualScore} pts
@@ -769,8 +823,8 @@ export default function AdminSubmissionsPage() {
                     </div>
 
                     <div className="space-y-space-xs">
-                      {selectedSubmission.evaluations.map((ev) => {
-                        const currentVal = rubricScores[ev.rubricId] ?? ev.scoreAwarded;
+                      {(selectedSubmission.evaluations || []).map((ev) => {
+                        const currentVal = rubricScores[ev.rubricId] ?? (ev.scoreAwarded !== null && ev.scoreAwarded !== undefined ? Number(ev.scoreAwarded) : 0);
 
                         return (
                           <div
@@ -848,7 +902,7 @@ export default function AdminSubmissionsPage() {
             <div className="pt-space-md border-t border-[#e2e8f0] flex items-center justify-end gap-space-sm mt-4">
               <button
                 type="button"
-                onClick={() => setSelectedSubmission(null)}
+                onClick={closeInspector}
                 className="px-4 py-2 bg-surface-container-high hover:bg-surface-container text-on-surface font-label-md rounded border border-[#e2e8f0] cursor-pointer"
               >
                 Close

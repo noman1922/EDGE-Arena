@@ -17,6 +17,10 @@ const ImportParticipantsModal = dynamic(
   () => import("@/components/modals/import-participants-modal").then((m) => m.ImportParticipantsModal),
   { ssr: false }
 );
+const EditParticipantModal = dynamic(
+  () => import("@/components/modals/edit-participant-modal").then((m) => m.EditParticipantModal),
+  { ssr: false }
+);
 
 export default function AdminParticipantsPage() {
   const { contests: contextContests } = useAdminContest();
@@ -53,6 +57,10 @@ export default function AdminParticipantsPage() {
 
   // Status Action State
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
+
+  // Edit Participant Modal State
+  const [editingParticipant, setEditingParticipant] = useState<AdminParticipantItem | null>(null);
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
 
   // Sync contest options from AdminContestContext (avoid duplicate database fetch)
   useEffect(() => {
@@ -391,27 +399,40 @@ export default function AdminParticipantsPage() {
                       </span>
                     </td>
                     <td className="py-3 px-4 text-right">
-                      {p.role === "PARTICIPANT" && (
-                        <div className="inline-flex items-center gap-1">
-                          {p.status !== "DISQUALIFIED" ? (
-                            <button
-                              onClick={() => handleStatusChange(p.id, "DISQUALIFIED")}
-                              title="Flag or Disqualify Participant"
-                              className="px-2 py-1 text-xs rounded bg-red-50 hover:bg-red-100 text-red-700 transition-colors cursor-pointer"
-                            >
-                              Disqualify
-                            </button>
-                          ) : (
-                            <button
-                              onClick={() => handleStatusChange(p.id, "ACTIVE")}
-                              title="Reactivate Participant"
-                              className="px-2 py-1 text-xs rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-700 transition-colors cursor-pointer"
-                            >
-                              Activate
-                            </button>
-                          )}
-                        </div>
-                      )}
+                      <div className="inline-flex items-center gap-1.5 justify-end">
+                        <button
+                          onClick={() => {
+                            setEditingParticipant(p);
+                            setIsEditModalOpen(true);
+                          }}
+                          title="Edit Participant Profile"
+                          className="px-2 py-1 text-xs rounded bg-surface-container-high hover:bg-surface-container text-on-surface font-medium border border-[#e2e8f0] transition-colors cursor-pointer flex items-center gap-1"
+                        >
+                          <span className="material-symbols-outlined text-[13px] text-primary-container">edit</span>
+                          <span>Edit</span>
+                        </button>
+                        {p.role === "PARTICIPANT" && (
+                          <>
+                            {p.status !== "DISQUALIFIED" ? (
+                              <button
+                                onClick={() => handleStatusChange(p.id, "DISQUALIFIED")}
+                                title="Flag or Disqualify Participant"
+                                className="px-2 py-1 text-xs rounded bg-red-50 hover:bg-red-100 text-red-700 transition-colors cursor-pointer"
+                              >
+                                Disqualify
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => handleStatusChange(p.id, "ACTIVE")}
+                                title="Reactivate Participant"
+                                className="px-2 py-1 text-xs rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-700 transition-colors cursor-pointer"
+                              >
+                                Activate
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -706,6 +727,23 @@ export default function AdminParticipantsPage() {
         onImportComplete={async () => {
           setActionSuccess("Participant roster imported and synced successfully.");
           await loadParticipants();
+        }}
+      />
+
+      {/* Edit Participant Profile Modal */}
+      <EditParticipantModal
+        isOpen={isEditModalOpen}
+        participant={editingParticipant}
+        onClose={() => {
+          setIsEditModalOpen(false);
+          setEditingParticipant(null);
+        }}
+        onSuccess={(updated) => {
+          setParticipants((prev) =>
+            prev.map((item) => (item.id === updated.id ? updated : item))
+          );
+          setActionSuccess(`Profile for ${updated.name} updated successfully.`);
+          setTimeout(() => setActionSuccess(null), 4000);
         }}
       />
     </div>

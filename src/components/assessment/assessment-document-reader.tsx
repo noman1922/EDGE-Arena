@@ -10,6 +10,8 @@ import {
   getTaskAssessmentData,
   saveAnswerDraftAction,
   submitAssessmentAction,
+  autoFinalizeExpiredAttemptAction,
+  startAssessmentAttemptAction,
   type TaskAssessmentData,
   type AssessmentTaskNavOption,
 } from "@/app/actions/assessment-actions";
@@ -78,8 +80,12 @@ export function AssessmentDocumentReader({
 
   // Modals & submission state
   const [isSubmitModalOpen, setIsSubmitModalOpen] = useState(false);
+  const [hasDismissedExpiredModal, setHasDismissedExpiredModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [submitSuccessMessage, setSubmitSuccessMessage] = useState<string | null>(null);
+  const isSubmittingRef = useRef(false);
+  const pendingDraftsRef = useRef<Map<string, { selectedOption?: string; writtenText?: string }>>(new Map());
   const [fileToRemove, setFileToRemove] = useState<{
     questionId: string;
     fileName: string;
@@ -87,14 +93,22 @@ export function AssessmentDocumentReader({
   const [isDeletingFile, setIsDeletingFile] = useState(false);
   const [referencesExpanded, setReferencesExpanded] = useState(true);
 
-  // Live timer hook with Asia/Dhaka synchronization and 30s heartbeat
+  // Live timer hook with Asia/Dhaka synchronization, individual attempt countdown and 30s heartbeat
   const timer = useContestTimer({
     contestId: data?.task?.contestId || initialContestId,
     phaseId: data?.phase?.id || initialPhaseId,
+    taskId: data?.task?.id || initialTaskId,
+    submissionId: data?.submission?.id,
     initialDeadlineIso: data?.task?.deadline,
     initialSecondsLeft: data?.task?.secondsLeft,
     isContestEndedInitial: data?.isContestEnded,
     heartbeatIntervalMs: 30000,
+    onTimerExpired: async () => {
+      if (data?.submission?.id && !submitted) {
+        await autoFinalizeExpiredAttemptAction(data.submission.id);
+        setSubmitted(true);
+      }
+    },
   });
 
   const isReadOnly = Boolean(submitted || data?.isContestEnded || timer.isEnded);
@@ -368,14 +382,18 @@ export function AssessmentDocumentReader({
   const handleSelectOption = async (questionId: string, optKey: string) => {
     if (isReadOnly || !data?.submission?.id) return;
     setSelectedOptions((prev) => ({ ...prev, [questionId]: optKey }));
+    pendingDraftsRef.current.set(questionId, { selectedOption: optKey });
 
     setIsSaving(true);
     try {
       const res = await saveAnswerDraftAction(data.submission.id, questionId, {
         selectedOption: optKey,
       });
-      if (res.success && res.savedAt) {
-        setLastSaved(`Saved at ${res.savedAt}`);
+      if (res.success) {
+        pendingDraftsRef.current.delete(questionId);
+        if (res.savedAt) {
+          setLastSaved(`Saved at ${res.savedAt}`);
+        }
       }
     } catch (err) {
       console.error("Option save error:", err);
@@ -388,6 +406,7 @@ export function AssessmentDocumentReader({
   const handleWrittenChange = (questionId: string, text: string) => {
     if (isReadOnly) return;
     setWrittenResponses((prev) => ({ ...prev, [questionId]: text }));
+    pendingDraftsRef.current.set(questionId, { writtenText: text });
   };
 
   // Autosave written answer on blur
@@ -399,8 +418,11 @@ export function AssessmentDocumentReader({
       const res = await saveAnswerDraftAction(data.submission.id, questionId, {
         writtenText: text,
       });
-      if (res.success && res.savedAt) {
-        setLastSaved(`Saved at ${res.savedAt}`);
+      if (res.success) {
+        pendingDraftsRef.current.delete(questionId);
+        if (res.savedAt) {
+          setLastSaved(`Saved at ${res.savedAt}`);
+        }
       }
     } catch (err) {
       console.error("Written save error:", err);
@@ -409,22 +431,22 @@ export function AssessmentDocumentReader({
     }
   };
 
-  // Flush all answers to database before navigation
+  // Flush only pending/unsaved drafts concurrently to avoid slow sequential loops
   const flushCurrentDrafts = async () => {
-    if (!data?.submission?.id || isReadOnly || !data?.questions) return;
+    if (!data?.submission?.id || isReadOnly || pendingDraftsRef.current.size === 0) return;
     setIsSaving(true);
     try {
-      for (const q of data.questions) {
-        if (q.type === "MCQ" && selectedOptions[q.id]) {
-          await saveAnswerDraftAction(data.submission.id, q.id, {
-            selectedOption: selectedOptions[q.id],
-          });
-        } else if (q.type === "WRITTEN" && writtenResponses[q.id] !== undefined) {
-          await saveAnswerDraftAction(data.submission.id, q.id, {
-            writtenText: writtenResponses[q.id],
-          });
-        }
+      const pendingTasks: Promise<any>[] = [];
+      for (const [qId, draft] of pendingDraftsRef.current.entries()) {
+        pendingTasks.push(
+          saveAnswerDraftAction(data.submission.id, qId, draft).then((res) => {
+            if (res.success) {
+              pendingDraftsRef.current.delete(qId);
+            }
+          })
+        );
       }
+      await Promise.all(pendingTasks);
       setLastSaved(
         `Saved at ${new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit" })}`
       );
@@ -693,6 +715,31 @@ export function AssessmentDocumentReader({
         details: "Candidate acknowledged proctoring disclosure and entered assessment",
       });
 
+      // Explicitly start individual assessment attempt timer on the server
+      if (data?.task?.id && activeContestId) {
+        const startRes = await startAssessmentAttemptAction(activeContestId, data.task.id);
+        if (startRes.success && startRes.submissionId) {
+          setData((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              task: {
+                ...prev.task,
+                hasAttemptStarted: true,
+                startedAt: startRes.startedAt || prev.task.startedAt,
+                expiresAt: startRes.expiresAt || prev.task.expiresAt,
+                secondsLeft: startRes.secondsLeft !== undefined ? startRes.secondsLeft : prev.task.secondsLeft,
+                deadline: startRes.deadlineIso || prev.task.deadline,
+              },
+              submission: {
+                ...prev.submission,
+                id: startRes.submissionId || prev.submission.id,
+              },
+            };
+          });
+        }
+      }
+
       setHasConsented(true);
     } catch (err) {
       console.error("Start assessment error:", err);
@@ -702,17 +749,19 @@ export function AssessmentDocumentReader({
     }
   };
 
-  // Final submit handler
+  // Final submit handler with duplicate submission prevention
   const handleFinalSubmit = async () => {
-    if (!data?.submission?.id || isReadOnly) return;
+    if (isSubmittingRef.current || !data?.submission?.id || isReadOnly) return;
+    isSubmittingRef.current = true;
     setIsSubmitting(true);
+    setSubmitSuccessMessage(null);
     try {
       await flushCurrentDrafts();
 
       const res = await submitAssessmentAction(data.submission.id);
       if (res.success) {
         setSubmitted(true);
-        setIsSubmitModalOpen(false);
+        setSubmitSuccessMessage("Assessment successfully submitted! Redirecting...");
         setLastSaved(
           `Finalized at ${new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit" })}`
         );
@@ -736,10 +785,12 @@ export function AssessmentDocumentReader({
 
         window.location.href = `/dashboard/contests/${targetContestId}`;
       } else {
+        isSubmittingRef.current = false;
         // Prevent premature redirection on failure
         alert(`Submission error: ${res.error || "Failed to finalize submission. Please try again."}`);
       }
     } catch (err) {
+      isSubmittingRef.current = false;
       console.error("Submit error:", err);
       alert(`Submission error: ${err instanceof Error ? err.message : "An unexpected error occurred during submission."}`);
     } finally {
@@ -816,7 +867,7 @@ export function AssessmentDocumentReader({
   ).length;
 
   return (
-    <div className="min-h-screen bg-white text-[#191c1e] flex flex-col justify-between selection:bg-emerald-100 selection:text-emerald-900">
+    <div className="min-h-screen bg-white text-[#191c1e] flex flex-col justify-between selection:bg-emerald-100 selection:text-emerald-900 pt-16">
       <ParticipantHeader />
 
       {/* Proctoring Consent / Orientation Modal */}
@@ -838,16 +889,32 @@ export function AssessmentDocumentReader({
             </div>
 
             <div className="space-y-3 text-sm text-[#191c1e] bg-[#f8fafc] p-4 rounded-xl border border-[#e2e8f0] leading-relaxed">
-              <div className="flex items-start gap-2.5">
-                <span className="material-symbols-outlined text-[#15803d] text-[18px] shrink-0 mt-0.5">
-                  timer
-                </span>
-                <p>
-                  <strong>Live Timer:</strong> Authoritatively synchronized with{" "}
-                  <strong>Asia/Dhaka (UTC+06:00)</strong>. Extensions granted by administrators
-                  will automatically update your timer.
-                </p>
-              </div>
+              {data.task.isTimed && data.task.durationMinutes ? (
+                <div className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900">
+                  <span className="material-symbols-outlined text-amber-700 text-[20px] shrink-0 mt-0.5">
+                    alarm
+                  </span>
+                  <div className="text-xs">
+                    <strong className="block font-semibold text-amber-950">
+                      Individual Assessment Timer: {data.task.durationMinutes} Minutes
+                    </strong>
+                    <span className="text-amber-900 leading-normal">
+                      Your individual countdown starts immediately upon clicking below. The timer runs continuously and cannot be paused. When time reaches zero, your assessment will be submitted automatically.
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-start gap-2.5">
+                  <span className="material-symbols-outlined text-[#15803d] text-[18px] shrink-0 mt-0.5">
+                    timer
+                  </span>
+                  <p>
+                    <strong>Live Timer:</strong> Authoritatively synchronized with{" "}
+                    <strong>Asia/Dhaka (UTC+06:00)</strong>. Extensions granted by administrators
+                    will automatically update your timer.
+                  </p>
+                </div>
+              )}
               <div className="flex items-start gap-2.5">
                 <span className="material-symbols-outlined text-[#15803d] text-[18px] shrink-0 mt-0.5">
                   cloud_done
@@ -928,7 +995,11 @@ export function AssessmentDocumentReader({
                   </>
                 ) : (
                   <>
-                    <span>I Acknowledge Rules & Begin Unit</span>
+                    <span>
+                      {data.task.isTimed && data.task.durationMinutes
+                        ? `Start Assessment (${data.task.durationMinutes}m)`
+                        : "I Acknowledge Rules & Begin Unit"}
+                    </span>
                     <span className="material-symbols-outlined text-[16px]">arrow_forward</span>
                   </>
                 )}
@@ -948,7 +1019,7 @@ export function AssessmentDocumentReader({
       />
 
       {/* Sticky Top HUD */}
-      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-[#e2e8f0] shadow-2xs text-[#191c1e]">
+      <header className="sticky top-16 z-30 bg-white/95 backdrop-blur-md border-b border-[#e2e8f0] shadow-2xs text-[#191c1e]">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           {/* Left: Breadcrumbs & Task Title */}
           <div className="flex items-center gap-3 min-w-0">
@@ -1000,7 +1071,7 @@ export function AssessmentDocumentReader({
               {data.task.totalPoints} pts
             </div>
 
-            {/* Asia/Dhaka Live Timer Badge */}
+            {/* Asia/Dhaka Live Timer Badge in MM:SS */}
             <div
               className={`flex items-center gap-2 px-3 py-1.5 rounded-lg font-mono text-xs font-semibold tabular-nums border transition-colors shadow-2xs ${
                 timer.isEnded || isReadOnly
@@ -1014,11 +1085,11 @@ export function AssessmentDocumentReader({
               title={`Effective Deadline: ${timer.dhakaDeadline} (Asia/Dhaka)`}
             >
               <span className="material-symbols-outlined text-[16px]">
-                {timer.isEnded ? "lock_clock" : "schedule"}
+                {timer.isEnded ? "lock_clock" : timer.isCritical ? "alarm" : "schedule"}
               </span>
-              <span>{timer.formattedTimer}</span>
-              <span className="text-[10px] uppercase font-sans font-normal opacity-75 hidden lg:inline">
-                Asia/Dhaka
+              <span className="font-bold text-sm sm:text-xs">{timer.formattedMmSs}</span>
+              <span className="text-[10px] uppercase font-sans font-normal opacity-75 hidden sm:inline">
+                {data.task.durationMinutes ? `${data.task.durationMinutes}m limit` : "Asia/Dhaka"}
               </span>
             </div>
           </div>
@@ -1056,17 +1127,51 @@ export function AssessmentDocumentReader({
           </div>
         )}
 
+        {/* Unstarted Timed Assessment Action Banner */}
+        {data.task.isTimed && !data.task.hasAttemptStarted && !isReadOnly && !submitted && (
+          <div className="p-6 rounded-2xl bg-amber-50/80 border border-amber-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-2xs">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center shrink-0">
+                <span className="material-symbols-outlined text-[24px]">timer</span>
+              </div>
+              <div className="flex flex-col">
+                <h3 className="text-sm sm:text-base font-bold text-amber-950">
+                  Individual Assessment Time Limit: {data.task.durationMinutes} Minutes
+                </h3>
+                <p className="text-xs text-amber-800 mt-0.5 max-w-lg">
+                  Click below to begin your timed attempt. The countdown runs authoritatively and answers are automatically saved.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={handleAcknowledgeAndStart}
+              disabled={isStartingAssessment}
+              className="px-5 py-2.5 rounded-xl bg-[#15803d] hover:bg-[#166534] text-white font-semibold text-sm transition-colors shadow-2xs flex items-center gap-2 shrink-0 cursor-pointer disabled:opacity-60"
+            >
+              <span className="material-symbols-outlined text-[18px]">play_arrow</span>
+              <span>Start Assessment ({data.task.durationMinutes}m)</span>
+            </button>
+          </div>
+        )}
+
         {/* Read-Only / Concluded Banner if applicable */}
         {isReadOnly && (
           <div className="p-4 rounded-xl bg-[#f8fafc] border border-[#e2e8f0] flex items-center gap-3 text-[#191c1e]">
-            <span className="material-symbols-outlined text-[#545f73] text-[22px]">lock</span>
+            <span className="material-symbols-outlined text-[#545f73] text-[22px]">
+              {timer.isEnded ? "lock_clock" : "lock"}
+            </span>
             <div className="text-xs sm:text-sm">
               <strong className="font-semibold text-[#191c1e]">
-                {submitted ? "Submission Finalized" : "Contest Concluded"}
+                {timer.isEnded
+                  ? "Assessment Time Expired — Automatically Submitted"
+                  : submitted
+                  ? "Submission Finalized"
+                  : "Contest Concluded"}
               </strong>
               <p className="text-[#545f73] mt-0.5">
-                This unit is currently in read-only mode. Your answers are safely recorded in the
-                evaluation system.
+                {timer.isEnded
+                  ? "Your allowed time for this assessment has expired. All your saved responses were automatically finalized and encrypted."
+                  : "This unit is currently in read-only mode. Your answers are safely recorded in the evaluation system."}
               </p>
             </div>
           </div>
@@ -1089,6 +1194,107 @@ export function AssessmentDocumentReader({
           <h1 className="text-2xl sm:text-3xl font-bold text-[#191c1e] tracking-tight">
             {data.task.title}
           </h1>
+
+          {/* Individual Assessment Countdown Timer Card */}
+          <div
+            className={`p-4 sm:p-5 rounded-xl border transition-all ${
+              timer.isEnded || isReadOnly
+                ? "bg-slate-50 border-slate-200 text-slate-700"
+                : timer.isCritical
+                ? "bg-rose-50/90 border-rose-300 text-rose-950 ring-2 ring-rose-300/40 shadow-xs"
+                : timer.isUrgent
+                ? "bg-amber-50/90 border-amber-300 text-amber-950 ring-2 ring-amber-300/40 shadow-xs"
+                : "bg-emerald-50/60 border-emerald-200 text-[#14532d] shadow-2xs"
+            }`}
+          >
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex items-start gap-3">
+                <div
+                  className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 border ${
+                    timer.isEnded || isReadOnly
+                      ? "bg-slate-200 text-slate-600 border-slate-300"
+                      : timer.isCritical
+                      ? "bg-rose-100 text-rose-700 border-rose-300 animate-pulse"
+                      : timer.isUrgent
+                      ? "bg-amber-100 text-amber-800 border-amber-300"
+                      : "bg-[#dcfce7] text-[#15803d] border-[#bbf7d0]"
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-[24px]">
+                    {timer.isEnded || isReadOnly ? "lock_clock" : timer.isCritical ? "alarm" : "timer"}
+                  </span>
+                </div>
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-bold uppercase tracking-wider">
+                      {timer.isEnded || isReadOnly
+                        ? "Assessment Concluded"
+                        : timer.isCritical
+                        ? "Critical: Final Minute!"
+                        : timer.isUrgent
+                        ? "Warning: Under 5 Minutes Remaining"
+                        : "Individual Assessment Timer"}
+                    </span>
+                    {data.task.durationMinutes ? (
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[11px] font-semibold font-mono border ${
+                          timer.isEnded || isReadOnly
+                            ? "bg-slate-200/80 text-slate-700 border-slate-300"
+                            : timer.isCritical
+                            ? "bg-rose-100 text-rose-800 border-rose-300"
+                            : timer.isUrgent
+                            ? "bg-amber-100 text-amber-900 border-amber-300"
+                            : "bg-[#bbf7d0] text-[#14532d] border-[#86efac]"
+                        }`}
+                      >
+                        {data.task.durationMinutes}m limit
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-600 border border-slate-200">
+                        Standard Window
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs mt-1 text-[#545f73]">
+                    {timer.isEnded || isReadOnly
+                      ? "Time has expired. Answers have been locked and submitted for evaluation."
+                      : timer.isCritical
+                      ? "Less than 1 minute left! Answers will be finalized automatically when the timer reaches 00:00."
+                      : timer.isUrgent
+                      ? "Less than 5 minutes remaining. Please review your answers before time expires."
+                      : "Your individual countdown runs continuously. Responses are saved automatically as you write."}
+                  </p>
+                </div>
+              </div>
+
+              {/* Right: Tabular MM:SS Timer */}
+              <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-center border-t sm:border-t-0 pt-2.5 sm:pt-0 border-slate-200/60 shrink-0">
+                <div
+                  className={`font-mono text-3xl sm:text-4xl font-extrabold tracking-tight tabular-nums ${
+                    timer.isEnded || isReadOnly
+                      ? "text-slate-500"
+                      : timer.isCritical
+                      ? "text-rose-700 animate-pulse"
+                      : timer.isUrgent
+                      ? "text-amber-700"
+                      : "text-[#15803d]"
+                  }`}
+                >
+                  {timer.formattedMmSs}
+                </div>
+                <div className="text-[11px] font-medium text-[#545f73] flex items-center gap-1">
+                  <span className="material-symbols-outlined text-[13px]">schedule</span>
+                  <span>
+                    {timer.isEnded
+                      ? "00:00 (Expired)"
+                      : timer.deadlineIso
+                      ? `Ends at ${new Date(timer.deadlineIso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+                      : "Active"}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
 
           {data.task.instructions && (
             <div className="text-sm sm:text-base text-[#191c1e] leading-relaxed pt-2 border-t border-[#e2e8f0]">
@@ -1555,7 +1761,7 @@ export function AssessmentDocumentReader({
             ) : (
               <button
                 type="button"
-                disabled={isReadOnly}
+                disabled={isReadOnly || isSubmitting || Boolean(submitSuccessMessage)}
                 onClick={() => setIsSubmitModalOpen(true)}
                 className="px-5 py-2 rounded-lg bg-[#15803d] hover:bg-[#166534] text-white font-medium text-xs sm:text-sm transition-colors shadow-2xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
               >
@@ -1615,22 +1821,34 @@ export function AssessmentDocumentReader({
               change your answers unless an administrator grants an extension.
             </p>
 
+            {submitSuccessMessage && (
+              <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-800 flex items-center gap-2 animate-in fade-in">
+                <span className="material-symbols-outlined text-[16px] text-emerald-600 shrink-0">check_circle</span>
+                <span className="font-medium">{submitSuccessMessage}</span>
+              </div>
+            )}
+
             <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-[#e2e8f0]">
               <button
                 type="button"
                 onClick={() => setIsSubmitModalOpen(false)}
-                disabled={isSubmitting}
-                className="px-4 py-2 text-xs font-medium rounded-lg border border-[#e2e8f0] text-[#191c1e] hover:bg-[#f2f4f6] transition-colors"
+                disabled={isSubmitting || Boolean(submitSuccessMessage)}
+                className="px-4 py-2 text-xs font-medium rounded-lg border border-[#e2e8f0] text-[#191c1e] hover:bg-[#f2f4f6] transition-colors disabled:opacity-50"
               >
                 Review Answers
               </button>
               <button
                 type="button"
                 onClick={handleFinalSubmit}
-                disabled={isSubmitting}
+                disabled={isSubmitting || Boolean(submitSuccessMessage)}
                 className="px-5 py-2 text-xs font-medium rounded-lg bg-[#15803d] hover:bg-[#166534] text-white transition-colors shadow-2xs flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
               >
-                {isSubmitting ? (
+                {submitSuccessMessage ? (
+                  <>
+                    <span className="material-symbols-outlined text-[16px]">check_circle</span>
+                    <span>Submitted!</span>
+                  </>
+                ) : isSubmitting ? (
                   <>
                     <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
                     <span>Submitting...</span>
@@ -1642,6 +1860,47 @@ export function AssessmentDocumentReader({
                   </>
                 )}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Auto-submission Expired Modal */}
+      {timer.isEnded && !hasDismissedExpiredModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-[#e2e8f0] rounded-2xl shadow-xl max-w-md w-full p-6 flex flex-col gap-4 text-[#191c1e] animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-start gap-3.5">
+              <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-700 flex items-center justify-center shrink-0 border border-amber-200">
+                <span className="material-symbols-outlined text-[24px]">alarm_off</span>
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-[#191c1e]">
+                  Assessment Time Limit Reached
+                </h3>
+                <p className="text-xs text-[#545f73] mt-0.5">
+                  Your individual assessment time has concluded.
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-[#545f73] leading-relaxed bg-[#f8fafc] p-3.5 rounded-xl border border-[#e2e8f0]">
+              All answers you provided prior to time expiry have been safely finalized and automatically submitted to the evaluation system. Further edits are disabled.
+            </p>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-[#e2e8f0]">
+              <button
+                type="button"
+                onClick={() => setHasDismissedExpiredModal(true)}
+                className="px-4 py-2 text-xs font-medium rounded-lg border border-[#e2e8f0] text-[#191c1e] hover:bg-[#f2f4f6] transition-colors"
+              >
+                Review Saved Answers
+              </button>
+              <Link
+                href={`/dashboard/contests/${data.contest.id}`}
+                className="px-4 py-2 text-xs font-semibold rounded-lg bg-[#15803d] hover:bg-[#166534] text-white transition-colors"
+              >
+                Return to Curriculum
+              </Link>
             </div>
           </div>
         </div>

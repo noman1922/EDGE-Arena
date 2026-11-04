@@ -6,23 +6,25 @@ import { getContestDeadlineAction } from "@/app/actions/assessment-actions";
 export interface UseContestTimerOptions {
   contestId?: string;
   phaseId?: string;
+  taskId?: string;
+  submissionId?: string;
   initialDeadlineIso?: string;
   initialSecondsLeft?: number;
   isContestEndedInitial?: boolean;
   heartbeatIntervalMs?: number;
   onDeadlineExtended?: (newDeadlineIso: string) => void;
+  onTimerExpired?: () => void;
+}
+
+export function formatSecondsToMmSs(totalSeconds: number): string {
+  if (totalSeconds <= 0) return "00:00";
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
 }
 
 export function formatSecondsToTimer(totalSeconds: number): string {
-  if (totalSeconds <= 0) return "00:00:00";
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  return [
-    hours.toString().padStart(2, "0"),
-    minutes.toString().padStart(2, "0"),
-    seconds.toString().padStart(2, "0"),
-  ].join(":");
+  return formatSecondsToMmSs(totalSeconds);
 }
 
 export function formatDhakaDisplay(dateString?: string): string {
@@ -46,11 +48,14 @@ export function formatDhakaDisplay(dateString?: string): string {
 export function useContestTimer({
   contestId,
   phaseId,
+  taskId,
+  submissionId,
   initialDeadlineIso,
   initialSecondsLeft,
   isContestEndedInitial = false,
   heartbeatIntervalMs = 30000,
   onDeadlineExtended,
+  onTimerExpired,
 }: UseContestTimerOptions) {
   const [deadlineIso, setDeadlineIso] = useState<string>(initialDeadlineIso || "");
   const [secondsLeft, setSecondsLeft] = useState<number>(() => {
@@ -68,10 +73,15 @@ export function useContestTimer({
   const [prevInitialSeconds, setPrevInitialSeconds] = useState(initialSecondsLeft);
 
   const deadlineRef = useRef<string>(deadlineIso);
+  const onTimerExpiredRef = useRef(onTimerExpired);
 
   useEffect(() => {
     deadlineRef.current = deadlineIso;
   }, [deadlineIso]);
+
+  useEffect(() => {
+    onTimerExpiredRef.current = onTimerExpired;
+  }, [onTimerExpired]);
 
   if (initialDeadlineIso !== prevInitialDeadline) {
     setPrevInitialDeadline(initialDeadlineIso);
@@ -97,6 +107,7 @@ export function useContestTimer({
       setSecondsLeft((prev) => {
         if (prev <= 1) {
           setLocalEnded(true);
+          onTimerExpiredRef.current?.();
           return 0;
         }
         return prev - 1;
@@ -111,7 +122,7 @@ export function useContestTimer({
     if (!contestId) return;
 
     try {
-      const res = await getContestDeadlineAction(contestId, phaseId);
+      const res = await getContestDeadlineAction(contestId, phaseId, taskId, submissionId);
       if (res.success && res.deadline) {
         const previousDeadlineMs = deadlineRef.current ? new Date(deadlineRef.current).getTime() : 0;
         const newDeadlineMs = new Date(res.deadline).getTime();
@@ -126,13 +137,16 @@ export function useContestTimer({
         setDeadlineIso(res.deadline);
         deadlineRef.current = res.deadline;
         setSecondsLeft(res.secondsLeft);
-        setLocalEnded(res.isConcluded || res.secondsLeft <= 0);
+        if (res.isConcluded || res.secondsLeft <= 0) {
+          setLocalEnded(true);
+          onTimerExpiredRef.current?.();
+        }
       }
     } catch (err) {
       // Graceful fallback: maintain local countdown on network jitter
       console.warn("Timer heartbeat background sync skipped:", err);
     }
-  }, [contestId, phaseId, onDeadlineExtended]);
+  }, [contestId, phaseId, taskId, submissionId, onDeadlineExtended]);
 
   // Background heartbeat polling (every 30s) + focus re-sync
   useEffect(() => {
@@ -160,8 +174,8 @@ export function useContestTimer({
     setHasExtended(false);
   }, []);
 
-  const isUrgent = secondsLeft > 300 && secondsLeft <= 900;
-  const isCritical = secondsLeft > 0 && secondsLeft <= 300;
+  const isUrgent = secondsLeft > 60 && secondsLeft <= 300;
+  const isCritical = secondsLeft > 0 && secondsLeft <= 60;
 
   return {
     secondsLeft,
@@ -169,6 +183,7 @@ export function useContestTimer({
     isUrgent,
     isCritical,
     formattedTimer: formatSecondsToTimer(secondsLeft),
+    formattedMmSs: formatSecondsToMmSs(secondsLeft),
     deadlineIso,
     formattedDeadline: formatDhakaDisplay(deadlineIso),
     dhakaDeadline: formatDhakaDisplay(deadlineIso),

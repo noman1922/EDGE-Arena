@@ -37,6 +37,10 @@ const EvaluatorAllocationPanel = dynamic(
   () => import("@/components/admin/evaluator-allocation-panel").then((m) => m.EvaluatorAllocationPanel),
   { ssr: false }
 );
+const EditPhaseModal = dynamic(
+  () => import("@/components/modals/edit-phase-modal").then((m) => m.EditPhaseModal),
+  { ssr: false }
+);
 
 /**
  * Returns a YYYY-MM-DDTHH:mm string in Asia/Dhaka timezone (UTC+6)
@@ -79,6 +83,7 @@ export default function ContestManagementPage() {
   const [newEndDate, setNewEndDate] = useState("");
   const [newStatus, setNewStatus] = useState<"LIVE" | "DRAFT">("LIVE");
   const [newEnforceSequentialProgress, setNewEnforceSequentialProgress] = useState(true);
+  const [newDurationMinutes, setNewDurationMinutes] = useState("");
   const [isSubmittingContest, setIsSubmittingContest] = useState(false);
 
   // Participant Enrollment State (inside drawer)
@@ -113,10 +118,24 @@ export default function ContestManagementPage() {
   const [editEndDate, setEditEndDate] = useState("");
   const [editStatus, setEditStatus] = useState<"DRAFT" | "LIVE" | "COMPLETED" | "ARCHIVED">("LIVE");
   const [editEnforceSequentialProgress, setEditEnforceSequentialProgress] = useState(true);
+  const [editDurationMinutes, setEditDurationMinutes] = useState("");
   const [isSubmittingEdit, setIsSubmittingEdit] = useState(false);
   const [monitoringSettings, setMonitoringSettings] = useState<ContestMonitoringSettings>(DEFAULT_MONITORING_SETTINGS);
   const [isSavingMonitoring, setIsSavingMonitoring] = useState(false);
   const [monitoringSaveSuccess, setMonitoringSaveSuccess] = useState(false);
+
+  // Edit Phase Modal State
+  const [editingPhase, setEditingPhase] = useState<{
+    id: string;
+    contestId: string;
+    phaseNumber: number;
+    title: string;
+    description?: string | null;
+    weightPercentage?: number;
+    deadline?: string;
+    status?: "UPCOMING" | "OPEN" | "EVALUATING" | "CLOSED";
+  } | null>(null);
+  const [isEditPhaseModalOpen, setIsEditPhaseModalOpen] = useState(false);
 
   // Universal Delete Confirmation Modal State
   const [deleteModalState, setDeleteModalState] = useState<{
@@ -206,6 +225,7 @@ export default function ContestManagementPage() {
   const openCreateModal = () => {
     setNewTitle("");
     setNewDescription("");
+    setNewDurationMinutes("");
     setNewStartDate(getDhakaDateTimeString(new Date()));
     setNewEndDate(getDhakaDateTimeString(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)));
     setIsCreateModalOpen(true);
@@ -244,6 +264,12 @@ export default function ContestManagementPage() {
       return;
     }
 
+    const durVal = newDurationMinutes.trim() ? parseInt(newDurationMinutes.trim(), 10) : null;
+    if (durVal !== null && (isNaN(durVal) || durVal <= 0 || durVal > 1440)) {
+      alert("Assessment duration must be a positive number between 1 and 1440 minutes.");
+      return;
+    }
+
     try {
       setIsSubmittingContest(true);
       const res = await createContestAction({
@@ -255,12 +281,14 @@ export default function ContestManagementPage() {
         status: newStatus,
         cohortCode: "CLP-2025",
         enforceSequentialProgress: newEnforceSequentialProgress,
+        durationMinutes: durVal,
       });
 
       if (res.success) {
         setIsCreateModalOpen(false);
         setNewTitle("");
         setNewDescription("");
+        setNewDurationMinutes("");
         await fetchContests();
       } else {
         alert(`Failed to create contest: ${res.error}`);
@@ -424,6 +452,7 @@ export default function ContestManagementPage() {
     setEditDescription(c.description || "");
     setEditStatus(c.status as "DRAFT" | "LIVE" | "COMPLETED" | "ARCHIVED");
     setEditEnforceSequentialProgress(c.enforceSequentialProgress ?? true);
+    setEditDurationMinutes(c.durationMinutes ? String(c.durationMinutes) : "");
     try {
       if (c.startDateIso) {
         setEditStartDate(getDhakaDateTimeString(new Date(c.startDateIso)));
@@ -446,6 +475,12 @@ export default function ContestManagementPage() {
       return;
     }
 
+    const durVal = editDurationMinutes.trim() ? parseInt(editDurationMinutes.trim(), 10) : null;
+    if (durVal !== null && (isNaN(durVal) || durVal <= 0 || durVal > 1440)) {
+      alert("Assessment duration must be a positive number between 1 and 1440 minutes.");
+      return;
+    }
+
     try {
       setIsSubmittingEdit(true);
       const res = await updateContestAction(editId, {
@@ -454,6 +489,7 @@ export default function ContestManagementPage() {
         description: editDescription.trim() || undefined,
         status: editStatus,
         enforceSequentialProgress: editEnforceSequentialProgress,
+        durationMinutes: durVal,
         ...(editStartDate ? { startDate: new Date(editStartDate).toISOString() } : {}),
         ...(editEndDate ? { endDate: new Date(editEndDate).toISOString() } : {}),
       });
@@ -711,9 +747,17 @@ export default function ContestManagementPage() {
                                 open_in_new
                               </span>
                             </div>
-                            <span className="font-label-sm text-secondary truncate mt-0.5">
-                              {c.stage}
-                            </span>
+                            <div className="flex items-center gap-1.5 mt-0.5">
+                              <span className="font-label-sm text-secondary truncate">
+                                {c.stage}
+                              </span>
+                              {c.durationMinutes && (
+                                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded text-[10px] font-mono font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 shrink-0">
+                                  <span className="material-symbols-outlined text-[11px]">timer</span>
+                                  {c.durationMinutes}m
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </td>
@@ -1036,6 +1080,75 @@ export default function ContestManagementPage() {
                 />
               </div>
 
+              {/* Individual Assessment Time Limit */}
+              <div className="p-3.5 rounded-lg bg-surface-container-low border border-[#e2e8f0] flex flex-col gap-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-[16px] text-primary-container">timer</span>
+                    <label className="font-label-xs text-secondary uppercase font-semibold">
+                      Assessment Time Limit
+                    </label>
+                  </div>
+                  <span className="text-[11px] font-mono font-semibold text-primary-container">
+                    {newDurationMinutes ? `${newDurationMinutes} Minutes per attempt` : "No timer (Full window)"}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={1}
+                    max={1440}
+                    placeholder="Enter minutes (e.g. 30, 45, 60)"
+                    value={newDurationMinutes}
+                    onChange={(e) => setNewDurationMinutes(e.target.value)}
+                    className="w-full px-3 py-1.5 rounded bg-surface-container-lowest border border-[#e2e8f0] text-on-surface font-body-sm focus:outline-none focus:border-primary-container"
+                  />
+                  {newDurationMinutes && (
+                    <button
+                      type="button"
+                      onClick={() => setNewDurationMinutes("")}
+                      className="px-2.5 py-1.5 text-xs rounded border border-[#e2e8f0] bg-surface-container-high hover:bg-surface-container text-secondary shrink-0"
+                      title="Clear time limit"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                  <span className="text-[10px] uppercase font-semibold text-secondary mr-1">Presets:</span>
+                  {[15, 30, 45, 60, 90].map((mins) => (
+                    <button
+                      key={mins}
+                      type="button"
+                      onClick={() => setNewDurationMinutes(String(mins))}
+                      className={`px-2 py-0.5 rounded text-xs font-mono transition-colors ${
+                        newDurationMinutes === String(mins)
+                          ? "bg-[#15803d] text-white font-bold"
+                          : "bg-surface-container-lowest hover:bg-surface-container border border-[#e2e8f0] text-on-surface"
+                      }`}
+                    >
+                      {mins}m
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setNewDurationMinutes("")}
+                    className={`px-2 py-0.5 rounded text-xs font-mono transition-colors ${
+                      !newDurationMinutes
+                        ? "bg-slate-700 text-white font-bold"
+                        : "bg-surface-container-lowest hover:bg-surface-container border border-[#e2e8f0] text-secondary"
+                    }`}
+                  >
+                    No Limit
+                  </button>
+                </div>
+                <span className="text-[10px] text-secondary">
+                  When set, each participant receives an individual countdown timer that begins only when they explicitly click Start Assessment.
+                </span>
+              </div>
+
               <div className="flex items-center justify-end gap-3 pt-4 border-t border-[#e2e8f0]">
                 <button
                   type="button"
@@ -1176,6 +1289,113 @@ export default function ContestManagementPage() {
                 >
                   {selectedContest.enforceSequentialProgress ? "Disable Lock" : "Enable Lock"}
                 </button>
+              </div>
+
+              {/* Assessment Time Limit Quick View & Edit */}
+              <div className="flex items-center justify-between p-3 rounded-lg bg-surface-container-low border border-[#e2e8f0] my-2">
+                <div className="flex items-center gap-2.5">
+                  <span className="material-symbols-outlined text-[18px] text-[#15803d]">
+                    timer
+                  </span>
+                  <div className="flex flex-col">
+                    <span className="text-xs font-semibold text-on-surface">
+                      {selectedContest.durationMinutes
+                        ? `Assessment Time Limit: ${selectedContest.durationMinutes} Minutes`
+                        : "No Time Limit Configured"}
+                    </span>
+                    <span className="text-[10px] text-secondary">
+                      {selectedContest.durationMinutes
+                        ? "Individual countdown begins when candidate clicks Start Assessment"
+                        : "Candidates can submit anytime before contest end date"}
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => openEditModal(selectedContest)}
+                  className="px-2.5 py-1 rounded text-xs font-semibold border border-[#e2e8f0] bg-surface-container-high hover:bg-surface-container text-on-surface transition-colors cursor-pointer shrink-0"
+                >
+                  Configure
+                </button>
+              </div>
+
+              {/* Curriculum Stages & Phases */}
+              <div className="bg-surface-container-low p-4 rounded-lg border border-[#e2e8f0] my-2">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-[16px] text-primary-container">account_tree</span>
+                    <span className="font-label-xs uppercase tracking-wider text-secondary font-semibold">
+                      Curriculum Stages & Phases ({selectedContest.phases?.length || 0})
+                    </span>
+                  </div>
+                  <Link
+                    href="/admin/tasks"
+                    className="text-xs text-primary-container hover:underline font-semibold flex items-center gap-0.5"
+                  >
+                    <span>Architect in Builder</span>
+                    <span className="material-symbols-outlined text-[13px]">open_in_new</span>
+                  </Link>
+                </div>
+
+                {(!selectedContest.phases || selectedContest.phases.length === 0) ? (
+                  <div className="p-4 bg-surface-container-lowest rounded border border-[#e2e8f0] text-center text-secondary text-xs">
+                    No phases configured yet for this contest.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {selectedContest.phases.map((ph) => (
+                      <div
+                        key={ph.id}
+                        className="p-3 bg-surface-container-lowest rounded-lg border border-[#e2e8f0] flex items-center justify-between gap-3 hover:border-primary-container/40 transition-colors"
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <span className="w-6 h-6 rounded-full bg-primary-container text-on-primary font-mono text-xs flex items-center justify-center font-bold shrink-0">
+                            {ph.phaseNumber}
+                          </span>
+                          <div className="flex flex-col min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-label-sm font-semibold text-on-surface truncate">
+                                {ph.title}
+                              </span>
+                              <span className={`px-1.5 py-0.2 rounded text-[10px] font-semibold ${
+                                ph.status === "OPEN"
+                                  ? "bg-emerald-100 text-emerald-800"
+                                  : ph.status === "UPCOMING"
+                                  ? "bg-surface-container-high text-secondary"
+                                  : "bg-amber-100 text-amber-800"
+                              }`}>
+                                {ph.status}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2 text-[11px] text-secondary mt-0.5">
+                              <span>Weight: {ph.weightPercentage}%</span>
+                              <span>•</span>
+                              <span>{ph.tasksCount} task{ph.tasksCount === 1 ? "" : "s"}</span>
+                              {ph.deadline && (
+                                <>
+                                  <span>•</span>
+                                  <span className="truncate">Deadline: {new Date(ph.deadline).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "Asia/Dhaka" })}</span>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingPhase(ph);
+                            setIsEditPhaseModalOpen(true);
+                          }}
+                          className="px-2.5 py-1 rounded text-xs font-semibold border border-[#e2e8f0] bg-surface-container-high hover:bg-surface-container text-on-surface transition-colors cursor-pointer flex items-center gap-1 shrink-0"
+                          title="Edit Phase Title, Weight, and Stage Settings"
+                        >
+                          <span className="material-symbols-outlined text-[13px] text-primary-container">edit</span>
+                          <span>Edit Phase</span>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* Participant Enrollment Hub */}
@@ -2105,6 +2325,75 @@ export default function ContestManagementPage() {
                 />
               </div>
 
+              {/* Individual Assessment Time Limit */}
+              <div className="p-3.5 rounded-lg bg-surface-container-low border border-[#e2e8f0] flex flex-col gap-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-[16px] text-primary-container">timer</span>
+                    <label className="font-label-xs text-secondary uppercase font-semibold">
+                      Assessment Time Limit
+                    </label>
+                  </div>
+                  <span className="text-[11px] font-mono font-semibold text-primary-container">
+                    {editDurationMinutes ? `${editDurationMinutes} Minutes per attempt` : "No timer (Full window)"}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={1}
+                    max={1440}
+                    placeholder="Enter minutes (e.g. 30, 45, 60)"
+                    value={editDurationMinutes}
+                    onChange={(e) => setEditDurationMinutes(e.target.value)}
+                    className="w-full px-3 py-1.5 rounded bg-surface-container-lowest border border-[#e2e8f0] text-on-surface font-body-sm focus:outline-none focus:border-primary-container"
+                  />
+                  {editDurationMinutes && (
+                    <button
+                      type="button"
+                      onClick={() => setEditDurationMinutes("")}
+                      className="px-2.5 py-1.5 text-xs rounded border border-[#e2e8f0] bg-surface-container-high hover:bg-surface-container text-secondary shrink-0"
+                      title="Clear time limit"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                  <span className="text-[10px] uppercase font-semibold text-secondary mr-1">Presets:</span>
+                  {[15, 30, 45, 60, 90].map((mins) => (
+                    <button
+                      key={mins}
+                      type="button"
+                      onClick={() => setEditDurationMinutes(String(mins))}
+                      className={`px-2 py-0.5 rounded text-xs font-mono transition-colors ${
+                        editDurationMinutes === String(mins)
+                          ? "bg-[#15803d] text-white font-bold"
+                          : "bg-surface-container-lowest hover:bg-surface-container border border-[#e2e8f0] text-on-surface"
+                      }`}
+                    >
+                      {mins}m
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setEditDurationMinutes("")}
+                    className={`px-2 py-0.5 rounded text-xs font-mono transition-colors ${
+                      !editDurationMinutes
+                        ? "bg-slate-700 text-white font-bold"
+                        : "bg-surface-container-lowest hover:bg-surface-container border border-[#e2e8f0] text-secondary"
+                    }`}
+                  >
+                    No Limit
+                  </button>
+                </div>
+                <span className="text-[10px] text-secondary">
+                  Updating duration applies to new attempts. Active attempts preserve their existing server-recorded deadlines.
+                </span>
+              </div>
+
               <div className="flex items-center justify-end gap-3 pt-4 border-t border-[#e2e8f0]">
                 <button
                   type="button"
@@ -2136,6 +2425,24 @@ export default function ContestManagementPage() {
         isDeleting={isDeletingContest}
         onConfirm={deleteModalState.onConfirm}
         onClose={() => setDeleteModalState((prev) => ({ ...prev, isOpen: false }))}
+      />
+
+      {/* Edit Phase Modal */}
+      <EditPhaseModal
+        isOpen={isEditPhaseModalOpen}
+        phase={editingPhase}
+        onClose={() => {
+          setIsEditPhaseModalOpen(false);
+          setEditingPhase(null);
+        }}
+        onSuccess={async () => {
+          await fetchContests();
+          if (selectedContest) {
+            // refresh selected contest view
+            const updated = contests.find((c) => c.id === selectedContest.id);
+            if (updated) setSelectedContest(updated);
+          }
+        }}
       />
     </div>
   );

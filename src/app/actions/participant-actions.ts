@@ -597,6 +597,134 @@ export async function updateParticipantStatusAction(
   }
 }
 
+export interface UpdateParticipantByAdminInput {
+  userId: string;
+  name: string;
+  institution?: string | null;
+  candidateId?: string | null;
+}
+
+export async function updateParticipantByAdminAction(
+  input: UpdateParticipantByAdminInput
+): Promise<{ success: boolean; error?: string; user?: AdminParticipantItem }> {
+  try {
+    const session = await requireRole(["ADMIN"]);
+
+    if (!input || !input.userId) {
+      return { success: false, error: "Participant ID is required." };
+    }
+
+    const trimmedName = input.name?.trim();
+    if (!trimmedName || trimmedName.length < 2) {
+      return { success: false, error: "Full name must be at least 2 characters long." };
+    }
+    if (trimmedName.length > 100) {
+      return { success: false, error: "Full name cannot exceed 100 characters." };
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: input.userId },
+      include: {
+        cohort: true,
+        participants: { include: { contest: true } },
+        submissions: true,
+      },
+    });
+
+    if (!user) {
+      return { success: false, error: "Participant not found." };
+    }
+
+    // Candidate ID uniqueness check if updated
+    let targetCandidateId = user.candidateId;
+    if (input.candidateId !== undefined) {
+      const trimmedCandidateId = input.candidateId?.trim() || null;
+      if (trimmedCandidateId && trimmedCandidateId !== user.candidateId) {
+        const conflict = await prisma.user.findFirst({
+          where: {
+            candidateId: trimmedCandidateId,
+            id: { not: user.id },
+          },
+        });
+        if (conflict) {
+          return {
+            success: false,
+            error: `Candidate ID "${trimmedCandidateId}" is already assigned to another user (${conflict.email}).`,
+          };
+        }
+      }
+      targetCandidateId = trimmedCandidateId;
+    }
+
+    let targetInstitution = user.institution;
+    if (input.institution !== undefined) {
+      const inst = input.institution?.trim();
+      targetInstitution = inst ? inst.slice(0, 150) : null;
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        name: trimmedName,
+        institution: targetInstitution,
+        candidateId: targetCandidateId,
+      },
+      include: {
+        cohort: true,
+        participants: { include: { contest: true } },
+        submissions: true,
+      },
+    });
+
+    await recordAuditLog({
+      actorId: session.userId,
+      action: "ADMIN_UPDATE_PARTICIPANT_PROFILE",
+      targetType: "USER",
+      targetId: user.id,
+      metadata: {
+        adminEmail: session.email,
+        oldName: user.name,
+        newName: updated.name,
+        oldCandidateId: user.candidateId,
+        newCandidateId: updated.candidateId,
+        oldInstitution: user.institution,
+        newInstitution: updated.institution,
+      },
+    });
+
+    safeRevalidatePath("/admin/participants");
+    safeRevalidatePath("/dashboard/profile");
+
+    const mappedItem: AdminParticipantItem = {
+      id: updated.id,
+      name: updated.name,
+      email: updated.email,
+      role: updated.role,
+      candidateId: updated.candidateId || "",
+      institution: updated.institution || "National Campus Leadership",
+      cohortName: updated.cohort?.name || "Campus Leadership Programme 2025",
+      enrolledContestsCount: updated.participants.length,
+      completedSubmissionsCount: updated.submissions.filter((s) => s.status !== "DRAFT").length,
+      status: updated.participants[0]?.status || (updated.isActive ? "ACTIVE" : "DISQUALIFIED"),
+      contests: updated.participants.map((p) => ({
+        id: p.contest.id,
+        title: p.contest.title,
+        status: p.status,
+        enrolledAt: p.enrolledAt.toISOString(),
+      })),
+      createdAt: updated.createdAt.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+    };
+
+    return { success: true, user: mappedItem };
+  } catch (error) {
+    console.error("Error updating participant by admin:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to update participant",
+    };
+  }
+}
+
 export async function bulkEnrollParticipantsAction(
   contestId: string,
   userIds: string[]

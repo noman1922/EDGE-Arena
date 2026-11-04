@@ -105,6 +105,7 @@ model Contest {
   cohortId    String?
   startDate   DateTime
   endDate     DateTime
+  durationMinutes Int?
   isPublished Boolean       @default(false)
   enforceSequentialProgress Boolean @default(true)
   createdAt   DateTime      @default(now())
@@ -202,6 +203,7 @@ model Task {
   title        String
   instructions String?  @db.Text
   totalPoints  Int      @default(100)
+  durationMinutes Int?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -291,6 +293,8 @@ model Submission {
   taskId           String
   userId           String
   status           SubmissionStatus @default(DRAFT)
+  startedAt        DateTime?
+  expiresAt        DateTime?
   submittedAt      DateTime?
   autoSavedAt      DateTime         @default(now())
   autoGradeScore   Decimal?         @db.Decimal(6, 2)

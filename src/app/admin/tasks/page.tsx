@@ -26,6 +26,14 @@ const EditQuestionModal = dynamic(
   () => import("@/components/modals/edit-question-modal").then((m) => m.EditQuestionModal),
   { ssr: false }
 );
+const EditPhaseModal = dynamic(
+  () => import("@/components/modals/edit-phase-modal").then((m) => m.EditPhaseModal),
+  { ssr: false }
+);
+const BulkMcqImportModal = dynamic(
+  () => import("@/components/modals/bulk-mcq-import-modal").then((m) => m.BulkMcqImportModal),
+  { ssr: false }
+);
 
 export default function AdminTasksPage() {
   const [contests, setContests] = useState<AdminContestOption[]>([]);
@@ -45,6 +53,10 @@ export default function AdminTasksPage() {
   const [phaseDesc, setPhaseDesc] = useState("");
   const [phaseDeadline, setPhaseDeadline] = useState("");
   const [isSubmittingPhase, setIsSubmittingPhase] = useState(false);
+
+  // Edit Phase Modal
+  const [editingPhaseForModal, setEditingPhaseForModal] = useState<TaskBuilderPhase | null>(null);
+  const [isPhaseEditModalOpen, setIsPhaseEditModalOpen] = useState(false);
 
   // Edit Phase Deadline Modal
   const [isEditPhaseModalOpen, setIsEditPhaseModalOpen] = useState(false);
@@ -73,9 +85,12 @@ export default function AdminTasksPage() {
   const [taskTitle, setTaskTitle] = useState("");
   const [taskInstructions, setTaskInstructions] = useState("");
   const [taskPoints, setTaskPoints] = useState(100);
+  const [taskDuration, setTaskDuration] = useState<number | null>(null);
   const [isSubmittingTask, setIsSubmittingTask] = useState(false);
 
   const [isQuestionModalOpen, setIsQuestionModalOpen] = useState(false);
+  const [isBulkImportModalOpen, setIsBulkImportModalOpen] = useState(false);
+  const [selectedTaskForBulkImport, setSelectedTaskForBulkImport] = useState<{ id: string; title: string } | null>(null);
   const [selectedTaskIdForQ, setSelectedTaskIdForQ] = useState("");
   const [qType, setQType] = useState<"MCQ" | "WRITTEN" | "FILE_UPLOAD">("MCQ");
   const [qPrompt, setQPrompt] = useState("");
@@ -188,12 +203,14 @@ export default function AdminTasksPage() {
         title: taskTitle.trim(),
         instructions: taskInstructions.trim() || undefined,
         totalPoints: Number(taskPoints),
+        durationMinutes: taskDuration ? Number(taskDuration) : null,
       });
 
       if (res.success) {
         setIsTaskModalOpen(false);
         setTaskTitle("");
         setTaskInstructions("");
+        setTaskDuration(null);
         setFeedbackMsg({ type: "success", text: "Task created successfully." });
         await loadPhasesAndTasks(selectedContestId);
       } else {
@@ -474,31 +491,14 @@ export default function AdminTasksPage() {
                       <div className="flex items-center gap-1">
                         <button
                           onClick={() => {
-                            setEditPhaseId(phase.id);
-                            setEditPhaseTitle(`Phase ${phase.phaseNumber}: ${phase.title}`);
-                            try {
-                              const d = new Date(phase.deadline);
-                              const isoDhaka = new Intl.DateTimeFormat("en-CA", {
-                                timeZone: "Asia/Dhaka",
-                                year: "numeric",
-                                month: "2-digit",
-                                day: "2-digit",
-                                hour: "2-digit",
-                                minute: "2-digit",
-                                hour12: false,
-                              }).formatToParts(d);
-                              const getP = (t: string) => isoDhaka.find((p) => p.type === t)?.value || "";
-                              setEditPhaseDeadline(`${getP("year")}-${getP("month")}-${getP("day")}T${getP("hour")}:${getP("minute")}`);
-                            } catch {
-                              setEditPhaseDeadline("");
-                            }
-                            setIsEditPhaseModalOpen(true);
+                            setEditingPhaseForModal(phase);
+                            setIsPhaseEditModalOpen(true);
                           }}
                           className="px-2 py-0.5 text-[11px] bg-surface-container-high hover:bg-surface-container text-on-surface font-medium rounded border border-[#e2e8f0] cursor-pointer flex items-center gap-1"
-                          title="Edit Phase Deadline (Asia/Dhaka)"
+                          title="Edit Phase Title, Number, Weight, Status & Deadline"
                         >
-                          <span className="material-symbols-outlined text-[13px]">calendar_clock</span>
-                          <span>Deadline</span>
+                          <span className="material-symbols-outlined text-[13px] text-primary-container">edit</span>
+                          <span>Edit Phase</span>
                         </button>
                         <button
                           onClick={() => {
@@ -593,6 +593,10 @@ export default function AdminTasksPage() {
                     <span className="font-label-sm font-semibold text-primary-container bg-primary-fixed/20 px-2.5 py-1 rounded">
                       Total: {activeTask.totalPoints} pts
                     </span>
+                    <span className="font-label-sm font-semibold text-secondary bg-surface-container px-2.5 py-1 rounded flex items-center gap-1" title="Individual attempt time limit">
+                      <span className="material-symbols-outlined text-[14px]">timer</span>
+                      {activeTask.durationMinutes ? `${activeTask.durationMinutes} mins` : "No limit"}
+                    </span>
                     <button
                       onClick={() => handleDeleteTask(activeTask.id, activeTask.title)}
                       className="px-2.5 py-1.5 text-error hover:bg-error/10 font-label-xs font-medium rounded border border-error/20 flex items-center gap-1 transition-colors cursor-pointer"
@@ -601,16 +605,29 @@ export default function AdminTasksPage() {
                       <span className="material-symbols-outlined text-[14px]">delete</span>
                       Delete Task
                     </button>
-                    <button
-                      onClick={() => {
-                        setSelectedTaskIdForQ(activeTask.id);
-                        setIsQuestionModalOpen(true);
-                      }}
-                      className="px-3 py-1.5 bg-primary-container hover:bg-[#166534] text-on-primary font-label-xs font-medium rounded shadow-2xs flex items-center gap-1 cursor-pointer"
-                    >
-                      <span className="material-symbols-outlined text-[14px]">add</span>
-                      Add Question
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => {
+                          setSelectedTaskForBulkImport({ id: activeTask.id, title: activeTask.title });
+                          setIsBulkImportModalOpen(true);
+                        }}
+                        className="px-3 py-1.5 bg-surface-container-high hover:bg-surface-container-highest text-primary border border-outline/25 font-label-xs font-medium rounded shadow-2xs flex items-center gap-1.5 cursor-pointer transition-colors"
+                        title="Bulk import questions from CSV or Excel (.xlsx)"
+                      >
+                        <span className="material-symbols-outlined text-[15px]">upload_file</span>
+                        Bulk Import MCQs
+                      </button>
+                      <button
+                        onClick={() => {
+                          setSelectedTaskIdForQ(activeTask.id);
+                          setIsQuestionModalOpen(true);
+                        }}
+                        className="px-3 py-1.5 bg-primary-container hover:bg-[#166534] text-on-primary font-label-xs font-medium rounded shadow-2xs flex items-center gap-1 cursor-pointer"
+                      >
+                        <span className="material-symbols-outlined text-[14px]">add</span>
+                        Add Question
+                      </button>
+                    </div>
                   </div>
                 </div>
 
@@ -627,15 +644,27 @@ export default function AdminTasksPage() {
                       <p className="font-body-sm text-secondary">
                         No questions in this task yet. Add an MCQ, written essay, or PDF upload question.
                       </p>
-                      <button
-                        onClick={() => {
-                          setSelectedTaskIdForQ(activeTask.id);
-                          setIsQuestionModalOpen(true);
-                        }}
-                        className="mt-2 px-3 py-1 bg-primary-container text-on-primary font-label-xs font-medium rounded"
-                      >
-                        + Create First Question
-                      </button>
+                      <div className="flex items-center justify-center gap-2 mt-3">
+                        <button
+                          onClick={() => {
+                            setSelectedTaskIdForQ(activeTask.id);
+                            setIsQuestionModalOpen(true);
+                          }}
+                          className="px-3 py-1 bg-primary-container text-on-primary font-label-xs font-medium rounded cursor-pointer"
+                        >
+                          + Create First Question
+                        </button>
+                        <button
+                          onClick={() => {
+                            setSelectedTaskForBulkImport({ id: activeTask.id, title: activeTask.title });
+                            setIsBulkImportModalOpen(true);
+                          }}
+                          className="px-3 py-1 bg-surface-container border border-outline/30 hover:border-primary/40 text-on-surface hover:text-primary font-label-xs font-medium rounded flex items-center gap-1 cursor-pointer transition-colors"
+                        >
+                          <span className="material-symbols-outlined text-[14px]">upload_file</span>
+                          Bulk Import MCQs
+                        </button>
+                      </div>
                     </div>
                   ) : (
                     <div className="space-y-space-sm">
@@ -881,6 +910,26 @@ export default function AdminTasksPage() {
                   onChange={(e) => setTaskPoints(Number(e.target.value))}
                   className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface focus:outline-none focus:border-primary-container"
                 />
+              </div>
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="font-label-xs text-secondary font-semibold uppercase">
+                    Attempt Duration (Minutes)
+                  </label>
+                  <span className="text-[10px] text-secondary">Blank = unlimited</span>
+                </div>
+                <input
+                  type="number"
+                  min="1"
+                  max="480"
+                  value={taskDuration ?? ""}
+                  onChange={(e) => setTaskDuration(e.target.value ? Number(e.target.value) : null)}
+                  placeholder="e.g. 30, 45, 60 (blank for no time limit)"
+                  className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface focus:outline-none focus:border-primary-container"
+                />
+                <p className="text-[10px] text-secondary mt-1">
+                  Countdown starts individually for each participant when they start their attempt.
+                </p>
               </div>
               <div className="flex items-center justify-end gap-2 pt-3 border-t border-[#e2e8f0]">
                 <button
@@ -1169,6 +1218,46 @@ export default function AdminTasksPage() {
         onConfirm={deleteModalState.onConfirm}
         onClose={() => setDeleteModalState((prev) => ({ ...prev, isOpen: false }))}
       />
+
+      {/* Edit Phase Modal */}
+      <EditPhaseModal
+        isOpen={isPhaseEditModalOpen}
+        phase={editingPhaseForModal ? {
+          ...editingPhaseForModal,
+          contestId: selectedContestId,
+        } : null}
+        onClose={() => {
+          setIsPhaseEditModalOpen(false);
+          setEditingPhaseForModal(null);
+        }}
+        onSuccess={async () => {
+          setFeedbackMsg({
+            type: "success",
+            text: "Phase updated successfully.",
+          });
+          await loadPhasesAndTasks(selectedContestId);
+        }}
+      />
+
+      {/* Bulk MCQ Import Modal */}
+      {selectedTaskForBulkImport && (
+        <BulkMcqImportModal
+          isOpen={isBulkImportModalOpen}
+          taskId={selectedTaskForBulkImport.id}
+          taskTitle={selectedTaskForBulkImport.title}
+          onClose={() => {
+            setIsBulkImportModalOpen(false);
+            setSelectedTaskForBulkImport(null);
+          }}
+          onSuccess={async () => {
+            setFeedbackMsg({
+              type: "success",
+              text: "Bulk questions imported successfully.",
+            });
+            await loadPhasesAndTasks(selectedContestId);
+          }}
+        />
+      )}
     </div>
   );
 }

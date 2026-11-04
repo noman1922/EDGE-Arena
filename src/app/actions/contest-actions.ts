@@ -23,6 +23,7 @@ export interface AdminContestListItem {
   status: "Live" | "Draft" | "Completed" | "Archived";
   isPublished: boolean;
   enforceSequentialProgress: boolean;
+  durationMinutes: number | null;
   cohortText: string;
   cohortSubtext: string;
   submitted: number;
@@ -37,6 +38,17 @@ export interface AdminContestListItem {
   rubrics: Array<{ name: string; weight: number; passRate: number }>;
   recentUploads: Array<{ name: string; time: string; score?: string }>;
   participants: Array<{ id: string; userId: string; name: string; email: string; status: string; enrolledAt: string }>;
+  phases: Array<{
+    id: string;
+    contestId: string;
+    phaseNumber: number;
+    title: string;
+    description: string | null;
+    weightPercentage: number;
+    deadline: string;
+    status: "UPCOMING" | "OPEN" | "EVALUATING" | "CLOSED";
+    tasksCount: number;
+  }>;
 }
 
 export interface AdminContestOption {
@@ -264,6 +276,7 @@ export async function getAdminContests(): Promise<AdminContestListItem[]> {
         status: true,
         isPublished: true,
         enforceSequentialProgress: true,
+        durationMinutes: true,
         startDate: true,
         endDate: true,
         cohort: {
@@ -274,6 +287,9 @@ export async function getAdminContests(): Promise<AdminContestListItem[]> {
             id: true,
             phaseNumber: true,
             title: true,
+            description: true,
+            weightPercentage: true,
+            deadline: true,
             status: true,
             tasks: {
               select: {
@@ -302,6 +318,7 @@ export async function getAdminContests(): Promise<AdminContestListItem[]> {
         _count: {
           select: {
             participants: true,
+            submissions: { where: { status: { not: "DRAFT" } } },
           },
         },
         participants: {
@@ -337,21 +354,21 @@ export async function getAdminContests(): Promise<AdminContestListItem[]> {
 
       // Calculate submissions vs total participants using database counts
       const totalParticipants = c._count?.participants ?? c.participants.length;
-      const submittedCount = c.submissions.filter((s) => s.status !== "DRAFT").length;
+      const submittedCount = c._count?.submissions ?? c.submissions.filter((s) => s.status !== "DRAFT").length;
 
       // Rubrics from tasks
       const allRubrics = c.phases.flatMap((p) => p.tasks.flatMap((t) => t.rubrics));
       const rubrics = allRubrics.length > 0
         ? allRubrics.slice(0, 3).map((r) => ({
-            name: r.name,
-            weight: Number(r.weightPercentage),
-            passRate: 85, // median benchmark
-          }))
+          name: r.name,
+          weight: Number(r.weightPercentage),
+          passRate: 85, // median benchmark
+        }))
         : [
-            { name: "Analytical Depth & Quantitative Proof", weight: 40, passRate: 91 },
-            { name: "ESG Alignment & Global Compliance", weight: 35, passRate: 78 },
-            { name: "Executive Communication & Defense", weight: 25, passRate: 88 },
-          ];
+          { name: "Analytical Depth & Quantitative Proof", weight: 40, passRate: 91 },
+          { name: "ESG Alignment & Global Compliance", weight: 35, passRate: 78 },
+          { name: "Executive Communication & Defense", weight: 25, passRate: 88 },
+        ];
 
       // Format date window (displaying Asia/Dhaka schedule)
       const startStr = c.startDate.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "Asia/Dhaka" });
@@ -388,6 +405,7 @@ export async function getAdminContests(): Promise<AdminContestListItem[]> {
         status: uiStatus,
         isPublished: c.isPublished,
         enforceSequentialProgress: c.enforceSequentialProgress ?? true,
+        durationMinutes: c.durationMinutes ?? null,
         cohortText: c.cohort?.name || "Global Leadership Cohort",
         cohortSubtext: `${totalParticipants} Enrolled Candidate${totalParticipants === 1 ? "" : "s"}`,
         submitted: submittedCount,
@@ -402,6 +420,17 @@ export async function getAdminContests(): Promise<AdminContestListItem[]> {
         rubrics,
         recentUploads,
         participants,
+        phases: c.phases.map((p) => ({
+          id: p.id,
+          contestId: c.id,
+          phaseNumber: p.phaseNumber,
+          title: p.title,
+          description: p.description,
+          weightPercentage: Number(p.weightPercentage),
+          deadline: p.deadline.toISOString(),
+          status: p.status,
+          tasksCount: p.tasks.length,
+        })),
       };
     });
   } catch (error) {
@@ -419,6 +448,7 @@ export interface CreateContestInput {
   status?: "DRAFT" | "LIVE";
   cohortCode?: string;
   enforceSequentialProgress?: boolean;
+  durationMinutes?: number | null;
 }
 
 function safeRevalidatePath(path: string) {
@@ -474,6 +504,15 @@ export async function createContestAction(input: CreateContestInput) {
       return { success: false, error: "Contest end date and time must be after the start date and time." };
     }
 
+    let durationMinutes: number | null = null;
+    if (input.durationMinutes !== undefined && input.durationMinutes !== null) {
+      const dur = Number(input.durationMinutes);
+      if (isNaN(dur) || !Number.isInteger(dur) || dur <= 0 || dur > 1440) {
+        return { success: false, error: "Assessment duration must be a positive whole number between 1 and 1440 minutes." };
+      }
+      durationMinutes = dur;
+    }
+
     // Create Contest strictly with zero phases and zero tasks (Admin Phase & Task Builder manages curriculum)
     const newContest = await prisma.contest.create({
       data: {
@@ -487,6 +526,7 @@ export async function createContestAction(input: CreateContestInput) {
         endDate,
         isPublished: false,
         enforceSequentialProgress: input.enforceSequentialProgress !== false,
+        durationMinutes,
       },
     });
 
@@ -663,12 +703,12 @@ export interface BulkEnrollSummary {
     identifier: string;
     candidateName?: string;
     status:
-      | "ENROLLED"
-      | "SKIPPED_ALREADY_ENROLLED"
-      | "INVALID_NOT_FOUND"
-      | "INVALID_FORMAT"
-      | "INVALID_ROLE"
-      | "INVALID_MISMATCH";
+    | "ENROLLED"
+    | "SKIPPED_ALREADY_ENROLLED"
+    | "INVALID_NOT_FOUND"
+    | "INVALID_FORMAT"
+    | "INVALID_ROLE"
+    | "INVALID_MISMATCH";
     reason: string;
   }>;
   error?: string;
@@ -772,12 +812,12 @@ interface EvaluatedRow {
   institution?: string;
   user?: { id: string; email: string; name: string; candidateId: string | null; institution: string | null };
   status:
-    | "READY"
-    | "ALREADY_ENROLLED"
-    | "INVALID_NOT_FOUND"
-    | "INVALID_FORMAT"
-    | "INVALID_ROLE"
-    | "INVALID_MISMATCH";
+  | "READY"
+  | "ALREADY_ENROLLED"
+  | "INVALID_NOT_FOUND"
+  | "INVALID_FORMAT"
+  | "INVALID_ROLE"
+  | "INVALID_MISMATCH";
   reason: string;
 }
 
@@ -920,9 +960,8 @@ async function validateEnrollmentCsvRows(
           candidateId: rawCandidateId,
           name: userByEmail.name,
           status: "INVALID_MISMATCH",
-          reason: `Email and candidate ID mismatch. Candidate ID "${trimmedCandidateId}" does not match the account for "${rawEmail}"${
-            userByEmail.candidateId ? ` (registered as ${userByEmail.candidateId})` : " (account has no registered candidate ID)"
-          }.`,
+          reason: `Email and candidate ID mismatch. Candidate ID "${trimmedCandidateId}" does not match the account for "${rawEmail}"${userByEmail.candidateId ? ` (registered as ${userByEmail.candidateId})` : " (account has no registered candidate ID)"
+            }.`,
         });
         continue;
       }
@@ -1502,6 +1541,7 @@ export interface UpdateContestInput {
   status?: "DRAFT" | "LIVE" | "COMPLETED" | "ARCHIVED";
   isPublished?: boolean;
   enforceSequentialProgress?: boolean;
+  durationMinutes?: number | null;
 }
 
 export async function updateContestAction(contestId: string, input: UpdateContestInput) {
@@ -1516,6 +1556,19 @@ export async function updateContestAction(contestId: string, input: UpdateContes
       return { success: false, error: "Contest not found." };
     }
 
+    let parsedDurationMinutes: number | null | undefined = undefined;
+    if (input.durationMinutes !== undefined) {
+      if (input.durationMinutes === null) {
+        parsedDurationMinutes = null;
+      } else {
+        const dur = Number(input.durationMinutes);
+        if (isNaN(dur) || !Number.isInteger(dur) || dur <= 0 || dur > 1440) {
+          return { success: false, error: "Assessment duration must be a positive whole number between 1 and 1440 minutes." };
+        }
+        parsedDurationMinutes = dur;
+      }
+    }
+
     const updated = await prisma.contest.update({
       where: { id: contestId },
       data: {
@@ -1527,6 +1580,7 @@ export async function updateContestAction(contestId: string, input: UpdateContes
         ...(input.status !== undefined && { status: normalizeContestStatus(input.status) }),
         ...(input.isPublished !== undefined && { isPublished: input.isPublished }),
         ...(input.enforceSequentialProgress !== undefined && { enforceSequentialProgress: input.enforceSequentialProgress }),
+        ...(parsedDurationMinutes !== undefined && { durationMinutes: parsedDurationMinutes }),
       },
     });
 

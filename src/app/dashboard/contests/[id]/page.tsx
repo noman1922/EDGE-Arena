@@ -296,6 +296,12 @@ function ContestCurriculumContent() {
               <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-[#f0fdf4] text-[#166534] border border-[#bbf7d0]">
                 Modular Curriculum Path
               </span>
+              {data.contest.durationMinutes && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                  <span className="material-symbols-outlined text-[13px]">timer</span>
+                  <span>{data.contest.durationMinutes} Minutes Time Limit</span>
+                </span>
+              )}
               {data.contest.endDate && (
                 <span className="text-xs text-[#545f73] flex items-center gap-1 font-mono">
                   <span className="material-symbols-outlined text-[14px]">calendar_clock</span>
