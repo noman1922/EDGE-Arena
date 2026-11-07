@@ -67,11 +67,10 @@ export function ImportParticipantsModal({
 
   const handleDownloadTemplate = () => {
     const csvContent =
-      "Name,Email,Password,Team Number\n" +
-      "K. M. Shajin,kmshajin.bd@gmail.com,CL0103,Team 1\n" +
-      "Sk Ishraaq Arefin,ishraaqarefin@gmail.com,CL0111,Team 1\n" +
-      "Ahmad Fahim Shahriar,Fahim.eee.00724105131005@aust.edu,CL0101,Team 1\n" +
-      "Khatune Jannat Bonna,khatunejannatb@gmail.com,CL0121,Team 1\n";
+      "Name,Email,Candidate ID,Password,Team Number\n" +
+      "Tasmima alam,tasmim.mim.777@gmail.com,AIF01001,12345678,Freedom CareerEdge Program\n" +
+      "Sanjida Rahman Tuli,2023100000442@seu.edu.bd,AIF01002,12345678,Freedom CareerEdge Program\n" +
+      "Mahmuda Haque Urmi,mahmadaurmi7@gmail.com,AIF01003,12345678,Freedom CareerEdge Program\n";
 
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -264,12 +263,14 @@ export function ImportParticipantsModal({
                     Required CSV Header Format:
                   </div>
                   <code className="text-blue-800 font-mono text-[11px] block bg-white/70 px-2 py-1 rounded border border-blue-200">
-                    Name,Email,Password,Team Number
+                    Name,Email,Candidate ID,Password,Team Number
                   </code>
                   <p className="text-[11px] text-blue-800">
-                    • <strong>Password:</strong> Initial participant passcode (e.g. 6-character CL code like <code>CL0103</code>). Participants must change it on first login.
+                    • <strong>Candidate ID:</strong> Unique candidate identifier (e.g. <code>AIF01001</code>, <code>AIF01002</code>).
                     <br />
-                    • <strong>Team Number:</strong> Cohort team grouping (e.g. <code>Team 1</code> through <code>Team 8</code>), stored with the participant profile.
+                    • <strong>Password:</strong> Initial participant password (e.g. <code>12345678</code>, minimum 8 characters). Participants must change it on first login.
+                    <br />
+                    • <strong>Team Number:</strong> Cohort team grouping (e.g. <code>Freedom CareerEdge Program</code> or <code>Team 1</code>), stored with the participant profile.
                   </p>
                 </div>
               </div>
@@ -364,9 +365,10 @@ export function ImportParticipantsModal({
                     setErrorMessage(null);
                   }}
                   placeholder={
-                    "Name,Email,Password,Team Number\n" +
-                    "K. M. Shajin,kmshajin.bd@gmail.com,CL0103,Team 1\n" +
-                    "Sk Ishraaq Arefin,ishraaqarefin@gmail.com,CL0111,Team 1"
+                    "Name,Email,Candidate ID,Password,Team Number\n" +
+                    "Tasmima alam,tasmim.mim.777@gmail.com,AIF01001,12345678,Freedom CareerEdge Program\n" +
+                    "Sanjida Rahman Tuli,2023100000442@seu.edu.bd,AIF01002,12345678,Freedom CareerEdge Program\n" +
+                    "Mahmuda Haque Urmi,mahmadaurmi7@gmail.com,AIF01003,12345678,Freedom CareerEdge Program"
                   }
                   className="w-full px-3 py-2 font-mono text-xs rounded-lg bg-surface-container-low border border-[#e2e8f0] text-on-surface focus:outline-none focus:border-primary-container focus:ring-1 focus:ring-primary-container"
                 />
@@ -446,7 +448,7 @@ export function ImportParticipantsModal({
                   lock
                 </span>
                 <span>
-                  Passwords are never displayed. Each candidate&apos;s initial passcode will be cryptographically hashed with Scrypt and salt, with mandatory password reset required on first login.
+                  Initial passwords will be cryptographically hashed with Scrypt and salt upon creation, with mandatory password reset required on first login.
                 </span>
               </div>
 
@@ -458,7 +460,8 @@ export function ImportParticipantsModal({
                       <th className="py-2 px-3 font-semibold w-12">#</th>
                       <th className="py-2 px-3 font-semibold">Name</th>
                       <th className="py-2 px-3 font-semibold">Email</th>
-                      <th className="py-2 px-3 font-semibold">CL Code / ID</th>
+                      <th className="py-2 px-3 font-semibold">Candidate ID</th>
+                      <th className="py-2 px-3 font-semibold">Password</th>
                       <th className="py-2 px-3 font-semibold">Team</th>
                       <th className="py-2 px-3 font-semibold">Status</th>
                       <th className="py-2 px-3 font-semibold">Validation Note</th>
@@ -494,8 +497,11 @@ export function ImportParticipantsModal({
                           <td className="py-2 px-3 text-secondary">{row.rowNumber}</td>
                           <td className="py-2 px-3 font-medium">{row.name || "—"}</td>
                           <td className="py-2 px-3 font-mono text-[11px]">{row.email || "—"}</td>
-                          <td className="py-2 px-3 font-mono text-[11px]">
+                          <td className="py-2 px-3 font-mono text-[11px] font-semibold text-primary-container">
                             {row.candidateId || "—"}
+                          </td>
+                          <td className="py-2 px-3 font-mono text-[11px]">
+                            {row.password || "—"}
                           </td>
                           <td className="py-2 px-3">{row.teamNumber || "—"}</td>
                           <td className="py-2 px-3">
@@ -583,7 +589,8 @@ export function ImportParticipantsModal({
                   <thead className="bg-surface-container-low text-secondary font-label-xs uppercase sticky top-0 z-10 border-b border-[#e2e8f0]">
                     <tr>
                       <th className="py-2 px-3 font-semibold w-12">#</th>
-                      <th className="py-2 px-3 font-semibold">Candidate</th>
+                      <th className="py-2 px-3 font-semibold">Candidate ID</th>
+                      <th className="py-2 px-3 font-semibold">Name</th>
                       <th className="py-2 px-3 font-semibold">Email</th>
                       <th className="py-2 px-3 font-semibold">Team</th>
                       <th className="py-2 px-3 font-semibold">Status</th>
@@ -603,6 +610,9 @@ export function ImportParticipantsModal({
                         }
                       >
                         <td className="py-2 px-3 text-secondary">{item.rowNumber}</td>
+                        <td className="py-2 px-3 font-mono text-[11px] font-semibold text-primary-container">
+                          {item.candidateId || "—"}
+                        </td>
                         <td className="py-2 px-3 font-medium">{item.name || "—"}</td>
                         <td className="py-2 px-3 font-mono text-[11px]">{item.email}</td>
                         <td className="py-2 px-3">{item.teamNumber || "—"}</td>

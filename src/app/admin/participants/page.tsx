@@ -138,11 +138,10 @@ export default function AdminParticipantsPage() {
 
   const handleDownloadTemplate = () => {
     const csvContent =
-      "Name,Email,Password,Team Number\n" +
-      "K. M. Shajin,kmshajin.bd@gmail.com,CL0103,Team 1\n" +
-      "Sk Ishraaq Arefin,ishraaqarefin@gmail.com,CL0111,Team 1\n" +
-      "Ahmad Fahim Shahriar,Fahim.eee.00724105131005@aust.edu,CL0101,Team 1\n" +
-      "Khatune Jannat Bonna,khatunejannatb@gmail.com,CL0121,Team 1\n";
+      "Name,Email,Candidate ID,Password,Team Number\n" +
+      "Tasmima alam,tasmim.mim.777@gmail.com,AIF01001,12345678,Freedom CareerEdge Program\n" +
+      "Sanjida Rahman Tuli,2023100000442@seu.edu.bd,AIF01002,12345678,Freedom CareerEdge Program\n" +
+      "Mahmuda Haque Urmi,mahmadaurmi7@gmail.com,AIF01003,12345678,Freedom CareerEdge Program\n";
 
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);

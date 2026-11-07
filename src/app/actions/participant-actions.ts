@@ -784,6 +784,7 @@ export interface ParticipantImportPreviewRow {
   name: string;
   email: string;
   candidateId: string;
+  password?: string;
   teamNumber: string;
   status: ParticipantImportRowStatus;
   reason?: string;
@@ -883,15 +884,17 @@ export async function previewParticipantImportCsvAction(
     const header = rows[0].map((h) => h.toLowerCase().replace(/[^a-z0-9]/g, ""));
     const nameIdx = header.findIndex((h) => h === "name" || h === "fullname" || h.includes("name"));
     const emailIdx = header.findIndex((h) => h === "email" || h === "emailaddress" || h.includes("email"));
+    const candidateIdIdx = header.findIndex(
+      (h) => h === "candidateid" || h === "candidate" || h === "candidatecode" || h === "rollno" || h === "roll" || (h.includes("candidate") && h.includes("id"))
+    );
     const passwordIdx = header.findIndex(
-      (h) => h === "password" || h === "initialpassword" || h === "clcode" || h.includes("pass") || h.includes("cred") || h === "code"
+      (h) => h === "password" || h === "initialpassword" || h === "clcode" || h.includes("pass") || h.includes("cred")
     );
     const teamIdx = header.findIndex(
       (h) => h === "teamnumber" || h === "team" || h === "teamno" || h.includes("team") || h.includes("institution") || h.includes("org")
     );
-    const candidateIdIdx = header.findIndex((h) => h === "candidateid" || h === "candidate");
 
-    if (nameIdx === -1 || emailIdx === -1 || passwordIdx === -1 || teamIdx === -1) {
+    if (nameIdx === -1 || emailIdx === -1 || candidateIdIdx === -1 || passwordIdx === -1 || teamIdx === -1) {
       return {
         success: false,
         totalRows: rows.length - 1,
@@ -901,7 +904,7 @@ export async function previewParticipantImportCsvAction(
         duplicateInFileCount: 0,
         invalidCount: rows.length - 1,
         previewRows: [],
-        error: "CSV header missing required columns. Required headers: 'Name', 'Email', 'Password', 'Team Number'.",
+        error: "CSV header missing required columns. Required headers: 'Name', 'Email', 'Candidate ID', 'Password', 'Team Number'.",
       };
     }
 
@@ -928,8 +931,7 @@ export async function previewParticipantImportCsvAction(
       const email = (r[emailIdx] || "").trim().toLowerCase();
       if (email) normalizedEmailsInFile.push(email);
 
-      const pass = (r[passwordIdx] || "").trim();
-      const cid = candidateIdIdx !== -1 && r[candidateIdIdx] ? r[candidateIdIdx].trim() : pass;
+      const cid = candidateIdIdx !== -1 && r[candidateIdIdx] ? r[candidateIdIdx].trim() : "";
       if (cid) candidateIdsInFile.push(cid);
     }
 
@@ -980,10 +982,9 @@ export async function previewParticipantImportCsvAction(
 
       const rawName = (row[nameIdx] || "").trim();
       const rawEmail = (row[emailIdx] || "").trim();
-      const rawPassword = (row[passwordIdx] || "").trim();
-      const rawTeam = (row[teamIdx] || "").trim();
-      const rawCandidateId =
-        candidateIdIdx !== -1 && row[candidateIdIdx] ? row[candidateIdIdx].trim() : rawPassword;
+      const rawCandidateId = candidateIdIdx !== -1 && row[candidateIdIdx] ? row[candidateIdIdx].trim() : "";
+      const rawPassword = passwordIdx !== -1 && row[passwordIdx] ? row[passwordIdx].trim() : "";
+      const rawTeam = teamIdx !== -1 && row[teamIdx] ? row[teamIdx].trim() : "";
 
       const normalizedEmail = rawEmail.toLowerCase();
       const normalizedCandidateId = rawCandidateId.toUpperCase();
@@ -995,6 +996,7 @@ export async function previewParticipantImportCsvAction(
           name: rawName,
           email: rawEmail,
           candidateId: rawCandidateId,
+          password: rawPassword,
           teamNumber: rawTeam,
           status: "INVALID",
           reason: "Participant name is required.",
@@ -1009,9 +1011,25 @@ export async function previewParticipantImportCsvAction(
           name: rawName,
           email: rawEmail,
           candidateId: rawCandidateId,
+          password: rawPassword,
           teamNumber: rawTeam,
           status: "INVALID",
           reason: `Invalid email address format: "${rawEmail}".`,
+        });
+        continue;
+      }
+
+      if (!rawCandidateId) {
+        invalidCount++;
+        previewRows.push({
+          rowNumber: rowNum,
+          name: rawName,
+          email: rawEmail,
+          candidateId: rawCandidateId,
+          password: rawPassword,
+          teamNumber: rawTeam,
+          status: "INVALID",
+          reason: "Candidate ID is required.",
         });
         continue;
       }
@@ -1023,9 +1041,26 @@ export async function previewParticipantImportCsvAction(
           name: rawName,
           email: rawEmail,
           candidateId: rawCandidateId,
+          password: rawPassword,
           teamNumber: rawTeam,
           status: "INVALID",
-          reason: "Initial password / CL code is required.",
+          reason: "Initial password is required.",
+        });
+        continue;
+      }
+
+      const strengthCheck = validatePasswordStrength(rawPassword);
+      if (!strengthCheck.isValid) {
+        invalidCount++;
+        previewRows.push({
+          rowNumber: rowNum,
+          name: rawName,
+          email: rawEmail,
+          candidateId: rawCandidateId,
+          password: rawPassword,
+          teamNumber: rawTeam,
+          status: "INVALID",
+          reason: strengthCheck.error || "Password must be at least 8 characters in length.",
         });
         continue;
       }
@@ -1037,6 +1072,7 @@ export async function previewParticipantImportCsvAction(
           name: rawName,
           email: rawEmail,
           candidateId: rawCandidateId,
+          password: rawPassword,
           teamNumber: rawTeam,
           status: "INVALID",
           reason: "Team Number is required.",
@@ -1051,6 +1087,7 @@ export async function previewParticipantImportCsvAction(
           name: rawName,
           email: rawEmail,
           candidateId: rawCandidateId,
+          password: rawPassword,
           teamNumber: rawTeam,
           status: "DUPLICATE_IN_FILE",
           reason: `Duplicate email address in CSV upload: "${rawEmail}".`,
@@ -1066,9 +1103,10 @@ export async function previewParticipantImportCsvAction(
           name: rawName,
           email: rawEmail,
           candidateId: rawCandidateId,
+          password: rawPassword,
           teamNumber: rawTeam,
           status: "DUPLICATE_IN_FILE",
-          reason: `Duplicate Candidate ID / CL Code in CSV upload: "${rawCandidateId}".`,
+          reason: `Duplicate Candidate ID in CSV upload: "${rawCandidateId}".`,
         });
         continue;
       }
@@ -1086,6 +1124,7 @@ export async function previewParticipantImportCsvAction(
           name: rawName,
           email: rawEmail,
           candidateId: rawCandidateId,
+          password: rawPassword,
           teamNumber: rawTeam,
           status: "INVALID",
           reason: `Candidate ID "${rawCandidateId}" is already assigned to another user (${existingUserByCid.email}).`,
@@ -1102,6 +1141,7 @@ export async function previewParticipantImportCsvAction(
             name: rawName,
             email: rawEmail,
             candidateId: rawCandidateId,
+            password: rawPassword,
             teamNumber: rawTeam,
             status: "ALREADY_ENROLLED",
             reason: `Account exists and is already enrolled in "${contestTitle || "selected contest"}".`,
@@ -1113,6 +1153,7 @@ export async function previewParticipantImportCsvAction(
             name: rawName,
             email: rawEmail,
             candidateId: rawCandidateId,
+            password: rawPassword,
             teamNumber: rawTeam,
             status: "ALREADY_EXISTS",
             reason: contestId
@@ -1129,6 +1170,7 @@ export async function previewParticipantImportCsvAction(
         name: rawName,
         email: rawEmail,
         candidateId: rawCandidateId,
+        password: rawPassword,
         teamNumber: rawTeam,
         status: "READY",
         reason: contestId
@@ -1210,15 +1252,17 @@ export async function executeParticipantImportAction(
     const header = rows[0].map((h) => h.toLowerCase().replace(/[^a-z0-9]/g, ""));
     const nameIdx = header.findIndex((h) => h === "name" || h === "fullname" || h.includes("name"));
     const emailIdx = header.findIndex((h) => h === "email" || h === "emailaddress" || h.includes("email"));
+    const candidateIdIdx = header.findIndex(
+      (h) => h === "candidateid" || h === "candidate" || h === "candidatecode" || h === "rollno" || h === "roll" || (h.includes("candidate") && h.includes("id"))
+    );
     const passwordIdx = header.findIndex(
-      (h) => h === "password" || h === "initialpassword" || h === "clcode" || h.includes("pass") || h.includes("cred") || h === "code"
+      (h) => h === "password" || h === "initialpassword" || h === "clcode" || h.includes("pass") || h.includes("cred")
     );
     const teamIdx = header.findIndex(
       (h) => h === "teamnumber" || h === "team" || h === "teamno" || h.includes("team") || h.includes("institution") || h.includes("org")
     );
-    const candidateIdIdx = header.findIndex((h) => h === "candidateid" || h === "candidate");
 
-    if (nameIdx === -1 || emailIdx === -1 || passwordIdx === -1 || teamIdx === -1) {
+    if (nameIdx === -1 || emailIdx === -1 || candidateIdIdx === -1 || passwordIdx === -1 || teamIdx === -1) {
       return {
         success: false,
         totalRows: rows.length - 1,
@@ -1228,7 +1272,7 @@ export async function executeParticipantImportAction(
         failedCount: rows.length - 1,
         partialErrorCount: 0,
         details: [],
-        error: "CSV header missing required columns: 'Name', 'Email', 'Password', 'Team Number'.",
+        error: "CSV header missing required columns: 'Name', 'Email', 'Candidate ID', 'Password', 'Team Number'.",
       };
     }
 
@@ -1284,10 +1328,10 @@ export async function executeParticipantImportAction(
 
       const rawName = (row[nameIdx] || "").trim();
       const rawEmail = (row[emailIdx] || "").trim();
+      const rawCandidateId =
+        candidateIdIdx !== -1 && row[candidateIdIdx] ? row[candidateIdIdx].trim() : "";
       const rawPassword = (row[passwordIdx] || "").trim();
       const rawTeam = (row[teamIdx] || "").trim();
-      const rawCandidateId =
-        candidateIdIdx !== -1 && row[candidateIdIdx] ? row[candidateIdIdx].trim() : rawPassword;
 
       const normalizedEmail = rawEmail.toLowerCase();
       const normalizedCandidateId = rawCandidateId.toUpperCase();
@@ -1324,6 +1368,22 @@ export async function executeParticipantImportAction(
         continue;
       }
 
+      if (!rawCandidateId) {
+        failedCount++;
+        details.push({
+          rowNumber: rowNum,
+          name: rawName,
+          email: rawEmail,
+          candidateId: rawCandidateId,
+          teamNumber: rawTeam,
+          accountCreated: false,
+          enrolledInContest: false,
+          status: "FAILED",
+          message: "Candidate ID is required.",
+        });
+        continue;
+      }
+
       if (!rawPassword) {
         failedCount++;
         details.push({
@@ -1335,7 +1395,24 @@ export async function executeParticipantImportAction(
           accountCreated: false,
           enrolledInContest: false,
           status: "FAILED",
-          message: "Initial password / CL code is required.",
+          message: "Initial password is required.",
+        });
+        continue;
+      }
+
+      const strengthCheck = validatePasswordStrength(rawPassword);
+      if (!strengthCheck.isValid) {
+        failedCount++;
+        details.push({
+          rowNumber: rowNum,
+          name: rawName,
+          email: rawEmail,
+          candidateId: rawCandidateId,
+          teamNumber: rawTeam,
+          accountCreated: false,
+          enrolledInContest: false,
+          status: "FAILED",
+          message: strengthCheck.error || "Password must be at least 8 characters.",
         });
         continue;
       }
@@ -1384,7 +1461,7 @@ export async function executeParticipantImportAction(
           accountCreated: false,
           enrolledInContest: false,
           status: "FAILED",
-          message: `Duplicate Candidate ID / CL Code in upload file: "${rawCandidateId}".`,
+          message: `Duplicate Candidate ID in upload file: "${rawCandidateId}".`,
         });
         continue;
       }
