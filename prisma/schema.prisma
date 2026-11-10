@@ -28,6 +28,12 @@ enum ContestStatus {
   ARCHIVED
 }
 
+enum PhaseAttemptStatus {
+  IN_PROGRESS
+  COMPLETED
+  EXPIRED
+}
+
 enum PhaseStatus {
   UPCOMING
   OPEN
@@ -74,6 +80,7 @@ model User {
   contestEvaluations            ContestEvaluator[]             @relation("UserContestEvaluators")
   evaluatorAssignedCandidates   EvaluatorCandidateAssignment[] @relation("EvaluatorAssignedCandidates")
   candidateEvaluatorAssignments EvaluatorCandidateAssignment[] @relation("CandidateEvaluatorAssignments")
+  phaseAttempts                 PhaseAttempt[]
 
   @@index([role])
   @@index([cohortId])
@@ -118,6 +125,7 @@ model Contest {
   candidateAssignments EvaluatorCandidateAssignment[]
   submissions  Submission[]
   results      CohortResult[]
+  phaseAttempts PhaseAttempt[]
 
   @@index([status, startDate, endDate])
   @@index([cohortId])
@@ -184,16 +192,41 @@ model Phase {
   description      String?     @db.Text
   weightPercentage Decimal     @db.Decimal(5, 2)
   deadline         DateTime
+  durationMinutes  Int?
   status           PhaseStatus @default(UPCOMING)
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
 
-  contest     Contest      @relation(fields: [contestId], references: [id], onDelete: Cascade)
-  tasks       Task[]
-  submissions Submission[]
+  contest       Contest        @relation(fields: [contestId], references: [id], onDelete: Cascade)
+  tasks         Task[]
+  submissions   Submission[]
+  phaseAttempts PhaseAttempt[]
 
   @@unique([contestId, phaseNumber])
+  @@unique([id, contestId])
   @@index([contestId, status, deadline])
+}
+
+model PhaseAttempt {
+  id          String             @id @default(uuid())
+  contestId   String
+  phaseId     String
+  userId      String
+  status      PhaseAttemptStatus @default(IN_PROGRESS)
+  startedAt   DateTime           @default(now())
+  expiresAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  contest Contest @relation(fields: [contestId], references: [id], onDelete: Cascade)
+  phase   Phase   @relation(fields: [phaseId, contestId], references: [id, contestId], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([phaseId, userId])
+  @@index([contestId, userId])
+  @@index([phaseId, status])
+  @@index([userId, status])
 }
 
 model Task {

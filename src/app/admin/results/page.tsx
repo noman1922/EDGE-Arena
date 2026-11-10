@@ -7,7 +7,7 @@ import {
   type AdminResultsOverview,
   type AdminLeaderboardRow,
 } from "@/app/actions/results-actions";
-import { publishContestResultsAction } from "@/app/actions/evaluator-actions";
+import { publishContestResultsAction, unpublishContestResultsAction } from "@/app/actions/evaluator-actions";
 import { useAdminContest } from "@/context/admin-contest-context";
 
 export default function AdminResultsPage() {
@@ -70,6 +70,34 @@ export default function AdminResultsPage() {
         setFeedback({
           type: "error",
           text: res.error || "Failed to publish results",
+        });
+      }
+    } catch (err) {
+      setFeedback({ type: "error", text: "Network or server failure" });
+    } finally {
+      setIsPublishing(false);
+    }
+  };
+
+  const handleUnpublishResults = async () => {
+    if (!selectedContestId) return;
+    const confirmMsg =
+      "Are you sure you want to unpublish results for this contest? Public leaderboards and participant answer reviews will be immediately retracted until re-published.";
+    if (!confirm(confirmMsg)) return;
+
+    try {
+      setIsPublishing(true);
+      const res = await unpublishContestResultsAction(selectedContestId);
+      if (res.success) {
+        setFeedback({
+          type: "success",
+          text: "Contest results successfully unpublished. Standings and answer correctness are now hidden from participants.",
+        });
+        await loadResults(selectedContestId);
+      } else {
+        setFeedback({
+          type: "error",
+          text: res.error || "Failed to unpublish results.",
         });
       }
     } catch (err) {
@@ -254,6 +282,18 @@ export default function AdminResultsPage() {
               <span className="material-symbols-outlined text-[16px]">download</span>
               Export CSV
             </button>
+
+            {data.current.isPublished && (
+              <button
+                onClick={handleUnpublishResults}
+                disabled={isPublishing}
+                className="px-3.5 py-2 bg-amber-50 hover:bg-amber-100 text-amber-800 font-label-sm font-medium rounded border border-amber-300 flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                title="Retract official publication and hide standings and answer reviews from participants"
+              >
+                <span className="material-symbols-outlined text-[16px]">unpublished</span>
+                <span>Unpublish Results</span>
+              </button>
+            )}
 
             <button
               onClick={() => handlePublishResults(false)}

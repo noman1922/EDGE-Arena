@@ -903,6 +903,20 @@ export function AssessmentDocumentReader({
                     </span>
                   </div>
                 </div>
+              ) : data.phase?.durationMinutes ? (
+                <div className="flex items-start gap-2.5 p-3 rounded-xl bg-blue-50 border border-blue-200 text-blue-900">
+                  <span className="material-symbols-outlined text-blue-700 text-[20px] shrink-0 mt-0.5">
+                    timer
+                  </span>
+                  <div className="text-xs">
+                    <strong className="block font-semibold text-blue-950">
+                      Phase Time Limit: {data.phase.durationMinutes} Minutes
+                    </strong>
+                    <span className="text-blue-900 leading-normal">
+                      This phase has an authoritative {data.phase.durationMinutes}-minute countdown. The timer persists across browser refresh, logout, and logins.
+                    </span>
+                  </div>
+                </div>
               ) : (
                 <div className="flex items-start gap-2.5">
                   <span className="material-symbols-outlined text-[#15803d] text-[18px] shrink-0 mt-0.5">
@@ -1089,7 +1103,11 @@ export function AssessmentDocumentReader({
               </span>
               <span className="font-bold text-sm sm:text-xs">{timer.formattedMmSs}</span>
               <span className="text-[10px] uppercase font-sans font-normal opacity-75 hidden sm:inline">
-                {data.task.durationMinutes ? `${data.task.durationMinutes}m limit` : "Asia/Dhaka"}
+                {data.task.durationMinutes
+                  ? `${data.task.durationMinutes}m limit`
+                  : data.phase?.durationMinutes
+                  ? `${data.phase.durationMinutes}m phase`
+                  : "Asia/Dhaka"}
               </span>
             </div>
           </div>
@@ -1154,8 +1172,34 @@ export function AssessmentDocumentReader({
           </div>
         )}
 
-        {/* Read-Only / Concluded Banner if applicable */}
-        {isReadOnly && (
+        {/* Results Released Review Banner vs Standard Concluded Banner */}
+        {data.isResultReleased ? (
+          <div className="p-4 rounded-xl bg-[#f0fdf4] border border-[#bbf7d0] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-[#14532d] shadow-2xs">
+            <div className="flex items-start gap-3">
+              <span className="material-symbols-outlined text-[#15803d] text-[26px] shrink-0 mt-0.5">
+                fact_check
+              </span>
+              <div className="text-xs sm:text-sm">
+                <strong className="font-bold text-[#14532d] flex items-center gap-1.5 flex-wrap">
+                  Official Answer & Scoring Review Released
+                  <span className="px-2 py-0.2 rounded-full text-[10px] bg-[#dcfce7] text-[#166534] font-bold uppercase tracking-wider border border-[#86efac]">
+                    Certified Review
+                  </span>
+                </strong>
+                <p className="text-[#166534] mt-0.5">
+                  Assessment results are officially published. You can review your selected answers, correct keys (green/red indicators), marks earned, and qualitative comments below.
+                </p>
+              </div>
+            </div>
+            <Link
+              href="/dashboard/results"
+              className="px-3.5 py-1.5 rounded-lg bg-[#15803d] text-white hover:bg-[#166534] text-xs font-semibold shrink-0 transition-colors shadow-2xs flex items-center gap-1"
+            >
+              <span>Full Diagnostic Scorecard</span>
+              <span className="material-symbols-outlined text-[14px]">arrow_forward</span>
+            </Link>
+          </div>
+        ) : isReadOnly && (
           <div className="p-4 rounded-xl bg-[#f8fafc] border border-[#e2e8f0] flex items-center gap-3 text-[#191c1e]">
             <span className="material-symbols-outlined text-[#545f73] text-[22px]">
               {timer.isEnded ? "lock_clock" : "lock"}
@@ -1407,15 +1451,71 @@ export function AssessmentDocumentReader({
                   </div>
 
                   <div className="flex items-center gap-2">
-                    {isAnswered && (
-                      <span className="text-xs text-[#15803d] font-medium flex items-center gap-1">
-                        <span className="material-symbols-outlined text-[15px]">check_circle</span>
-                        <span>Answered</span>
-                      </span>
+                    {data.isResultReleased ? (
+                      (() => {
+                        const ans = data.submission.answers.find((a) => a.questionId === q.id);
+                        if (q.type === "MCQ") {
+                          if (!selectedOptions[q.id]) {
+                            return (
+                              <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200 flex items-center gap-1">
+                                <span className="material-symbols-outlined text-[14px]">remove_circle_outline</span>
+                                <span>Unanswered · 0/{q.points} pts</span>
+                              </span>
+                            );
+                          }
+                          if (ans?.isCorrect) {
+                            return (
+                              <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
+                                <span className="material-symbols-outlined text-[14px]">check_circle</span>
+                                <span>Correct · +{q.points} pts</span>
+                              </span>
+                            );
+                          }
+                          return (
+                            <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-100 text-rose-800 border border-rose-300 flex items-center gap-1">
+                              <span className="material-symbols-outlined text-[14px]">cancel</span>
+                              <span>Incorrect · 0/{q.points} pts</span>
+                            </span>
+                          );
+                        } else {
+                          // Written or File upload
+                          if (!isAnswered) {
+                            return (
+                              <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200 flex items-center gap-1">
+                                <span className="material-symbols-outlined text-[14px]">remove_circle_outline</span>
+                                <span>Unanswered · 0/{q.points} pts</span>
+                              </span>
+                            );
+                          }
+                          if (ans?.score !== null && ans?.score !== undefined) {
+                            return (
+                              <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
+                                <span className="material-symbols-outlined text-[14px]">verified</span>
+                                <span>Score: {ans.score}/{q.points} pts</span>
+                              </span>
+                            );
+                          }
+                          return (
+                            <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800 border border-amber-300 flex items-center gap-1">
+                              <span className="material-symbols-outlined text-[14px]">hourglass_empty</span>
+                              <span>Pending Evaluation</span>
+                            </span>
+                          );
+                        }
+                      })()
+                    ) : (
+                      <>
+                        {isAnswered && (
+                          <span className="text-xs text-[#15803d] font-medium flex items-center gap-1">
+                            <span className="material-symbols-outlined text-[15px]">check_circle</span>
+                            <span>Answered</span>
+                          </span>
+                        )}
+                        <span className="text-xs font-semibold text-[#191c1e] tabular-nums">
+                          {q.points} pt{q.points === 1 ? "" : "s"}
+                        </span>
+                      </>
                     )}
-                    <span className="text-xs font-semibold text-[#191c1e] tabular-nums">
-                      {q.points} pt{q.points === 1 ? "" : "s"}
-                    </span>
                   </div>
                 </div>
 
@@ -1437,6 +1537,21 @@ export function AssessmentDocumentReader({
                   <div className="grid grid-cols-1 gap-2.5 pt-2">
                     {q.options.map((opt) => {
                       const isSelected = selectedOptions[q.id] === opt.optionKey;
+                      const isCorrectKey = Boolean(data.isResultReleased && q.correctOptionKey === opt.optionKey);
+                      const isIncorrectSelected = Boolean(data.isResultReleased && isSelected && !isCorrectKey);
+
+                      let cardStyle = "border-[#e2e8f0] bg-white text-[#191c1e]";
+                      if (data.isResultReleased) {
+                        if (isCorrectKey) {
+                          cardStyle = "border-emerald-500 bg-emerald-50/90 text-emerald-950 ring-1 ring-emerald-500/30 shadow-2xs";
+                        } else if (isIncorrectSelected) {
+                          cardStyle = "border-rose-400 bg-rose-50/90 text-rose-950 ring-1 ring-rose-400/30";
+                        } else {
+                          cardStyle = "border-slate-200 bg-slate-50/50 text-slate-500";
+                        }
+                      } else if (isSelected) {
+                        cardStyle = "border-[#15803d] bg-[#f0fdf4] text-[#14532d] ring-1 ring-[#15803d]/20 shadow-2xs";
+                      }
 
                       return (
                         <div
@@ -1453,15 +1568,17 @@ export function AssessmentDocumentReader({
                           }}
                           className={`p-4 rounded-xl border text-sm transition-all flex items-start gap-3.5 select-none ${
                             isReadOnly ? "cursor-default" : "cursor-pointer"
-                          } ${
-                            isSelected
-                              ? "border-[#15803d] bg-[#f0fdf4] text-[#14532d] ring-1 ring-[#15803d]/20 shadow-2xs"
-                              : "border-[#e2e8f0] hover:border-slate-300 bg-white text-[#191c1e]"
-                          }`}
+                          } ${cardStyle}`}
                         >
                           <div
                             className={`w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs uppercase shrink-0 transition-colors ${
-                              isSelected
+                              data.isResultReleased
+                                ? isCorrectKey
+                                  ? "bg-emerald-600 text-white"
+                                  : isIncorrectSelected
+                                  ? "bg-rose-600 text-white"
+                                  : "bg-slate-200 text-slate-700"
+                                : isSelected
                                 ? "bg-[#15803d] text-white"
                                 : "bg-[#f2f4f6] text-[#191c1e] border border-[#e2e8f0]"
                             }`}
@@ -1473,14 +1590,41 @@ export function AssessmentDocumentReader({
                             {opt.text}
                           </div>
 
-                          {isSelected && (
-                            <span className="material-symbols-outlined text-[#15803d] text-[20px] shrink-0 mt-0.5">
-                              check_circle
-                            </span>
+                          {data.isResultReleased ? (
+                            isCorrectKey ? (
+                              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider bg-emerald-200 text-emerald-950 border border-emerald-300 flex items-center gap-1 shrink-0">
+                                <span className="material-symbols-outlined text-[13px]">check</span>
+                                {isSelected ? "Your Answer (Correct)" : "Correct Answer"}
+                              </span>
+                            ) : isIncorrectSelected ? (
+                              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider bg-rose-200 text-rose-950 border border-rose-300 flex items-center gap-1 shrink-0">
+                                <span className="material-symbols-outlined text-[13px]">close</span>
+                                Your Answer (Incorrect)
+                              </span>
+                            ) : null
+                          ) : (
+                            isSelected && (
+                              <span className="material-symbols-outlined text-[#15803d] text-[20px] shrink-0 mt-0.5">
+                                check_circle
+                              </span>
+                            )
                           )}
                         </div>
                       );
                     })}
+
+                    {/* Explanation card if released */}
+                    {data.isResultReleased && q.explanation && (
+                      <div className="mt-2 p-3.5 rounded-xl bg-emerald-50/70 border border-emerald-200 text-xs text-emerald-950 flex items-start gap-2">
+                        <span className="material-symbols-outlined text-[16px] text-emerald-700 shrink-0 mt-0.5">
+                          lightbulb
+                        </span>
+                        <div>
+                          <strong className="font-semibold block mb-0.5">Explanation / Rationalization:</strong>
+                          <p className="leading-relaxed text-emerald-900">{q.explanation}</p>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -1539,6 +1683,23 @@ export function AssessmentDocumentReader({
                               </span>
                             )}
                           </div>
+
+                          {/* Evaluator feedback if released */}
+                          {data.isResultReleased && (() => {
+                            const ans = data.submission.answers.find((a) => a.questionId === q.id);
+                            if (!ans?.feedback) return null;
+                            return (
+                              <div className="mt-2 p-3.5 rounded-xl bg-blue-50/70 border border-blue-200 text-xs text-blue-950 flex items-start gap-2">
+                                <span className="material-symbols-outlined text-[16px] text-blue-700 shrink-0 mt-0.5">
+                                  rate_review
+                                </span>
+                                <div>
+                                  <strong className="font-semibold block mb-0.5">Evaluator Commentary:</strong>
+                                  <p className="leading-relaxed italic text-blue-900">&quot;{ans.feedback}&quot;</p>
+                                </div>
+                              </div>
+                            );
+                          })()}
                         </>
                       );
                     })()}
@@ -1558,66 +1719,85 @@ export function AssessmentDocumentReader({
 
                     {/* Uploaded File Preview Card */}
                     {uploadedFiles[q.id] ? (
-                      <div className="p-4 rounded-xl border border-[#e2e8f0] bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-2xs text-[#191c1e]">
-                        <div className="flex items-center gap-3 min-w-0">
-                          <div className="w-10 h-10 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center shrink-0 border border-rose-200">
-                            <span className="material-symbols-outlined text-[24px]">
-                              picture_as_pdf
-                            </span>
-                          </div>
-                          <div className="flex flex-col min-w-0">
-                            <span className="text-sm font-semibold text-[#191c1e] truncate">
-                              {uploadedFiles[q.id].name}
-                            </span>
-                            <div className="flex flex-wrap items-center gap-2 text-xs text-[#545f73] mt-0.5">
-                              <span className="font-mono">{uploadedFiles[q.id].size}</span>
-                              <span>•</span>
-                              <span className="px-2 py-0.2 rounded-md bg-[#f0fdf4] text-[#166534] font-mono text-[11px] border border-[#bbf7d0]">
-                                {uploadedFiles[q.id].hash}
+                      <>
+                        <div className="p-4 rounded-xl border border-[#e2e8f0] bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-2xs text-[#191c1e]">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-10 h-10 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center shrink-0 border border-rose-200">
+                              <span className="material-symbols-outlined text-[24px]">
+                                picture_as_pdf
                               </span>
                             </div>
+                            <div className="flex flex-col min-w-0">
+                              <span className="text-sm font-semibold text-[#191c1e] truncate">
+                                {uploadedFiles[q.id].name}
+                              </span>
+                              <div className="flex flex-wrap items-center gap-2 text-xs text-[#545f73] mt-0.5">
+                                <span className="font-mono">{uploadedFiles[q.id].size}</span>
+                                <span>•</span>
+                                <span className="px-2 py-0.2 rounded-md bg-[#f0fdf4] text-[#166534] font-mono text-[11px] border border-[#bbf7d0]">
+                                  {uploadedFiles[q.id].hash}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0 self-end sm:self-auto">
+                            <a
+                              href={`/api/files/${uploadedFiles[q.id].fileKey}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="px-3 py-1.5 rounded-lg border border-[#e2e8f0] bg-white text-xs font-medium text-[#191c1e] hover:bg-[#f2f4f6] transition-colors flex items-center gap-1 cursor-pointer"
+                              title="Open uploaded PDF in new tab"
+                            >
+                              <span className="material-symbols-outlined text-[15px]">visibility</span>
+                              <span>Open PDF</span>
+                            </a>
+
+                            <a
+                              href={`/api/files/${uploadedFiles[q.id].fileKey}?download=1`}
+                              download={uploadedFiles[q.id].name}
+                              className="px-3 py-1.5 rounded-lg border border-[#e2e8f0] bg-[#f8fafc] text-xs font-medium text-[#545f73] hover:text-[#191c1e] transition-colors flex items-center gap-1 cursor-pointer"
+                              title="Download PDF deliverable"
+                            >
+                              <span className="material-symbols-outlined text-[15px]">download</span>
+                              <span className="hidden sm:inline">Download</span>
+                            </a>
+
+                            {!isReadOnly && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setFileToRemove({
+                                    questionId: q.id,
+                                    fileName: uploadedFiles[q.id].name,
+                                  })
+                                }
+                                className="px-3 py-1.5 rounded-lg border border-rose-200 text-xs font-medium text-rose-600 hover:bg-rose-50 transition-colors flex items-center gap-1 cursor-pointer"
+                              >
+                                <span className="material-symbols-outlined text-[15px]">delete</span>
+                                <span>Remove</span>
+                              </button>
+                            )}
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-2 shrink-0 self-end sm:self-auto">
-                          <a
-                            href={`/api/files/${uploadedFiles[q.id].fileKey}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="px-3 py-1.5 rounded-lg border border-[#e2e8f0] bg-white text-xs font-medium text-[#191c1e] hover:bg-[#f2f4f6] transition-colors flex items-center gap-1 cursor-pointer"
-                            title="Open uploaded PDF in new tab"
-                          >
-                            <span className="material-symbols-outlined text-[15px]">visibility</span>
-                            <span>Open PDF</span>
-                          </a>
-
-                          <a
-                            href={`/api/files/${uploadedFiles[q.id].fileKey}?download=1`}
-                            download={uploadedFiles[q.id].name}
-                            className="px-3 py-1.5 rounded-lg border border-[#e2e8f0] bg-[#f8fafc] text-xs font-medium text-[#545f73] hover:text-[#191c1e] transition-colors flex items-center gap-1 cursor-pointer"
-                            title="Download PDF deliverable"
-                          >
-                            <span className="material-symbols-outlined text-[15px]">download</span>
-                            <span className="hidden sm:inline">Download</span>
-                          </a>
-
-                          {!isReadOnly && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setFileToRemove({
-                                  questionId: q.id,
-                                  fileName: uploadedFiles[q.id].name,
-                                })
-                              }
-                              className="px-3 py-1.5 rounded-lg border border-rose-200 text-xs font-medium text-rose-600 hover:bg-rose-50 transition-colors flex items-center gap-1 cursor-pointer"
-                            >
-                              <span className="material-symbols-outlined text-[15px]">delete</span>
-                              <span>Remove</span>
-                            </button>
-                          )}
-                        </div>
-                      </div>
+                        {/* Evaluator feedback if released */}
+                        {data.isResultReleased && (() => {
+                          const ans = data.submission.answers.find((a) => a.questionId === q.id);
+                          if (!ans?.feedback) return null;
+                          return (
+                            <div className="mt-1 p-3.5 rounded-xl bg-blue-50/70 border border-blue-200 text-xs text-blue-950 flex items-start gap-2">
+                              <span className="material-symbols-outlined text-[16px] text-blue-700 shrink-0 mt-0.5">
+                                rate_review
+                              </span>
+                              <div>
+                                <strong className="font-semibold block mb-0.5">Evaluator Commentary:</strong>
+                                <p className="leading-relaxed italic text-blue-900">&quot;{ans.feedback}&quot;</p>
+                              </div>
+                            </div>
+                          );
+                        })()}
+                      </>
                     ) : (
                       /* Drag & Drop Zone */
                       <div

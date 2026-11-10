@@ -1,7 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
-import { ContestStatus, PhaseStatus, Prisma } from "@prisma/client";
+import { ContestStatus, PhaseStatus, PhaseAttemptStatus, Prisma } from "@prisma/client";
 import {
   calculateMcqScore,
   checkSubmissionDeadline,
@@ -19,7 +19,7 @@ import {
   normalizeContestStatus,
 } from "@/lib/contest-lifecycle";
 import { revalidatePath } from "next/cache";
-import { requireRole } from "@/lib/auth";
+import { requireRole, getSession } from "@/lib/auth";
 
 export interface AssessmentTaskNavOption {
   id: string;
@@ -442,6 +442,13 @@ export interface TaskAssessmentData {
     title: string;
     status?: PhaseStatus;
     deadline?: string;
+    durationMinutes?: number | null;
+    startedAt?: string | null;
+    expiresAt?: string | null;
+    secondsLeft?: number;
+    isExpired?: boolean;
+    hasStarted?: boolean;
+    attemptStatus?: PhaseAttemptStatus | null;
   };
   phases?: AssessmentPhaseNavOption[];
   allTasks?: AssessmentTaskNavOption[];
@@ -472,6 +479,7 @@ export interface TaskAssessmentData {
       version: string | null;
     }>;
   };
+  isResultReleased?: boolean;
   questions: Array<{
     id: string;
     questionNumber: number;
@@ -488,6 +496,8 @@ export interface TaskAssessmentData {
       text: string;
       scopeTag: string | null;
     }>;
+    correctOptionKey?: string | null;
+    explanation?: string | null;
   }>;
   submission: {
     id: string;
@@ -503,6 +513,9 @@ export interface TaskAssessmentData {
       fileSizeBytes?: number | null;
       fileSha256?: string | null;
       wordCount: number | null;
+      score?: number | null;
+      isCorrect?: boolean | null;
+      feedback?: string | null;
     }>;
   };
   user: {
@@ -553,6 +566,7 @@ export async function getTaskAssessmentData(
                           options: {
                             orderBy: { optionKey: "asc" },
                           },
+                          answerKey: true,
                         },
                       },
                       references: true,
@@ -586,6 +600,7 @@ export async function getTaskAssessmentData(
                           options: {
                             orderBy: { optionKey: "asc" },
                           },
+                          answerKey: true,
                         },
                       },
                       references: true,
@@ -969,10 +984,7 @@ export async function getTaskAssessmentData(
       secondsLeft,
     } = getAuthoritativeContestDeadline(contest, targetPhase, now2);
 
-    // 8. Strict security: Strip answerKey from questions using sanitizeQuestionForParticipant
-    const sanitizedQuestions = targetTask.questions.map((q) => sanitizeQuestionForParticipant(q));
-
-    // 9. Fetch or ensure submission record with individual participant attempt timer
+    // 8. Fetch or ensure submission record with individual participant attempt timer
     let submission = await prisma.submission.findUnique({
       where: {
         taskId_userId: {
@@ -988,14 +1000,39 @@ export async function getTaskAssessmentData(
     const taskDuration = targetTask.durationMinutes ?? contest.durationMinutes ?? null;
     const isCurriculumOverview = !taskId;
 
+    // Phase-level participant attempt persistence
+    let phaseAttempt = await prisma.phaseAttempt.findUnique({
+      where: {
+        phaseId_userId: {
+          phaseId: targetPhase.id,
+          userId: user.id,
+        },
+      },
+    });
+
+    if (!phaseAttempt && !isContestEnded && !isUpcoming) {
+      if (!targetPhase.durationMinutes) {
+        // Untimed phase: auto-initialize on first visit
+        phaseAttempt = await prisma.phaseAttempt.create({
+          data: {
+            contestId: contest.id,
+            phaseId: targetPhase.id,
+            userId: user.id,
+            status: "IN_PROGRESS",
+            startedAt: now2,
+            expiresAt: null,
+          },
+        }).catch(() => null);
+      }
+    }
+
     // Direct assessment unit access: ensure participant attempt is safely initialized
     if (!isCurriculumOverview && !isContestEnded) {
       const contestDeadline = getAuthoritativeContestDeadline(contest, targetPhase, now2);
       if (!submission) {
-        const startedAt = now2;
-        const expiresAt = taskDuration
-          ? new Date(Math.min(startedAt.getTime() + taskDuration * 60 * 1000, contestDeadline.effectiveDeadlineMs))
-          : null;
+        // If task has an individual duration limit, do not start timer until candidate clicks Start Assessment
+        const startedAt = taskDuration ? null : now2;
+        const expiresAt = null;
 
         submission = await prisma.submission.create({
           data: {
@@ -1013,19 +1050,15 @@ export async function getTaskAssessmentData(
         });
       } else if (submission.status === "DRAFT") {
         if (!submission.startedAt) {
-          // Initialize start timestamp
-          const startedAt = now2;
-          const expiresAt = taskDuration
-            ? new Date(Math.min(startedAt.getTime() + taskDuration * 60 * 1000, contestDeadline.effectiveDeadlineMs))
-            : null;
-
-          submission = await prisma.submission.update({
-            where: { id: submission.id },
-            data: { startedAt, expiresAt },
-            include: {
-              answers: true,
-            },
-          });
+          if (!taskDuration) {
+            submission = await prisma.submission.update({
+              where: { id: submission.id },
+              data: { startedAt: now2, expiresAt: null },
+              include: {
+                answers: true,
+              },
+            });
+          }
         } else if (!submission.expiresAt && taskDuration) {
           // Heal missing expiresAt for existing started attempts
           const rawExpiryMs = new Date(submission.startedAt).getTime() + taskDuration * 60 * 1000;
@@ -1045,20 +1078,30 @@ export async function getTaskAssessmentData(
 
     const hasAttemptStarted = taskDuration ? Boolean(submission?.startedAt) : true;
 
-    // Authoritative effective deadline bounded by attempt timer and contest closing
+    // Authoritative effective deadline bounded by attempt timer, phase bounds, and contest closing
     const attemptDeadline = getAuthoritativeAttemptDeadline(
       contest,
       targetPhase,
       submission,
-      now2
+      now2,
+      targetTask,
+      phaseAttempt
     );
+
+    // Auto-transition phase attempt to EXPIRED if phase deadline elapsed
+    if (attemptDeadline.isPhaseExpired && phaseAttempt && phaseAttempt.status === "IN_PROGRESS") {
+      phaseAttempt = await prisma.phaseAttempt.update({
+        where: { id: phaseAttempt.id },
+        data: { status: "EXPIRED" },
+      }).catch(() => phaseAttempt);
+    }
 
     // Auto-finalize if expired and still draft (only if attempt was actually started or untimed contest concluded)
     if (
       attemptDeadline.isAttemptExpired &&
       submission &&
       submission.status === "DRAFT" &&
-      (submission.startedAt || !taskDuration)
+      (submission.startedAt || !taskDuration || attemptDeadline.isPhaseExpired)
     ) {
       await autoFinalizeExpiredSubmissionInternal(submission.id, "Timer expired upon assessment load");
       submission = await prisma.submission.findUnique({
@@ -1066,6 +1109,50 @@ export async function getTaskAssessmentData(
         include: { answers: true },
       });
     }
+
+    const isSubmitted =
+      submission?.status === "SUBMITTED" ||
+      submission?.status === "GRADED" ||
+      submission?.status === "PUBLISHED";
+
+    // Results Release Guard: Answers, scores, and answer keys are ONLY released after contest is officially published and this specific submission status is PUBLISHED
+    const isResultReleased = Boolean(
+      contest.isPublished && submission?.status === "PUBLISHED"
+    );
+
+    // Question-level feedback map from submission.feedbackSummary if released
+    const questionsFeedbackMap: Record<string, string> = {};
+    if (isResultReleased && submission?.feedbackSummary) {
+      try {
+        const parsed = JSON.parse(submission.feedbackSummary);
+        if (parsed && typeof parsed === "object" && parsed.questions) {
+          Object.assign(questionsFeedbackMap, parsed.questions);
+        }
+      } catch {
+        // Plain text fallback
+      }
+    }
+
+    // 9. Strict security: Strip answerKey from questions UNLESS results are officially released
+    const sanitizedQuestions = targetTask.questions.map((q) => {
+      if (isResultReleased) {
+        return {
+          id: q.id,
+          questionNumber: q.questionNumber,
+          type: q.type,
+          prompt: q.prompt,
+          instructions: q.instructions,
+          points: q.points,
+          isMandatory: q.isMandatory,
+          minWords: q.minWords,
+          maxWords: q.maxWords,
+          options: q.options,
+          correctOptionKey: q.answerKey?.correctOptionKey || null,
+          explanation: q.answerKey?.explanation || null,
+        };
+      }
+      return sanitizeQuestionForParticipant(q);
+    });
 
     // 10. Sanitize submission for participant (strips scores while contest is unpublished)
     const sanitizedSubmission = submission
@@ -1078,17 +1165,13 @@ export async function getTaskAssessmentData(
           answers: [],
         };
 
-    const isSubmitted =
-      sanitizedSubmission.status === "SUBMITTED" ||
-      sanitizedSubmission.status === "GRADED" ||
-      sanitizedSubmission.status === "PUBLISHED";
-
     const canSubmit = !isContestEnded && !isSubmitted && attemptDeadline.secondsLeft > 0;
 
     return {
       state: "READY",
       isContestEnded,
       canSubmit,
+      isResultReleased,
       contestStatus: contest.status,
       isRedirectedFromLocked,
       redirectTargetTaskId,
@@ -1116,7 +1199,14 @@ export async function getTaskAssessmentData(
         phaseNumber: targetPhase.phaseNumber,
         title: targetPhase.title,
         status: targetPhase.status,
-        deadline: attemptDeadline.effectiveDeadline.toISOString(),
+        deadline: attemptDeadline.phaseDeadline ? attemptDeadline.phaseDeadline.toISOString() : attemptDeadline.effectiveDeadline.toISOString(),
+        durationMinutes: targetPhase.durationMinutes ?? null,
+        startedAt: phaseAttempt?.startedAt?.toISOString() || null,
+        expiresAt: phaseAttempt?.expiresAt?.toISOString() || null,
+        secondsLeft: attemptDeadline.phaseSecondsLeft,
+        isExpired: attemptDeadline.isPhaseExpired || phaseAttempt?.status === "EXPIRED",
+        hasStarted: Boolean(phaseAttempt?.startedAt),
+        attemptStatus: phaseAttempt?.status || null,
       },
       task: {
         id: targetTask.id,
@@ -1168,6 +1258,8 @@ export async function getTaskAssessmentData(
           text: o.text,
           scopeTag: o.scopeTag,
         })),
+        correctOptionKey: (q as any).correctOptionKey ?? null,
+        explanation: (q as any).explanation ?? null,
       })),
       submission: {
         id: sanitizedSubmission.id,
@@ -1193,6 +1285,8 @@ export async function getTaskAssessmentData(
                 fileSizeBytes?: number | bigint | null;
                 fileSha256?: string | null;
                 wordCount?: number | null;
+                score?: number | null;
+                isCorrect?: boolean | null;
               }>
             ).map((a) => ({
               questionId: a.questionId,
@@ -1203,6 +1297,9 @@ export async function getTaskAssessmentData(
               fileSizeBytes: a.fileSizeBytes ? Number(a.fileSizeBytes) : null,
               fileSha256: a.fileSha256 || null,
               wordCount: a.wordCount ?? null,
+              score: isResultReleased && a.score !== undefined && a.score !== null ? Number(a.score) : null,
+              isCorrect: isResultReleased ? (a.isCorrect ?? null) : null,
+              feedback: questionsFeedbackMap[a.questionId] || null,
             }))
           : [],
       },
@@ -1354,6 +1451,153 @@ export async function autoFinalizeExpiredAttemptAction(
 }
 
 /**
+ * Starts a participant's phase attempt timer.
+ * Hierarchical rules:
+ * - Contest start and end dates are enforced.
+ * - PhaseAttempt is created or retrieved.
+ * - ExpiresAt is MIN(now + phaseDuration, phase.deadline, contest.endDate) if timed, else NULL.
+ * - Survives refresh/re-entry.
+ */
+export async function startPhaseAttemptAction(
+  contestId: string,
+  phaseId: string
+): Promise<{
+  success: boolean;
+  phaseAttemptId?: string;
+  startedAt?: string;
+  expiresAt?: string | null;
+  durationMinutes?: number | null;
+  secondsLeft?: number;
+  isExpired?: boolean;
+  status?: PhaseAttemptStatus;
+  error?: string;
+}> {
+  try {
+    const session = await requireRole(["PARTICIPANT"]);
+    const candidateEmail = session.email;
+
+    const user = await prisma.user.findUnique({
+      where: { email: candidateEmail },
+      select: { id: true },
+    });
+    if (!user) {
+      return { success: false, error: "Participant not found." };
+    }
+
+    const contest = await prisma.contest.findUnique({
+      where: { id: contestId },
+      include: {
+        phases: { where: { id: phaseId } },
+      },
+    });
+
+    if (!contest) {
+      return { success: false, error: "Contest not found." };
+    }
+
+    const now = new Date();
+    if (isContestUpcoming(contest, now)) {
+      return { success: false, error: "Contest has not started yet." };
+    }
+    if (isContestConcluded(contest, now)) {
+      return { success: false, error: "Contest has concluded." };
+    }
+
+    const phase = contest.phases[0];
+    if (!phase) {
+      return { success: false, error: "Phase not found in this contest." };
+    }
+
+    // Check existing PhaseAttempt
+    let phaseAttempt = await prisma.phaseAttempt.findUnique({
+      where: {
+        phaseId_userId: {
+          phaseId: phase.id,
+          userId: user.id,
+        },
+      },
+    });
+
+    const phaseDuration = phase.durationMinutes ?? null;
+    const contestEndDate = new Date(contest.endDate);
+    const phaseDeadline = phase.deadline ? new Date(phase.deadline) : contestEndDate;
+    const calendarCeilingMs = Math.min(phaseDeadline.getTime(), contestEndDate.getTime());
+
+    if (phaseAttempt) {
+      const deadlineCalc = getAuthoritativeAttemptDeadline(
+        contest,
+        phase,
+        null,
+        now,
+        null,
+        phaseAttempt
+      );
+
+      if (deadlineCalc.isPhaseExpired && phaseAttempt.status === "IN_PROGRESS") {
+        phaseAttempt = await prisma.phaseAttempt.update({
+          where: { id: phaseAttempt.id },
+          data: { status: "EXPIRED" },
+        });
+      }
+
+      return {
+        success: true,
+        phaseAttemptId: phaseAttempt.id,
+        startedAt: phaseAttempt.startedAt.toISOString(),
+        expiresAt: phaseAttempt.expiresAt?.toISOString() || null,
+        durationMinutes: phaseDuration,
+        secondsLeft: deadlineCalc.phaseSecondsLeft,
+        isExpired: deadlineCalc.isPhaseExpired || phaseAttempt.status === "EXPIRED",
+        status: phaseAttempt.status,
+      };
+    }
+
+    let expiresAt: Date | null = null;
+    if (phaseDuration && phaseDuration > 0) {
+      const rawExpiryMs = now.getTime() + phaseDuration * 60 * 1000;
+      expiresAt = new Date(Math.min(rawExpiryMs, calendarCeilingMs));
+    }
+
+    phaseAttempt = await prisma.phaseAttempt.create({
+      data: {
+        contestId: contest.id,
+        phaseId: phase.id,
+        userId: user.id,
+        status: "IN_PROGRESS",
+        startedAt: now,
+        expiresAt,
+      },
+    });
+
+    const deadlineCalc = getAuthoritativeAttemptDeadline(
+      contest,
+      phase,
+      null,
+      now,
+      null,
+      phaseAttempt
+    );
+
+    return {
+      success: true,
+      phaseAttemptId: phaseAttempt.id,
+      startedAt: phaseAttempt.startedAt.toISOString(),
+      expiresAt: phaseAttempt.expiresAt?.toISOString() || null,
+      durationMinutes: phaseDuration,
+      secondsLeft: deadlineCalc.phaseSecondsLeft,
+      isExpired: deadlineCalc.isPhaseExpired,
+      status: phaseAttempt.status,
+    };
+  } catch (error) {
+    console.error("Error starting phase attempt:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to start phase attempt",
+    };
+  }
+}
+
+/**
  * Explicit action invoked when a participant clicks "Start Assessment".
  * Strictly idempotent:
  * - Initializes individual attempt timer with server-authoritative timestamps.
@@ -1425,6 +1669,49 @@ export async function startAssessmentAttemptAction(
       return { success: false, error: "Phase or contest deadline has passed." };
     }
 
+    // Hierarchical Timer: Ensure PhaseAttempt is initialized
+    let phaseAttempt = await prisma.phaseAttempt.findUnique({
+      where: {
+        phaseId_userId: {
+          phaseId: targetPhase.id,
+          userId: user.id,
+        },
+      },
+    });
+
+    if (!phaseAttempt) {
+      let phaseExpiresAt: Date | null = null;
+      if (targetPhase.durationMinutes && targetPhase.durationMinutes > 0) {
+        const rawPhaseExpiryMs = now.getTime() + targetPhase.durationMinutes * 60 * 1000;
+        phaseExpiresAt = new Date(Math.min(rawPhaseExpiryMs, contestDeadline.effectiveDeadlineMs));
+      }
+      phaseAttempt = await prisma.phaseAttempt.create({
+        data: {
+          contestId: contest.id,
+          phaseId: targetPhase.id,
+          userId: user.id,
+          status: "IN_PROGRESS",
+          startedAt: now,
+          expiresAt: phaseExpiresAt,
+        },
+      });
+    }
+
+    if (phaseAttempt.status === "EXPIRED") {
+      return { success: false, error: "Phase duration has expired. You cannot start this task." };
+    }
+    if (phaseAttempt.expiresAt && now.getTime() >= new Date(phaseAttempt.expiresAt).getTime()) {
+      await prisma.phaseAttempt.update({
+        where: { id: phaseAttempt.id },
+        data: { status: "EXPIRED" },
+      }).catch(() => {});
+      return { success: false, error: "Phase duration has expired. You cannot start this task." };
+    }
+
+    const phaseCeilingMs = phaseAttempt.expiresAt
+      ? Math.min(new Date(phaseAttempt.expiresAt).getTime(), contestDeadline.effectiveDeadlineMs)
+      : contestDeadline.effectiveDeadlineMs;
+
     const taskDuration = targetTask.durationMinutes ?? contest.durationMinutes ?? null;
 
     const submission = await prisma.submission.findUnique({
@@ -1446,7 +1733,7 @@ export async function startAssessmentAttemptAction(
         let effectiveExpiresAt = submission.expiresAt;
         if (!effectiveExpiresAt && taskDuration) {
           const rawExpiryMs = new Date(submission.startedAt).getTime() + taskDuration * 60 * 1000;
-          const cappedExpiryMs = Math.min(rawExpiryMs, contestDeadline.effectiveDeadlineMs);
+          const cappedExpiryMs = Math.min(rawExpiryMs, phaseCeilingMs);
           effectiveExpiresAt = new Date(cappedExpiryMs);
           await prisma.submission.update({
             where: { id: submission.id },
@@ -1454,7 +1741,7 @@ export async function startAssessmentAttemptAction(
           });
         }
         const updatedForDeadline = { ...submission, expiresAt: effectiveExpiresAt };
-        const attemptDeadline = getAuthoritativeAttemptDeadline(contest, targetPhase, updatedForDeadline, now);
+        const attemptDeadline = getAuthoritativeAttemptDeadline(contest, targetPhase, updatedForDeadline, now, targetTask, phaseAttempt);
         return {
           success: true,
           submissionId: submission.id,
@@ -1471,7 +1758,7 @@ export async function startAssessmentAttemptAction(
       let expiresAt: Date | null = null;
       if (taskDuration) {
         const rawExpiryMs = startedAt.getTime() + taskDuration * 60 * 1000;
-        const cappedExpiryMs = Math.min(rawExpiryMs, contestDeadline.effectiveDeadlineMs);
+        const cappedExpiryMs = Math.min(rawExpiryMs, phaseCeilingMs);
         expiresAt = new Date(cappedExpiryMs);
       }
 
@@ -1480,7 +1767,7 @@ export async function startAssessmentAttemptAction(
         data: { startedAt, expiresAt },
       });
 
-      const attemptDeadline = getAuthoritativeAttemptDeadline(contest, targetPhase, updated, now);
+      const attemptDeadline = getAuthoritativeAttemptDeadline(contest, targetPhase, updated, now, targetTask, phaseAttempt);
       return {
         success: true,
         submissionId: updated.id,
@@ -1496,7 +1783,7 @@ export async function startAssessmentAttemptAction(
       let expiresAt: Date | null = null;
       if (taskDuration) {
         const rawExpiryMs = startedAt.getTime() + taskDuration * 60 * 1000;
-        const cappedExpiryMs = Math.min(rawExpiryMs, contestDeadline.effectiveDeadlineMs);
+        const cappedExpiryMs = Math.min(rawExpiryMs, phaseCeilingMs);
         expiresAt = new Date(cappedExpiryMs);
       }
 
@@ -1512,7 +1799,7 @@ export async function startAssessmentAttemptAction(
         },
       });
 
-      const attemptDeadline = getAuthoritativeAttemptDeadline(contest, targetPhase, created, now);
+      const attemptDeadline = getAuthoritativeAttemptDeadline(contest, targetPhase, created, now, targetTask, phaseAttempt);
       return {
         success: true,
         submissionId: created.id,
@@ -1561,10 +1848,45 @@ export async function getContestDeadlineAction(
     const now = new Date();
 
     let submission = null;
+    let submissionTask = null;
+    let participantUserId: string | null = null;
+
     if (submissionId) {
       submission = await prisma.submission.findUnique({
         where: { id: submissionId },
-        select: { id: true, status: true, startedAt: true, expiresAt: true },
+        select: {
+          id: true,
+          userId: true,
+          status: true,
+          startedAt: true,
+          expiresAt: true,
+          task: { select: { durationMinutes: true } },
+        },
+      });
+      if (submission) {
+        participantUserId = submission.userId;
+        if (submission.task) {
+          submissionTask = submission.task;
+        }
+      }
+    }
+
+    if (!participantUserId) {
+      const session = await getSession();
+      if (session?.userId) {
+        participantUserId = session.userId;
+      }
+    }
+
+    let phaseAttempt = null;
+    if (targetPhase && participantUserId) {
+      phaseAttempt = await prisma.phaseAttempt.findUnique({
+        where: {
+          phaseId_userId: {
+            phaseId: targetPhase.id,
+            userId: participantUserId,
+          },
+        },
       });
     }
 
@@ -1575,7 +1897,10 @@ export async function getContestDeadlineAction(
       secondsLeft,
       controllingSource,
       isAttemptExpired,
-    } = getAuthoritativeAttemptDeadline(contest, targetPhase, submission, now);
+      phaseDeadline,
+      phaseSecondsLeft,
+      isPhaseExpired,
+    } = getAuthoritativeAttemptDeadline(contest, targetPhase, submission, now, submissionTask, phaseAttempt);
 
     // If attempt has expired and is still DRAFT, finalize it
     if (isAttemptExpired && submission && submission.status === "DRAFT") {
@@ -1591,6 +1916,9 @@ export async function getContestDeadlineAction(
       secondsLeft,
       isConcluded,
       isAttemptExpired,
+      phaseDeadline: phaseDeadline?.toISOString(),
+      phaseSecondsLeft,
+      isPhaseExpired,
       contestStatus: contest.status,
       controllingSource,
       formattedDhaka: effectiveDeadline.toLocaleString("en-US", {
@@ -1631,6 +1959,7 @@ export async function saveAnswerDraftAction(
         user: true,
         phase: true,
         contest: true,
+        task: true,
       },
     });
 
@@ -1656,12 +1985,24 @@ export async function saveAnswerDraftAction(
       return { success: false, error: "Contest has concluded. Edits and submissions are locked." };
     }
 
+    // Hierarchical deadline check with PhaseAttempt
+    const phaseAttempt = await prisma.phaseAttempt.findUnique({
+      where: {
+        phaseId_userId: {
+          phaseId: submission.phaseId,
+          userId: submission.userId,
+        },
+      },
+    });
+
     // 2. Server-side deadline & attempt expiry check (60s network grace period)
     const { effectiveDeadline } = getAuthoritativeAttemptDeadline(
       submission.contest,
       submission.phase,
       submission,
-      now
+      now,
+      submission.task,
+      phaseAttempt
     );
     const deadlineCheck = checkSubmissionDeadline(effectiveDeadline, now, 60);
     if (!deadlineCheck.isEligible) {
@@ -1740,6 +2081,7 @@ export async function submitAssessmentAction(submissionId: string) {
         task: {
           select: {
             id: true,
+            durationMinutes: true,
             questions: {
               select: {
                 id: true,
@@ -1871,12 +2213,24 @@ export async function submitAssessmentAction(submissionId: string) {
       return { success: false, error: "Contest has concluded. Further submissions are closed." };
     }
 
+    // Hierarchical PhaseAttempt verification
+    const phaseAttempt = await prisma.phaseAttempt.findUnique({
+      where: {
+        phaseId_userId: {
+          phaseId: submission.phaseId,
+          userId: submission.userId,
+        },
+      },
+    });
+
     // 2. Server-side deadline & attempt expiry check
     const { effectiveDeadline } = getAuthoritativeAttemptDeadline(
       submission.contest,
       submission.phase,
       submission,
-      now
+      now,
+      submission.task,
+      phaseAttempt
     );
     const deadlineCheck = checkSubmissionDeadline(effectiveDeadline, now, 60);
     const isLate = !deadlineCheck.isEligible;
@@ -1933,6 +2287,31 @@ export async function submitAssessmentAction(submissionId: string) {
       }),
       determineContestProgression(submission.contestId, submission.taskId, submission.userId),
     ]);
+
+    // Check if all tasks in this phase are now completed by this user
+    if (phaseAttempt && phaseAttempt.status === "IN_PROGRESS") {
+      try {
+        const phaseTasks = await prisma.task.findMany({
+          where: { phaseId: submission.phaseId },
+          select: { id: true },
+        });
+        const submittedCount = await prisma.submission.count({
+          where: {
+            phaseId: submission.phaseId,
+            userId: submission.userId,
+            status: { in: ["SUBMITTED", "GRADED", "PUBLISHED"] },
+          },
+        });
+        if (phaseTasks.length > 0 && submittedCount >= phaseTasks.length) {
+          await prisma.phaseAttempt.update({
+            where: { id: phaseAttempt.id },
+            data: { status: "COMPLETED", completedAt: new Date() },
+          });
+        }
+      } catch (phaseUpdateErr) {
+        console.error("Non-fatal: could not update PhaseAttempt status to COMPLETED:", phaseUpdateErr);
+      }
+    }
 
     function safeRevalidatePath(path: string, type?: "layout" | "page") {
       try {

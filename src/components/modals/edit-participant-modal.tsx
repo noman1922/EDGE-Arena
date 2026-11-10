@@ -11,6 +11,11 @@ export interface EditParticipantModalProps {
   onClose: () => void;
   onSuccess?: (updated: AdminParticipantItem) => void;
   participant: AdminParticipantItem | null;
+  contests?: Array<{
+    id: string;
+    title: string;
+    status: string;
+  }>;
 }
 
 export function EditParticipantModal({
@@ -18,18 +23,25 @@ export function EditParticipantModal({
   onClose,
   onSuccess,
   participant,
+  contests = [],
 }: EditParticipantModalProps) {
   const [name, setName] = useState("");
-  const [candidateId, setCandidateId] = useState("");
+  const [email, setEmail] = useState("");
   const [institution, setInstitution] = useState("");
+  const [password, setPassword] = useState("");
+  const [contestId, setContestId] = useState("");
+  const [candidateId, setCandidateId] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
     if (participant) {
       setName(participant.name || "");
-      setCandidateId(participant.candidateId || "");
+      setEmail(participant.email || "");
       setInstitution(participant.institution || "");
+      setPassword("");
+      setCandidateId(participant.candidateId || "");
+      setContestId(participant.contests?.[0]?.id || "");
       setErrorMsg(null);
     }
   }, [participant]);
@@ -46,6 +58,14 @@ export function EditParticipantModal({
       setErrorMsg("Full name must be at least 2 characters.");
       return;
     }
+    if (!email.trim()) {
+      setErrorMsg("Email address is required.");
+      return;
+    }
+    if (password.trim() && password.trim().length < 8) {
+      setErrorMsg("Password must be at least 8 characters long.");
+      return;
+    }
 
     try {
       setIsSubmitting(true);
@@ -54,8 +74,11 @@ export function EditParticipantModal({
       const res = await updateParticipantByAdminAction({
         userId: participant.id,
         name: name.trim(),
-        candidateId: candidateId.trim() || null,
+        email: email.trim(),
         institution: institution.trim() || null,
+        password: password.trim() || null,
+        contestId: contestId.trim() || null,
+        candidateId: candidateId.trim() || null,
       });
 
       if (res.success && res.user) {
@@ -74,7 +97,7 @@ export function EditParticipantModal({
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
       <div
-        className="bg-surface-container-lowest max-w-md w-full rounded-xl border border-[#e2e8f0] shadow-2xl p-6 flex flex-col gap-4 animate-in fade-in zoom-in-95 duration-150"
+        className="bg-surface-container-lowest max-w-lg w-full rounded-xl border border-[#e2e8f0] shadow-2xl p-6 flex flex-col gap-4 animate-in fade-in zoom-in-95 duration-150 max-h-[92vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between pb-3 border-b border-[#e2e8f0]">
@@ -100,11 +123,13 @@ export function EditParticipantModal({
         )}
 
         <form onSubmit={handleSubmit} className="flex flex-col gap-3.5">
-          {/* Read-Only Identity Strip */}
+          {/* Read-Only Candidate ID and Status Strip */}
           <div className="p-3 rounded-lg bg-surface-container-low border border-[#e2e8f0] flex flex-col gap-1.5 text-xs">
             <div className="flex items-center justify-between">
-              <span className="text-secondary font-medium">Account Email:</span>
-              <span className="text-on-surface font-mono font-medium">{participant.email}</span>
+              <span className="text-secondary font-medium">Candidate ID:</span>
+              <span className="font-mono font-semibold text-on-surface bg-surface-container-lowest px-2 py-0.5 rounded border border-[#e2e8f0]">
+                {participant.candidateId || "N/A"}
+              </span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-secondary font-medium">Security Role:</span>
@@ -113,12 +138,9 @@ export function EditParticipantModal({
               </span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-secondary font-medium">Cohort:</span>
-              <span className="text-on-surface">{participant.cohortName || "Standard Cohort"}</span>
+              <span className="text-secondary font-medium">Current Status:</span>
+              <span className="text-on-surface font-medium">{participant.status}</span>
             </div>
-            <p className="text-[10px] text-secondary mt-1 pt-1 border-t border-[#f1f5f9]">
-              Email, credentials, and role permissions are protected and cannot be altered through profile management.
-            </p>
           </div>
 
           {/* Full Name */}
@@ -132,39 +154,77 @@ export function EditParticipantModal({
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="Candidate full name"
-              className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface font-label-md"
+              className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface font-label-md focus:outline-none focus:border-primary-container"
             />
           </div>
 
-          {/* Candidate ID */}
+          {/* Email Address */}
           <div>
             <label className="font-label-xs text-secondary font-semibold uppercase block mb-1">
-              Candidate Code / ID
+              Email Address *
             </label>
             <input
-              type="text"
-              value={candidateId}
-              onChange={(e) => setCandidateId(e.target.value)}
-              placeholder="e.g., CL0101"
-              className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface font-label-md font-mono text-sm"
+              type="email"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="candidate@organization.com"
+              className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface font-label-md focus:outline-none focus:border-primary-container"
             />
-            <p className="text-[11px] text-secondary mt-0.5">
-              Unique institutional assessment identification code.
-            </p>
           </div>
 
-          {/* Institution / Affiliation */}
+          {/* Team Name / Institution */}
           <div>
             <label className="font-label-xs text-secondary font-semibold uppercase block mb-1">
-              Affiliation / Institution
+              Team Name / Institution
             </label>
             <input
               type="text"
               value={institution}
               onChange={(e) => setInstitution(e.target.value)}
-              placeholder="e.g., Dhaka University / Sales Cluster"
-              className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface font-label-md"
+              placeholder="e.g. Freedom CareerEdge Team 1"
+              className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface font-label-md focus:outline-none focus:border-primary-container"
             />
+          </div>
+
+          {/* Password (Optional Reset) */}
+          <div>
+            <label className="font-label-xs text-secondary font-semibold uppercase block mb-1">
+              Reset Password (Optional)
+            </label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Leave blank to preserve current password"
+              className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface font-label-md focus:outline-none focus:border-primary-container"
+              autoComplete="new-password"
+            />
+            <p className="text-[11px] text-secondary mt-1">
+              Enter at least 8 characters to reset. Leave empty to keep existing password untouched.
+            </p>
+          </div>
+
+          {/* Enrolled Program / Contest */}
+          <div>
+            <label className="font-label-xs text-secondary font-semibold uppercase block mb-1">
+              Enrolled Program / Contest
+            </label>
+            <select
+              value={contestId}
+              onChange={(e) => setContestId(e.target.value)}
+              className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface font-label-md focus:outline-none focus:border-primary-container"
+            >
+              <option value="">-- Retain current enrollment --</option>
+              {contests.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.title} ({c.status})
+                </option>
+              ))}
+            </select>
+            <p className="text-[11px] text-secondary mt-1">
+              Selecting a contest will enroll the participant or ensure their status is ACTIVE without removing existing submissions.
+            </p>
           </div>
 
           <div className="flex items-center justify-end gap-2 pt-3 border-t border-[#e2e8f0] mt-1">
@@ -189,7 +249,7 @@ export function EditParticipantModal({
               ) : (
                 <>
                   <span className="material-symbols-outlined text-[16px]">check</span>
-                  <span>Save Profile</span>
+                  <span>Save Participant</span>
                 </>
               )}
             </button>

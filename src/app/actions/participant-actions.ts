@@ -600,9 +600,14 @@ export async function updateParticipantStatusAction(
 export interface UpdateParticipantByAdminInput {
   userId: string;
   name: string;
+  email?: string;
   institution?: string | null;
+  password?: string | null;
+  contestId?: string | null;
   candidateId?: string | null;
 }
+
+export type UpdateParticipantInput = UpdateParticipantByAdminInput;
 
 export async function updateParticipantByAdminAction(
   input: UpdateParticipantByAdminInput
@@ -635,6 +640,35 @@ export async function updateParticipantByAdminAction(
       return { success: false, error: "Participant not found." };
     }
 
+    // Email update and uniqueness validation
+    let targetEmail = user.email;
+    if (input.email !== undefined) {
+      const trimmedEmail = input.email.trim().toLowerCase();
+      if (!trimmedEmail) {
+        return { success: false, error: "Email address cannot be empty." };
+      }
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(trimmedEmail)) {
+        return { success: false, error: "Please enter a valid email address." };
+      }
+
+      if (trimmedEmail !== user.email.toLowerCase()) {
+        const existingEmail = await prisma.user.findFirst({
+          where: {
+            email: { equals: trimmedEmail, mode: "insensitive" },
+            id: { not: user.id },
+          },
+        });
+        if (existingEmail) {
+          return {
+            success: false,
+            error: `Email "${trimmedEmail}" is already taken by another user.`,
+          };
+        }
+        targetEmail = trimmedEmail;
+      }
+    }
+
     // Candidate ID uniqueness check if updated
     let targetCandidateId = user.candidateId;
     if (input.candidateId !== undefined) {
@@ -662,12 +696,31 @@ export async function updateParticipantByAdminAction(
       targetInstitution = inst ? inst.slice(0, 150) : null;
     }
 
+    // Optional Password update with Scrypt hashing
+    let passwordUpdateData: { passwordHash?: string; passwordSalt?: string; mustChangePassword?: boolean } = {};
+    if (input.password && input.password.trim().length > 0) {
+      const rawPassword = input.password.trim();
+      const passValidation = validatePasswordStrength(rawPassword);
+      if (!passValidation.isValid) {
+        return { success: false, error: passValidation.error || "Password does not meet security requirements." };
+      }
+      const { hash, salt } = hashPassword(rawPassword);
+      passwordUpdateData = {
+        passwordHash: hash,
+        passwordSalt: salt,
+        mustChangePassword: true,
+      };
+    }
+
+    // Update user record
     const updated = await prisma.user.update({
       where: { id: user.id },
       data: {
         name: trimmedName,
+        email: targetEmail,
         institution: targetInstitution,
         candidateId: targetCandidateId,
+        ...passwordUpdateData,
       },
       include: {
         cohort: true,
@@ -675,6 +728,54 @@ export async function updateParticipantByAdminAction(
         submissions: true,
       },
     });
+
+    // Optional Contest Enrollment / Assignment (preserving existing submissions & enrollments)
+    if (input.contestId && input.contestId.trim()) {
+      const contest = await prisma.contest.findUnique({
+        where: { id: input.contestId.trim() },
+      });
+
+      if (!contest) {
+        return { success: false, error: "Selected contest was not found." };
+      }
+
+      const existingEnrollment = await prisma.contestParticipant.findUnique({
+        where: {
+          contestId_userId: {
+            contestId: contest.id,
+            userId: user.id,
+          },
+        },
+      });
+
+      if (!existingEnrollment) {
+        await prisma.contestParticipant.create({
+          data: {
+            id: crypto.randomUUID(),
+            contestId: contest.id,
+            userId: user.id,
+            status: ParticipantStatus.ACTIVE,
+          },
+        });
+      } else if (existingEnrollment.status !== ParticipantStatus.ACTIVE) {
+        await prisma.contestParticipant.update({
+          where: { id: existingEnrollment.id },
+          data: { status: ParticipantStatus.ACTIVE },
+        });
+      }
+    }
+
+    // Fetch refreshed participant data with contest relationships
+    const refreshed = await prisma.user.findUnique({
+      where: { id: user.id },
+      include: {
+        cohort: true,
+        participants: { include: { contest: true } },
+        submissions: true,
+      },
+    });
+
+    const finalUser = refreshed || updated;
 
     await recordAuditLog({
       actorId: session.userId,
@@ -684,35 +785,40 @@ export async function updateParticipantByAdminAction(
       metadata: {
         adminEmail: session.email,
         oldName: user.name,
-        newName: updated.name,
+        newName: finalUser.name,
+        oldEmail: user.email,
+        newEmail: finalUser.email,
         oldCandidateId: user.candidateId,
-        newCandidateId: updated.candidateId,
+        newCandidateId: finalUser.candidateId,
         oldInstitution: user.institution,
-        newInstitution: updated.institution,
+        newInstitution: finalUser.institution,
+        passwordUpdated: Boolean(input.password && input.password.trim().length > 0),
+        contestAssigned: input.contestId || null,
       },
     });
 
     safeRevalidatePath("/admin/participants");
+    safeRevalidatePath("/admin/contests");
     safeRevalidatePath("/dashboard/profile");
 
     const mappedItem: AdminParticipantItem = {
-      id: updated.id,
-      name: updated.name,
-      email: updated.email,
-      role: updated.role,
-      candidateId: updated.candidateId || "",
-      institution: updated.institution || "National Campus Leadership",
-      cohortName: updated.cohort?.name || "Campus Leadership Programme 2025",
-      enrolledContestsCount: updated.participants.length,
-      completedSubmissionsCount: updated.submissions.filter((s) => s.status !== "DRAFT").length,
-      status: updated.participants[0]?.status || (updated.isActive ? "ACTIVE" : "DISQUALIFIED"),
-      contests: updated.participants.map((p) => ({
+      id: finalUser.id,
+      name: finalUser.name,
+      email: finalUser.email,
+      role: finalUser.role,
+      candidateId: finalUser.candidateId || "",
+      institution: finalUser.institution || "National Campus Leadership",
+      cohortName: finalUser.cohort?.name || "Campus Leadership Programme 2025",
+      enrolledContestsCount: finalUser.participants.length,
+      completedSubmissionsCount: finalUser.submissions.filter((s) => s.status !== "DRAFT").length,
+      status: finalUser.participants[0]?.status || (finalUser.isActive ? "ACTIVE" : "DISQUALIFIED"),
+      contests: finalUser.participants.map((p) => ({
         id: p.contest.id,
         title: p.contest.title,
         status: p.status,
         enrolledAt: p.enrolledAt.toISOString(),
       })),
-      createdAt: updated.createdAt.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+      createdAt: finalUser.createdAt.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
     };
 
     return { success: true, user: mappedItem };
@@ -724,6 +830,8 @@ export async function updateParticipantByAdminAction(
     };
   }
 }
+
+export const updateParticipantAction = updateParticipantByAdminAction;
 
 export async function bulkEnrollParticipantsAction(
   contestId: string,

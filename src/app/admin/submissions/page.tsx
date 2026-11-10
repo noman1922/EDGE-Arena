@@ -4,6 +4,7 @@ import React, { useState, useEffect, useMemo, useCallback, useRef } from "react"
 import Link from "next/link";
 import {
   getAdminSubmissionsList,
+  resetParticipantSubmissionAction,
   type AdminSubmissionsOverview,
   type AdminSubmissionDetail,
 } from "@/app/actions/results-actions";
@@ -36,6 +37,96 @@ export default function AdminSubmissionsPage() {
   const [isFinalizing, setIsFinalizing] = useState(false);
   const [gradeSuccessMsg, setGradeSuccessMsg] = useState<string | null>(null);
   const [gradeErrorMsg, setGradeErrorMsg] = useState<string | null>(null);
+
+  // Reset Submission Modal State
+  const [resetModalState, setResetModalState] = useState<{
+    isOpen: boolean;
+    submissionId: string;
+    candidateName: string;
+    candidateEmail: string;
+    candidateId: string;
+    contestTitle: string;
+    taskTitle: string;
+    phaseTitle?: string;
+    status: string;
+    submittedAt: string | null;
+    clearDraftAnswers: boolean;
+    reason: string;
+  }>({
+    isOpen: false,
+    submissionId: "",
+    candidateName: "",
+    candidateEmail: "",
+    candidateId: "",
+    contestTitle: "",
+    taskTitle: "",
+    phaseTitle: "",
+    status: "",
+    submittedAt: null,
+    clearDraftAnswers: false,
+    reason: "",
+  });
+  const [isResetting, setIsResetting] = useState(false);
+  const [resetModalError, setResetModalError] = useState<string | null>(null);
+  const [resetSuccessToast, setResetSuccessToast] = useState<string | null>(null);
+
+  const handleOpenResetModal = (
+    sub: AdminSubmissionDetail,
+    unit?: {
+      id: string;
+      taskTitle: string;
+      phaseTitle?: string;
+      status: string;
+      submittedAt: string | null;
+    }
+  ) => {
+    setResetModalError(null);
+    setResetModalState({
+      isOpen: true,
+      submissionId: unit ? unit.id : sub.id,
+      candidateName: sub.candidateName,
+      candidateEmail: sub.candidateEmail,
+      candidateId: sub.candidateId,
+      contestTitle: sub.contestTitle,
+      taskTitle: unit ? unit.taskTitle : sub.taskTitle,
+      phaseTitle: unit ? unit.phaseTitle : undefined,
+      status: unit ? unit.status : sub.status,
+      submittedAt: unit ? unit.submittedAt : sub.submittedAt,
+      clearDraftAnswers: false,
+      reason: "",
+    });
+  };
+
+  const handleConfirmResetSubmission = async () => {
+    if (!resetModalState.submissionId) return;
+    try {
+      setIsResetting(true);
+      setResetModalError(null);
+      const res = await resetParticipantSubmissionAction({
+        submissionId: resetModalState.submissionId,
+        reason: resetModalState.reason.trim() || undefined,
+        clearDraftAnswers: resetModalState.clearDraftAnswers,
+      });
+
+      if (res.success) {
+        setResetModalState((prev) => ({ ...prev, isOpen: false }));
+        setResetSuccessToast(
+          `Assessment attempt for ${resetModalState.candidateName} was reset to DRAFT successfully.`
+        );
+        setTimeout(() => setResetSuccessToast(null), 5000);
+        if (selectedSubmissionRef.current?.id === resetModalState.submissionId) {
+          closeInspector();
+        }
+        await loadSubmissions(selectedContestId, true);
+      } else {
+        setResetModalError(res.error || "Failed to reset submission attempt.");
+      }
+    } catch (err) {
+      setResetModalError(err instanceof Error ? err.message : "Network error resetting submission.");
+    } finally {
+      setIsResetting(false);
+    }
+  };
 
   const selectedSubmissionRef = useRef<AdminSubmissionDetail | null>(null);
   useEffect(() => {
@@ -459,14 +550,25 @@ export default function AdminSubmissionsPage() {
                       {sub.finalScore !== null ? `${sub.finalScore}` : "—"}
                     </td>
                     <td className="py-3.5 px-space-md text-center" onClick={(e) => e.stopPropagation()}>
-                      <button
-                        type="button"
-                        onClick={() => openInspector(sub)}
-                        className="px-3 py-1 text-xs bg-surface-container-high hover:bg-surface-container text-on-surface font-semibold rounded border border-[#e2e8f0] inline-flex items-center gap-1 cursor-pointer"
-                      >
-                        <span className="material-symbols-outlined text-[14px]">edit_note</span>
-                        <span>{sub.status === "GRADED" ? "Review" : "Grade"}</span>
-                      </button>
+                      <div className="inline-flex items-center gap-1.5 justify-center">
+                        <button
+                          type="button"
+                          onClick={() => openInspector(sub)}
+                          className="px-3 py-1 text-xs bg-surface-container-high hover:bg-surface-container text-on-surface font-semibold rounded border border-[#e2e8f0] inline-flex items-center gap-1 cursor-pointer"
+                        >
+                          <span className="material-symbols-outlined text-[14px]">edit_note</span>
+                          <span>{sub.status === "GRADED" ? "Review" : "Grade"}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleOpenResetModal(sub)}
+                          title="Reset this assessment attempt"
+                          className="px-2 py-1 text-xs bg-red-50 hover:bg-red-100 text-red-700 font-medium rounded border border-red-200 inline-flex items-center gap-1 cursor-pointer transition-colors"
+                        >
+                          <span className="material-symbols-outlined text-[14px]">restart_alt</span>
+                          <span>Reset</span>
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -513,16 +615,63 @@ export default function AdminSubmissionsPage() {
                     {selectedSubmission.institution} • {selectedSubmission.candidateEmail}
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={closeInspector}
-                  className="text-secondary hover:text-on-surface p-1.5 rounded-lg hover:bg-surface-container-high transition-colors cursor-pointer"
-                  title="Close Review Drawer (Esc)"
-                  aria-label="Close Review Drawer"
-                >
-                  <span className="material-symbols-outlined text-[20px] block">close</span>
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleOpenResetModal(selectedSubmission)}
+                    title="Reset this candidate's submission attempt"
+                    className="px-2.5 py-1.5 text-xs bg-red-50 hover:bg-red-100 text-red-700 font-semibold rounded border border-red-200 inline-flex items-center gap-1.5 cursor-pointer transition-colors"
+                  >
+                    <span className="material-symbols-outlined text-[16px]">restart_alt</span>
+                    <span>Reset Attempt</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={closeInspector}
+                    className="text-secondary hover:text-on-surface p-1.5 rounded-lg hover:bg-surface-container-high transition-colors cursor-pointer"
+                    title="Close Review Drawer (Esc)"
+                    aria-label="Close Review Drawer"
+                  >
+                    <span className="material-symbols-outlined text-[20px] block">close</span>
+                  </button>
+                </div>
               </div>
+
+              {/* Multi-Unit Breakdown if Multiple Submissions Exist */}
+              {selectedSubmission.unitSubmissions && selectedSubmission.unitSubmissions.length > 1 && (
+                <div className="mb-space-md p-3 rounded-lg bg-surface-container-low border border-[#e2e8f0]">
+                  <h4 className="font-label-xs uppercase tracking-wider text-secondary font-semibold mb-2 flex items-center justify-between">
+                    <span>Candidate Assessment Units ({selectedSubmission.unitSubmissions.length})</span>
+                    <span className="text-[10px] text-secondary font-normal">Per-Unit Reset Control</span>
+                  </h4>
+                  <div className="space-y-1.5">
+                    {selectedSubmission.unitSubmissions.map((unit) => (
+                      <div
+                        key={unit.id}
+                        className="p-2 bg-surface-container-lowest rounded border border-[#e2e8f0] flex items-center justify-between text-xs"
+                      >
+                        <div className="flex flex-col">
+                          <span className="font-medium text-on-surface">
+                            {unit.phaseTitle ? `${unit.phaseTitle} — ` : ""}{unit.taskTitle}
+                          </span>
+                          <span className="text-[11px] text-secondary">
+                            Status: <strong className="uppercase">{unit.status}</strong>
+                            {unit.finalScore !== null ? ` • Score: ${unit.finalScore} pts` : ""}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleOpenResetModal(selectedSubmission, unit)}
+                          className="px-2 py-1 text-[11px] bg-red-50 hover:bg-red-100 text-red-700 font-medium rounded border border-red-200 inline-flex items-center gap-1 cursor-pointer transition-colors"
+                        >
+                          <span className="material-symbols-outlined text-[14px]">restart_alt</span>
+                          <span>Reset Unit</span>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Score Summary Box */}
               <div className="p-space-sm bg-surface-container-low rounded-lg border border-[#e2e8f0] grid grid-cols-3 gap-space-xs text-center mb-space-md">
@@ -930,6 +1079,173 @@ export default function AdminSubmissionsPage() {
                 )}
                 <span className="material-symbols-outlined text-[16px]">lock</span>
                 <span>Finalize & Lock Grade</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reset Submission Success Toast */}
+      {resetSuccessToast && (
+        <div className="fixed bottom-6 right-6 z-50 bg-[#166534] text-white px-4 py-3 rounded-lg shadow-xl flex items-center gap-2.5 text-xs animate-in slide-in-from-bottom duration-200">
+          <span className="material-symbols-outlined text-[18px]">check_circle</span>
+          <span>{resetSuccessToast}</span>
+          <button
+            onClick={() => setResetSuccessToast(null)}
+            className="ml-2 hover:opacity-80 text-white/80"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      {/* Reset Submission Confirmation Modal */}
+      {resetModalState.isOpen && (
+        <div className="fixed inset-0 z-[80] bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-surface-container-lowest max-w-lg w-full rounded-lg border border-[#e2e8f0] shadow-xl p-6 flex flex-col gap-4">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-[#e2e8f0]">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-full bg-red-100 text-red-700 flex items-center justify-center shrink-0">
+                  <span className="material-symbols-outlined text-[20px]">restart_alt</span>
+                </div>
+                <div>
+                  <h3 className="font-headline-sm font-semibold text-on-surface">Reset Assessment Submission</h3>
+                  <p className="text-secondary text-xs mt-0.5">Allow participant to resume and re-attempt assessment</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setResetModalState((prev) => ({ ...prev, isOpen: false }))}
+                className="text-secondary hover:text-on-surface p-1 rounded hover:bg-surface-container-high transition-colors"
+                title="Close"
+              >
+                <span className="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+
+            {/* Target Assessment Details */}
+            <div className="bg-surface-container-low rounded-lg p-3.5 border border-[#e2e8f0] space-y-2 text-xs">
+              <div className="flex justify-between">
+                <span className="text-secondary font-medium">Participant:</span>
+                <span className="font-semibold text-on-surface">
+                  {resetModalState.candidateName} ({resetModalState.candidateId})
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-secondary font-medium">Email:</span>
+                <span className="text-secondary">{resetModalState.candidateEmail}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-secondary font-medium">Contest / Program:</span>
+                <span className="font-semibold text-on-surface">{resetModalState.contestTitle}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-secondary font-medium">Unit / Task:</span>
+                <span className="font-semibold text-on-surface">
+                  {resetModalState.phaseTitle ? `${resetModalState.phaseTitle} — ` : ""}{resetModalState.taskTitle}
+                </span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-secondary font-medium">Submission ID:</span>
+                <span className="font-mono text-[11px] bg-surface-container-lowest px-2 py-0.5 rounded border border-[#e2e8f0]">
+                  {resetModalState.submissionId}
+                </span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-secondary font-medium">Current Status:</span>
+                <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-blue-100 text-blue-800">
+                  {resetModalState.status}
+                </span>
+              </div>
+              {resetModalState.submittedAt && (
+                <div className="flex justify-between">
+                  <span className="text-secondary font-medium">Submitted At:</span>
+                  <span className="text-secondary">
+                    {new Date(resetModalState.submittedAt).toLocaleString("en-US", { timeZone: "Asia/Dhaka" })} (BST)
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* Warning Notice */}
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 text-xs flex gap-2.5">
+              <span className="material-symbols-outlined text-[20px] text-amber-700 shrink-0">warning</span>
+              <div className="space-y-1">
+                <p className="font-semibold">Important Consequences:</p>
+                <ul className="list-disc pl-4 space-y-0.5 text-[11px] text-amber-800">
+                  <li>The assessment attempt will be placed back into <strong>DRAFT</strong> status.</li>
+                  <li>The participant will immediately regain full access to edit and re-submit.</li>
+                  <li>Any existing evaluator rubric scores and leaderboard entries for this task will be revoked.</li>
+                  <li>An immutable administrative audit entry will record this reset action.</li>
+                </ul>
+              </div>
+            </div>
+
+            {/* Reset Configuration Options */}
+            <div className="space-y-3 text-xs">
+              <label className="flex items-start gap-2.5 cursor-pointer p-2.5 rounded-lg border border-[#e2e8f0] bg-surface-container-lowest hover:bg-surface-container-low transition-colors">
+                <input
+                  type="checkbox"
+                  checked={resetModalState.clearDraftAnswers}
+                  onChange={(e) => setResetModalState((prev) => ({ ...prev, clearDraftAnswers: e.target.checked }))}
+                  className="mt-0.5 accent-primary-container cursor-pointer"
+                />
+                <div>
+                  <span className="font-medium text-on-surface block">Clear all drafted answers</span>
+                  <p className="text-secondary text-[11px] mt-0.5">
+                    If checked, saved answers will be erased for a completely blank paper. If unchecked (recommended for accidental early submissions), the participant&apos;s saved answers are preserved as an editable draft.
+                  </p>
+                </div>
+              </label>
+
+              {/* Reason for Reset */}
+              <div>
+                <label className="font-label-xs uppercase text-secondary font-semibold block mb-1">
+                  Reason for Reset (Audit Trail)
+                </label>
+                <input
+                  type="text"
+                  value={resetModalState.reason}
+                  onChange={(e) => setResetModalState((prev) => ({ ...prev, reason: e.target.value }))}
+                  placeholder="e.g. Accidental click on Finalize &amp; Submit before finishing"
+                  className="w-full px-3 py-2 text-xs rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface focus:outline-none focus:border-primary-container"
+                />
+              </div>
+            </div>
+
+            {resetModalError && (
+              <div className="p-2.5 rounded bg-red-50 border border-red-200 text-red-800 text-xs flex items-center gap-2">
+                <span className="material-symbols-outlined text-[16px] text-red-600">error</span>
+                <span>{resetModalError}</span>
+              </div>
+            )}
+
+            {/* Footer Buttons */}
+            <div className="pt-3 border-t border-[#e2e8f0] flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setResetModalState((prev) => ({ ...prev, isOpen: false }))}
+                className="px-3.5 py-1.5 text-xs rounded bg-surface-container-high hover:bg-surface-container text-on-surface font-medium cursor-pointer transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isResetting}
+                onClick={handleConfirmResetSubmission}
+                className="px-4 py-1.5 text-xs rounded bg-red-600 hover:bg-red-700 text-white font-semibold flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shadow-2xs transition-colors"
+              >
+                {isResetting ? (
+                  <>
+                    <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                    <span>Resetting...</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="material-symbols-outlined text-[16px]">restart_alt</span>
+                    <span>Confirm &amp; Reset Attempt</span>
+                  </>
+                )}
               </button>
             </div>
           </div>

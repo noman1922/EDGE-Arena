@@ -1530,6 +1530,88 @@ export async function certifyAndLockContestAction(contestId: string): Promise<Pu
   return publishContestResultsAction(contestId, { isFinalCertification: true });
 }
 
+/**
+ * Unpublishes contest results and retracts public leaderboard and answer review visibility.
+ * - Sets contest.isPublished to false
+ * - Reverts published submissions back to GRADED status
+ * - Clears public CohortResult entries
+ * - Logs an immutable administrative audit log entry
+ */
+export async function unpublishContestResultsAction(
+  contestId: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const session = await requireRole(["ADMIN"]);
+
+    const contest = await prisma.contest.findUnique({
+      where: { id: contestId },
+    });
+
+    if (!contest) {
+      return { success: false, error: "Contest not found." };
+    }
+
+    await prisma.$transaction(async (tx) => {
+      // 1. Set contest isPublished to false
+      await tx.contest.update({
+        where: { id: contestId },
+        data: { isPublished: false },
+      });
+
+      // 2. Revert PUBLISHED submissions back to GRADED
+      await tx.submission.updateMany({
+        where: {
+          contestId,
+          status: "PUBLISHED",
+        },
+        data: {
+          status: "GRADED",
+        },
+      });
+
+      // 3. Historical CohortResult records (scores, ranks, percentiles, publishedAt, certificates)
+      // are deliberately preserved intact in the database.
+      // Participant visibility is strictly and immediately revoked via contest.isPublished = false.
+
+      // 4. Audit log entry
+      await tx.auditLog.create({
+        data: {
+          id: crypto.randomUUID(),
+          actorId: session.userId,
+          action: "UNPUBLISH_CONTEST_RESULTS",
+          targetType: "CONTEST",
+          targetId: contestId,
+          metadata: {
+            contestId,
+            contestTitle: contest.title,
+            adminEmail: session.email,
+            timestamp: new Date().toISOString(),
+          },
+        },
+      });
+    });
+
+    safeRevalidatePath("/admin");
+    safeRevalidatePath("/admin/contests");
+    safeRevalidatePath("/admin/submissions");
+    safeRevalidatePath("/admin/results");
+    safeRevalidatePath("/evaluator");
+    safeRevalidatePath("/evaluator/monitoring");
+    safeRevalidatePath("/dashboard");
+    safeRevalidatePath("/dashboard/results");
+    safeRevalidatePath("/dashboard/leaderboard");
+    safeRevalidatePath("/assessment");
+
+    return { success: true };
+  } catch (error) {
+    console.error("Error unpublishing contest results:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to unpublish contest results.",
+    };
+  }
+}
+
 export interface ParticipantMonitoringEventView {
   id: string;
   timestamp: string;

@@ -52,6 +52,7 @@ export interface TaskBuilderQuestion {
 
 export interface TaskBuilderTask {
   id: string;
+  phaseId?: string;
   taskNumber: number;
   title: string;
   instructions: string | null;
@@ -81,6 +82,7 @@ export interface TaskBuilderPhase {
   description: string | null;
   weightPercentage: number;
   deadline: string;
+  durationMinutes?: number | null;
   status: string;
   tasks: TaskBuilderTask[];
 }
@@ -132,9 +134,11 @@ export async function getContestPhasesAndTasks(
       description: p.description,
       weightPercentage: Number(p.weightPercentage),
       deadline: p.deadline.toISOString(),
+      durationMinutes: p.durationMinutes,
       status: p.status,
       tasks: p.tasks.map((t) => ({
         id: t.id,
+        phaseId: t.phaseId,
         taskNumber: t.taskNumber,
         title: t.title,
         instructions: t.instructions,
@@ -197,6 +201,7 @@ export interface CreatePhaseInput {
   description?: string;
   weightPercentage?: number;
   deadline: string;
+  durationMinutes?: number | null;
   status?: "OPEN" | "UPCOMING";
 }
 
@@ -227,6 +232,7 @@ export async function createPhaseAction(input: CreatePhaseInput) {
         description: input.description?.trim() || null,
         weightPercentage: input.weightPercentage || 100.0,
         deadline: new Date(input.deadline),
+        durationMinutes: input.durationMinutes ? Number(input.durationMinutes) : null,
         status: initialStatus,
       },
     });
@@ -319,6 +325,7 @@ export interface UpdatePhaseInput {
   phaseNumber?: number;
   weightPercentage?: number;
   deadline?: string;
+  durationMinutes?: number | null;
   status?: "UPCOMING" | "OPEN" | "EVALUATING" | "CLOSED";
 }
 
@@ -413,6 +420,20 @@ export async function updatePhaseAction(input: UpdatePhaseInput) {
     // Description
     const targetDescription = input.description !== undefined ? input.description?.trim() || null : phase.description;
 
+    // Phase duration validation (minutes)
+    let targetDuration = phase.durationMinutes;
+    if (input.durationMinutes !== undefined) {
+      if (input.durationMinutes === null) {
+        targetDuration = null;
+      } else {
+        const d = Number(input.durationMinutes);
+        if (isNaN(d) || d < 1 || !Number.isInteger(d)) {
+          return { success: false, error: "Phase duration must be a positive integer in minutes." };
+        }
+        targetDuration = d;
+      }
+    }
+
     // In-place update preserving ID, tasks, questions, submissions, scores
     const updated = await prisma.phase.update({
       where: { id: phase.id },
@@ -422,6 +443,7 @@ export async function updatePhaseAction(input: UpdatePhaseInput) {
         phaseNumber: targetPhaseNumber,
         weightPercentage: targetWeight,
         deadline: targetDeadline,
+        durationMinutes: targetDuration,
         status: targetStatus,
       },
     });
@@ -468,6 +490,188 @@ export async function updatePhaseAction(input: UpdatePhaseInput) {
     return {
       success: false,
       error: error instanceof Error ? error.message : "Failed to update phase",
+    };
+  }
+}
+
+export interface ExtendParticipantPhaseAttemptInput {
+  phaseId: string;
+  userId: string;
+  extensionMinutes: number;
+  reason: string;
+}
+
+export async function extendParticipantPhaseAttemptAction(
+  input: ExtendParticipantPhaseAttemptInput
+): Promise<{ success: boolean; error?: string; newExpiresAt?: string }> {
+  try {
+    const session = await requireRole(["ADMIN"]);
+
+    if (!input || !input.phaseId || !input.userId) {
+      return { success: false, error: "Phase ID and User ID are required." };
+    }
+
+    if (
+      typeof input.extensionMinutes !== "number" ||
+      !Number.isInteger(input.extensionMinutes) ||
+      input.extensionMinutes < 1 ||
+      input.extensionMinutes > 480
+    ) {
+      return {
+        success: false,
+        error: "Extension duration must be a positive whole number of minutes (between 1 and 480).",
+      };
+    }
+
+    const trimmedReason = input.reason?.trim();
+    if (!trimmedReason || trimmedReason.length < 5 || trimmedReason.length > 500) {
+      return {
+        success: false,
+        error: "An administrative reason for the extension is required (5 to 500 characters).",
+      };
+    }
+
+    // Exponential backoff retry loop for transient deadlock or serialization contention
+    let lastError: unknown;
+    for (let attemptNum = 1; attemptNum <= 3; attemptNum++) {
+      try {
+        const result = await prisma.$transaction(
+          async (tx) => {
+            // 1. Lock PhaseAttempt row with SELECT ... FOR UPDATE
+            const lockedAttempts = await tx.$queryRaw<Array<{
+              id: string;
+              contestId: string;
+              phaseId: string;
+              userId: string;
+              status: string;
+              startedAt: Date;
+              expiresAt: Date | null;
+            }>>`
+              SELECT "id", "contestId", "phaseId", "userId", "status", "startedAt", "expiresAt"
+              FROM "PhaseAttempt"
+              WHERE "phaseId" = ${input.phaseId} AND "userId" = ${input.userId}
+              FOR UPDATE
+            `;
+
+            if (!lockedAttempts || lockedAttempts.length === 0) {
+              throw new Error("Phase attempt record not found for this participant.");
+            }
+
+            const attempt = lockedAttempts[0];
+
+            if (attempt.status === "COMPLETED") {
+              throw new Error("Cannot extend a COMPLETED phase attempt. If a specific task was submitted accidentally, use Admin Submission Reset.");
+            }
+
+            // 2. Fetch Phase and Contest boundaries
+            const phase = await tx.phase.findUnique({
+              where: { id: input.phaseId },
+              include: { contest: true },
+            });
+
+            if (!phase) {
+              throw new Error("Phase not found.");
+            }
+
+            const nowMs = Date.now();
+            const currentExpiryMs = attempt.expiresAt ? new Date(attempt.expiresAt).getTime() : nowMs;
+            const baseMs = Math.max(currentExpiryMs, nowMs);
+            const phaseDeadlineMs = new Date(phase.deadline).getTime();
+            const contestEndMs = new Date(phase.contest.endDate).getTime();
+
+            const newExpiryMs = Math.min(
+              baseMs + input.extensionMinutes * 60 * 1000,
+              phaseDeadlineMs,
+              contestEndMs
+            );
+
+            if (newExpiryMs <= nowMs) {
+              throw new Error("Cannot extend: The resulting deadline is capped by the Phase calendar deadline or Contest end date. Please extend the Phase deadline first.");
+            }
+
+            const newExpiresAt = new Date(newExpiryMs);
+
+            // 3. Update PhaseAttempt
+            await tx.phaseAttempt.update({
+              where: { id: attempt.id },
+              data: {
+                expiresAt: newExpiresAt,
+                status: "IN_PROGRESS",
+              },
+            });
+
+            // 4. Record AuditLog in the exact same transaction
+            const user = await tx.user.findUnique({
+              where: { id: input.userId },
+              select: { email: true, name: true },
+            });
+
+            await tx.auditLog.create({
+              data: {
+                id: crypto.randomUUID(),
+                actorId: session.userId,
+                action: "EXTEND_PARTICIPANT_PHASE_ATTEMPT",
+                targetType: "PHASE_ATTEMPT",
+                targetId: attempt.id,
+                metadata: {
+                  adminEmail: session.email,
+                  participantId: input.userId,
+                  participantEmail: user?.email,
+                  participantName: user?.name,
+                  phaseId: phase.id,
+                  phaseTitle: phase.title,
+                  contestId: phase.contestId,
+                  contestTitle: phase.contest.title,
+                  oldExpiresAt: attempt.expiresAt ? new Date(attempt.expiresAt).toISOString() : null,
+                  newExpiresAt: newExpiresAt.toISOString(),
+                  extensionMinutes: input.extensionMinutes,
+                  reason: trimmedReason,
+                  scope: "INDIVIDUAL_PARTICIPANT",
+                  timestamp: new Date().toISOString(),
+                },
+              },
+            });
+
+            return { success: true, newExpiresAt: newExpiresAt.toISOString() };
+          },
+          {
+            timeout: 10000,
+          }
+        );
+
+        safeRevalidatePath("/admin/tasks");
+        safeRevalidatePath("/admin/submissions");
+        safeRevalidatePath("/assessment");
+        safeRevalidatePath("/dashboard");
+
+        return result;
+      } catch (err) {
+        lastError = err;
+        const errMsg = err instanceof Error ? err.message : String(err);
+        // If it's a validation error (not deadlock/serialization conflict), return immediately
+        if (
+          errMsg.includes("not found") ||
+          errMsg.includes("COMPLETED") ||
+          errMsg.includes("capped by the Phase calendar deadline")
+        ) {
+          return { success: false, error: errMsg };
+        }
+        // Wait exponential backoff before retry on transient lock/deadlock conflict
+        if (attemptNum < 3) {
+          await new Promise((resolve) => setTimeout(resolve, 100 * Math.pow(2, attemptNum)));
+        }
+      }
+    }
+
+    return {
+      success: false,
+      error: lastError instanceof Error ? lastError.message : "Failed to extend phase attempt after retries.",
+    };
+  } catch (error) {
+    console.error("Error extending phase attempt:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to extend phase attempt.",
     };
   }
 }
@@ -574,6 +778,8 @@ export async function createTaskAction(input: CreateTaskInput) {
 
 export interface UpdateTaskInput {
   taskId: string;
+  contestId?: string;
+  phaseId?: string;
   title?: string;
   instructions?: string | null;
   totalPoints?: number;
@@ -584,13 +790,57 @@ export async function updateTaskAction(input: UpdateTaskInput) {
   try {
     const session = await requireRole(["ADMIN"]);
 
+    if (!input.taskId || typeof input.taskId !== "string" || !input.taskId.trim()) {
+      return { success: false, error: "Task ID is required." };
+    }
+
     const task = await prisma.task.findUnique({
       where: { id: input.taskId },
-      include: { phase: true },
+      include: {
+        phase: {
+          include: { contest: true },
+        },
+      },
     });
 
     if (!task) {
       return { success: false, error: "Task not found." };
+    }
+
+    if (input.phaseId && task.phaseId !== input.phaseId) {
+      return { success: false, error: "Task does not belong to the specified phase." };
+    }
+
+    if (input.contestId && task.phase.contestId !== input.contestId) {
+      return { success: false, error: "Task does not belong to the specified contest." };
+    }
+
+    // Validate title if provided
+    if (input.title !== undefined) {
+      const trimmedTitle = input.title.trim();
+      if (!trimmedTitle) {
+        return { success: false, error: "Task title cannot be empty." };
+      }
+      if (trimmedTitle.length < 2) {
+        return { success: false, error: "Task title must be at least 2 characters." };
+      }
+      if (trimmedTitle.length > 200) {
+        return { success: false, error: "Task title cannot exceed 200 characters." };
+      }
+    }
+
+    // Validate totalPoints if provided
+    if (input.totalPoints !== undefined) {
+      if (typeof input.totalPoints !== "number" || isNaN(input.totalPoints) || input.totalPoints < 1) {
+        return { success: false, error: "Total points must be a positive number." };
+      }
+    }
+
+    // Validate durationMinutes if provided
+    if (input.durationMinutes !== undefined && input.durationMinutes !== null) {
+      if (typeof input.durationMinutes !== "number" || isNaN(input.durationMinutes) || input.durationMinutes < 1) {
+        return { success: false, error: "Duration must be a positive number of minutes." };
+      }
     }
 
     const updated = await prisma.task.update({
@@ -611,16 +861,22 @@ export async function updateTaskAction(input: UpdateTaskInput) {
       targetType: "TASK",
       targetId: input.taskId,
       metadata: {
-        title: updated.title,
+        oldTitle: task.title,
+        newTitle: updated.title,
         durationMinutes: updated.durationMinutes,
         phaseId: task.phaseId,
+        contestId: task.phase.contestId,
       },
     });
 
     safeRevalidatePath("/admin/tasks");
     safeRevalidatePath("/admin/contests");
+    safeRevalidatePath("/admin/submissions");
+    safeRevalidatePath("/admin/results");
     safeRevalidatePath("/assessment");
     safeRevalidatePath("/dashboard");
+    safeRevalidatePath("/dashboard/results");
+    safeRevalidatePath("/dashboard/contests");
 
     return { success: true, task: updated };
   } catch (error) {

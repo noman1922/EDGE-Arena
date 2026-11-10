@@ -58,37 +58,116 @@ import {
 } from "@/app/actions/system-error-actions";
 import { provisionAdminAccount } from "../../scripts/provision-admin";
 
-const ADMIN_EMAIL = "admin@gmail.com";
-const ADMIN_INITIAL_PASSWORD = "admin123";
+const PRODUCTION_ADMIN_EMAIL = "admin@gmail.com";
+const TEST_ADMIN_EMAIL = "test-security-admin-isolated@edgearena.internal";
+const TEST_ADMIN_INITIAL_PASSWORD = "TestAdminInitial#2026";
+
+/**
+ * Strict safety guard: Blocks tests from modifying, querying, or targeting the real Production admin account.
+ */
+const FORBIDDEN_PRODUCTION_EMAILS = new Set(
+  [
+    PRODUCTION_ADMIN_EMAIL.toLowerCase(),
+    (process.env.ADMIN_EMAIL || "").trim().toLowerCase(),
+  ].filter(Boolean)
+);
+
+function assertSafeTestEmail(email: string): void {
+  const normalized = email.trim().toLowerCase();
+  if (FORBIDDEN_PRODUCTION_EMAILS.has(normalized)) {
+    throw new Error(
+      `[SECURITY SAFETY VIOLATION] Test suite blocked from accessing or modifying production administrator account (${email}). Tests must only use isolated test accounts.`
+    );
+  }
+}
+
+// Invariant: Verify immediately that TEST_ADMIN_EMAIL is not a production email
+assertSafeTestEmail(TEST_ADMIN_EMAIL);
+
+// Intercept Prisma operations in this test process to guarantee production admin is never mutated
+const originalUserUpdate = prisma.user.update;
+const originalUserUpdateMany = prisma.user.updateMany;
+const originalUserDelete = prisma.user.delete;
+const originalUserDeleteMany = prisma.user.deleteMany;
+
+(prisma.user as any).update = async (args: any) => {
+  if (args?.where?.email) {
+    assertSafeTestEmail(args.where.email);
+  }
+  return originalUserUpdate.call(prisma.user, args);
+};
+
+(prisma.user as any).updateMany = async (args: any) => {
+  if (args?.where?.email && typeof args.where.email === "string") {
+    assertSafeTestEmail(args.where.email);
+  }
+  return originalUserUpdateMany.call(prisma.user, args);
+};
+
+(prisma.user as any).delete = async (args: any) => {
+  if (args?.where?.email) {
+    assertSafeTestEmail(args.where.email);
+  }
+  return originalUserDelete.call(prisma.user, args);
+};
+
+(prisma.user as any).deleteMany = async (args: any) => {
+  if (args?.where?.email && typeof args.where.email === "string") {
+    assertSafeTestEmail(args.where.email);
+  }
+  return originalUserDeleteMany.call(prisma.user, args);
+};
 
 test.before(async () => {
-  // Ensure initial admin is provisioned
+  assertSafeTestEmail(TEST_ADMIN_EMAIL);
+  // Ensure dedicated isolated test admin is provisioned
   await provisionAdminAccount({
-    email: ADMIN_EMAIL,
-    password: ADMIN_INITIAL_PASSWORD,
+    email: TEST_ADMIN_EMAIL,
+    password: TEST_ADMIN_INITIAL_PASSWORD,
+    name: "Isolated Test Administrator",
   });
 });
 
 test.after(async () => {
   setTestSession(undefined);
-  // Restore initial admin state for repeatability
-  const { hash, salt } = hashPassword(ADMIN_INITIAL_PASSWORD);
-  await prisma.user.update({
-    where: { email: ADMIN_EMAIL },
-    data: {
-      passwordHash: hash,
-      passwordSalt: salt,
-      mustChangePassword: true,
-      isActive: true,
+  assertSafeTestEmail(TEST_ADMIN_EMAIL);
+  // Clean up isolated test admin account
+  await prisma.user.deleteMany({
+    where: { email: TEST_ADMIN_EMAIL },
+  }).catch(() => {});
+});
+
+test("0. Strict safety guard blocks any test modification of production admin account", async () => {
+  assert.throws(
+    () => {
+      assertSafeTestEmail(PRODUCTION_ADMIN_EMAIL);
     },
-  });
+    (err: Error) => {
+      assert.match(err.message, /SECURITY SAFETY VIOLATION/);
+      return true;
+    }
+  );
+
+  await assert.rejects(
+    async () => {
+      await prisma.user.update({
+        where: { email: PRODUCTION_ADMIN_EMAIL },
+        data: { isActive: true },
+      });
+    },
+    (err: Error) => {
+      assert.match(err.message, /SECURITY SAFETY VIOLATION/);
+      return true;
+    }
+  );
 });
 
 test("1. Initial admin can authenticate using requested initial credentials before password change", async () => {
+  assertSafeTestEmail(TEST_ADMIN_EMAIL);
   // Ensure admin has mustChangePassword: true
-  const { hash, salt } = hashPassword(ADMIN_INITIAL_PASSWORD);
+  const { hash, salt } = hashPassword(TEST_ADMIN_INITIAL_PASSWORD);
   await prisma.user.update({
-    where: { email: ADMIN_EMAIL },
+    where: { email: TEST_ADMIN_EMAIL },
     data: {
       passwordHash: hash,
       passwordSalt: salt,
@@ -97,7 +176,7 @@ test("1. Initial admin can authenticate using requested initial credentials befo
     },
   });
 
-  const res = await loginAction(ADMIN_EMAIL, ADMIN_INITIAL_PASSWORD);
+  const res = await loginAction(TEST_ADMIN_EMAIL, TEST_ADMIN_INITIAL_PASSWORD);
   assert.equal(res.success, true);
   assert.equal(res.role, "ADMIN");
   assert.equal(res.mustChangePassword, true);
@@ -105,8 +184,9 @@ test("1. Initial admin can authenticate using requested initial credentials befo
 });
 
 test("2. Initial admin must change password before normal admin functionality is unlocked", async () => {
+  assertSafeTestEmail(TEST_ADMIN_EMAIL);
   const admin = await prisma.user.findUniqueOrThrow({
-    where: { email: ADMIN_EMAIL },
+    where: { email: TEST_ADMIN_EMAIL },
   });
 
   // When admin session has mustChangePassword: true
@@ -142,8 +222,9 @@ test("2. Initial admin must change password before normal admin functionality is
 });
 
 test("3. New password works and old password no longer works after forced password change", async () => {
+  assertSafeTestEmail(TEST_ADMIN_EMAIL);
   const admin = await prisma.user.findUniqueOrThrow({
-    where: { email: ADMIN_EMAIL },
+    where: { email: TEST_ADMIN_EMAIL },
   });
 
   setTestSession({
@@ -157,7 +238,7 @@ test("3. New password works and old password no longer works after forced passwo
   const newPassword = "NewAdminPassword#2026!";
 
   // 1. Change password
-  const changeRes = await changePasswordAction(ADMIN_INITIAL_PASSWORD, newPassword, newPassword);
+  const changeRes = await changePasswordAction(TEST_ADMIN_INITIAL_PASSWORD, newPassword, newPassword);
   assert.equal(changeRes.success, true);
   assert.equal(changeRes.redirectTo, "/admin");
 
@@ -165,20 +246,20 @@ test("3. New password works and old password no longer works after forced passwo
   setTestSession(undefined);
 
   // 2. Old password must be rejected
-  const oldLogin = await loginAction(ADMIN_EMAIL, ADMIN_INITIAL_PASSWORD);
+  const oldLogin = await loginAction(TEST_ADMIN_EMAIL, TEST_ADMIN_INITIAL_PASSWORD);
   assert.equal(oldLogin.success, false);
   assert.equal(oldLogin.error, "Invalid email or password.");
 
   // 3. New password must authenticate successfully
-  const newLogin = await loginAction(ADMIN_EMAIL, newPassword);
+  const newLogin = await loginAction(TEST_ADMIN_EMAIL, newPassword);
   assert.equal(newLogin.success, true);
   assert.equal(newLogin.mustChangePassword, false);
   assert.equal(newLogin.redirectTo, "/admin");
 
   // Restore initial password for following tests
-  const { hash, salt } = hashPassword(ADMIN_INITIAL_PASSWORD);
+  const { hash, salt } = hashPassword(TEST_ADMIN_INITIAL_PASSWORD);
   await prisma.user.update({
-    where: { email: ADMIN_EMAIL },
+    where: { email: TEST_ADMIN_EMAIL },
     data: {
       passwordHash: hash,
       passwordSalt: salt,
@@ -188,7 +269,8 @@ test("3. New password works and old password no longer works after forced passwo
 });
 
 test("4. Incorrect passwords are rejected with generic error", async () => {
-  const res = await loginAction(ADMIN_EMAIL, "wrongpassword123");
+  assertSafeTestEmail(TEST_ADMIN_EMAIL);
+  const res = await loginAction(TEST_ADMIN_EMAIL, "wrongpassword123");
   assert.equal(res.success, false);
   assert.equal(res.error, "Invalid email or password.");
 });
@@ -315,7 +397,7 @@ test("9. Unauthenticated requests cannot access protected server actions or sess
 test("10. Manual evaluator creation requires valid email and password", async () => {
   setTestSession({
     userId: "admin-id",
-    email: ADMIN_EMAIL,
+    email: TEST_ADMIN_EMAIL,
     role: "ADMIN",
     name: "System Administrator",
     mustChangePassword: false,
@@ -370,7 +452,7 @@ test("10. Manual evaluator creation requires valid email and password", async ()
 test("11. CSV evaluator import validates each row and assigns only the EVALUATOR role", async () => {
   setTestSession({
     userId: "admin-id",
-    email: ADMIN_EMAIL,
+    email: TEST_ADMIN_EMAIL,
     role: "ADMIN",
     name: "System Administrator",
     mustChangePassword: false,
@@ -406,7 +488,7 @@ test("11. CSV evaluator import validates each row and assigns only the EVALUATOR
 test("12. Participant creation requires email and password", async () => {
   setTestSession({
     userId: "admin-id",
-    email: ADMIN_EMAIL,
+    email: TEST_ADMIN_EMAIL,
     role: "ADMIN",
     name: "System Administrator",
     mustChangePassword: false,
@@ -450,7 +532,7 @@ test("12. Participant creation requires email and password", async () => {
 test("13. Duplicate emails are rejected consistently", async () => {
   setTestSession({
     userId: "admin-id",
-    email: ADMIN_EMAIL,
+    email: TEST_ADMIN_EMAIL,
     role: "ADMIN",
     name: "System Administrator",
     mustChangePassword: false,
@@ -491,7 +573,7 @@ test("13. Duplicate emails are rejected consistently", async () => {
 test("14. Passwords are scrypt hashed and never returned to the client", async () => {
   setTestSession({
     userId: "admin-id",
-    email: ADMIN_EMAIL,
+    email: TEST_ADMIN_EMAIL,
     role: "ADMIN",
     name: "System Administrator",
     mustChangePassword: false,
@@ -586,7 +668,7 @@ test("16. Administrators can access sanitized diagnostics, while other roles are
   // Admin allowed
   setTestSession({
     userId: "admin-id",
-    email: ADMIN_EMAIL,
+    email: TEST_ADMIN_EMAIL,
     role: "ADMIN",
     name: "System Administrator",
     mustChangePassword: false,

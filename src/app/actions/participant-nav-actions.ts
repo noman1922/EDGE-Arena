@@ -266,6 +266,34 @@ export async function getParticipantLeaderboard(
   }
 }
 
+export interface ParticipantQuestionReviewItem {
+  id: string;
+  questionNumber: number;
+  type: string;
+  prompt: string;
+  instructions: string | null;
+  points: number;
+  earnedScore: number | null;
+  status: "CORRECT" | "INCORRECT" | "UNANSWERED" | "MANUAL_EVALUATED" | "PENDING_EVALUATION";
+  selectedOption: string | null;
+  correctOptionKey: string | null;
+  explanation: string | null;
+  options: Array<{
+    id: string;
+    optionKey: string;
+    text: string;
+  }>;
+  writtenText: string | null;
+  wordCount: number | null;
+  fileName: string | null;
+  fileKey: string | null;
+  evaluatorFeedback: string | null;
+  taskTitle: string;
+  taskNumber: number;
+  phaseTitle: string;
+  phaseNumber: number;
+}
+
 export interface ParticipantScorecardData {
   contestTitle: string;
   track: string;
@@ -273,6 +301,7 @@ export interface ParticipantScorecardData {
   submissionStatus: string;
   submittedAt: string | null;
   totalScore: number;
+  maxScore: number;
   rank: number | null;
   percentile: number | null;
   isCertified: boolean;
@@ -283,6 +312,7 @@ export interface ParticipantScorecardData {
     scoreAwarded: number;
     comments: string | null;
   }>;
+  questionReviews: ParticipantQuestionReviewItem[];
 }
 
 export async function getParticipantScorecard(
@@ -305,14 +335,25 @@ export async function getParticipantScorecard(
             },
           },
         },
+        phase: true,
         task: {
           include: {
             rubrics: true,
+            questions: {
+              orderBy: { questionNumber: "asc" },
+              include: {
+                options: {
+                  orderBy: { optionKey: "asc" },
+                },
+                answerKey: true,
+              },
+            },
           },
         },
+        answers: true,
         evaluations: true,
       },
-      orderBy: { createdAt: "desc" },
+      orderBy: [{ phase: { phaseNumber: "asc" } }, { task: { taskNumber: "asc" } }],
     });
 
     if (submissions.length === 0) {
@@ -333,16 +374,23 @@ export async function getParticipantScorecard(
         submissionStatus: primarySub.status,
         submittedAt: primarySub.submittedAt?.toISOString() || null,
         totalScore: 0,
+        maxScore: 100,
         rank: null,
         percentile: null,
         isCertified: false,
         rubrics: [],
+        questionReviews: [],
       };
     }
 
     // Map all rubrics across all candidate tasks
     const allRubrics: ParticipantScorecardData["rubrics"] = [];
+    const questionReviews: ParticipantQuestionReviewItem[] = [];
+    let totalMaxPossible = 0;
+
     for (const sub of submissions) {
+      totalMaxPossible += sub.task.totalPoints;
+
       for (const r of sub.task.rubrics) {
         const evaluation = sub.evaluations.find((e) => e.rubricId === r.id);
         allRubrics.push({
@@ -351,6 +399,91 @@ export async function getParticipantScorecard(
           maxPoints: Number(r.maxPoints),
           scoreAwarded: evaluation ? Number(evaluation.scoreAwarded) : 0,
           comments: evaluation?.comments || null,
+        });
+      }
+
+      // Parse question-level evaluator feedback from feedbackSummary
+      const questionsFeedbackMap: Record<string, string> = {};
+      if (sub.feedbackSummary) {
+        try {
+          const parsed = JSON.parse(sub.feedbackSummary);
+          if (parsed && typeof parsed === "object" && parsed.questions) {
+            Object.assign(questionsFeedbackMap, parsed.questions);
+          }
+        } catch {
+          // Plain text fallback
+        }
+      }
+
+      // Map questions and candidate answers
+      for (const q of sub.task.questions) {
+        const ans = sub.answers.find((a) => a.questionId === q.id);
+
+        let status: ParticipantQuestionReviewItem["status"] = "UNANSWERED";
+        let earnedScore: number | null = null;
+
+        if (q.type === "MCQ") {
+          if (!ans || !ans.selectedOption) {
+            status = "UNANSWERED";
+            earnedScore = 0;
+          } else if (ans.isCorrect === true) {
+            status = "CORRECT";
+            earnedScore = ans.score !== null ? Number(ans.score) : q.points;
+          } else {
+            status = "INCORRECT";
+            earnedScore = 0;
+          }
+        } else if (q.type === "WRITTEN") {
+          if (!ans || !ans.writtenText?.trim()) {
+            status = "UNANSWERED";
+            earnedScore = 0;
+          } else if (ans.score !== null && ans.score !== undefined) {
+            status = "MANUAL_EVALUATED";
+            earnedScore = Number(ans.score);
+          } else {
+            status = "PENDING_EVALUATION";
+            earnedScore = null;
+          }
+        } else {
+          // FILE_UPLOAD / PDF / FILE
+          if (!ans || (!ans.fileKey && !ans.fileName)) {
+            status = "UNANSWERED";
+            earnedScore = 0;
+          } else if (ans.score !== null && ans.score !== undefined) {
+            status = "MANUAL_EVALUATED";
+            earnedScore = Number(ans.score);
+          } else {
+            status = "PENDING_EVALUATION";
+            earnedScore = null;
+          }
+        }
+
+        questionReviews.push({
+          id: q.id,
+          questionNumber: q.questionNumber,
+          type: q.type,
+          prompt: q.prompt,
+          instructions: q.instructions,
+          points: q.points,
+          earnedScore,
+          status,
+          selectedOption: ans?.selectedOption || null,
+          correctOptionKey: q.answerKey?.correctOptionKey || null,
+          explanation: q.answerKey?.explanation || null,
+          options: q.options.map((o) => ({
+            id: o.id,
+            optionKey: o.optionKey,
+            text: o.text,
+          })),
+          writtenText: ans?.writtenText || null,
+          wordCount: ans?.wordCount || null,
+          fileName: ans?.fileName || null,
+          fileKey: ans?.fileKey || null,
+          evaluatorFeedback: questionsFeedbackMap[q.id] || null,
+          taskTitle: sub.task.title,
+          taskNumber: sub.task.taskNumber,
+          phaseTitle: sub.phase.title,
+          phaseNumber: sub.phase.phaseNumber,
         });
       }
     }
@@ -366,10 +499,12 @@ export async function getParticipantScorecard(
       submissionStatus: primarySub.status,
       submittedAt: primarySub.submittedAt?.toISOString() || null,
       totalScore,
+      maxScore: totalMaxPossible || 100,
       rank: cohortResult?.rank || null,
       percentile: cohortResult ? Number(cohortResult.percentile) : null,
       isCertified: cohortResult?.isCertified || false,
       rubrics: allRubrics,
+      questionReviews,
     };
   } catch (error) {
     console.error("Error fetching participant scorecard:", error);

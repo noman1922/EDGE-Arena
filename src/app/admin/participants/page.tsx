@@ -733,6 +733,7 @@ export default function AdminParticipantsPage() {
       <EditParticipantModal
         isOpen={isEditModalOpen}
         participant={editingParticipant}
+        contests={contests}
         onClose={() => {
           setIsEditModalOpen(false);
           setEditingParticipant(null);

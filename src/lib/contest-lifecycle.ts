@@ -131,18 +131,39 @@ export interface ContestDeadlineCalculation {
   controllingSource: "PHASE_DEADLINE" | "CONTEST_END_DATE";
 }
 
+/**
+ * Computes the authoritative attempt deadline for an individual participant,
+ * harmonizing the participant's individual timer with phase and contest bounds.
+ */
 export interface AttemptDeadlineCalculation {
   effectiveDeadline: Date;
   effectiveDeadlineMs: number;
   isConcluded: boolean;
   secondsLeft: number;
-  controllingSource: "ATTEMPT_EXPIRY" | "PHASE_DEADLINE" | "CONTEST_END_DATE";
+  controllingSource: "ATTEMPT_EXPIRY" | "PHASE_DEADLINE" | "CONTEST_END_DATE" | "PHASE_ATTEMPT_EXPIRY" | "TASK_ATTEMPT_EXPIRY";
   isAttemptExpired: boolean;
+  phaseDeadline?: Date;
+  phaseSecondsLeft?: number;
+  isPhaseExpired?: boolean;
 }
 
 /**
- * Computes the authoritative attempt deadline for an individual participant,
+ * Computes the authoritative hierarchical effective deadline and remaining seconds,
  * harmonizing the participant's individual timer with phase and contest bounds.
+ *
+ * Hierarchical Rules:
+ * 1. Contest Outer Boundary: contest.endDate is the absolute ceiling. If contest concluded, secondsLeft = 0.
+ * 2. Phase Boundary:
+ *    - If phase has durationMinutes and phaseAttempt is started:
+ *      phaseDeadline = MIN(phaseAttempt.startedAt + phase.durationMinutes, phase.deadline, contest.endDate)
+ *    - If phaseAttempt.expiresAt is NULL or phase has no durationMinutes:
+ *      phaseDeadline = MIN(phase.deadline, contest.endDate)
+ * 3. Task Boundary:
+ *    - If task has durationMinutes:
+ *      taskDeadline = MIN(submission.startedAt + task.durationMinutes, phaseDeadline)
+ *    - If task has NO durationMinutes (null):
+ *      taskDeadline = phaseDeadline (No separate task countdown)
+ * 4. Effective Deadline = MIN(Contest End, Phase Deadline, Task Deadline)
  */
 export function getAuthoritativeAttemptDeadline(
   contest: {
@@ -152,59 +173,113 @@ export function getAuthoritativeAttemptDeadline(
     durationMinutes?: number | null;
   },
   phase?: {
+    id?: string;
     deadline?: Date | string | null;
+    durationMinutes?: number | null;
     status?: string | PhaseStatus | null;
   } | null,
   submission?: {
     startedAt?: Date | string | null;
     expiresAt?: Date | string | null;
+    status?: string | null;
   } | null,
-  now: Date = new Date()
+  now: Date = new Date(),
+  task?: {
+    id?: string;
+    durationMinutes?: number | null;
+  } | null,
+  phaseAttempt?: {
+    startedAt?: Date | string | null;
+    expiresAt?: Date | string | null;
+    status?: string | null;
+  } | null
 ): AttemptDeadlineCalculation {
-  const contestDeadline = getAuthoritativeContestDeadline(contest, phase, now);
+  const contestEndDate = new Date(contest.endDate);
+  const contestEndDateMs = contestEndDate.getTime();
+  const nowMs = now.getTime();
 
-  if (submission?.expiresAt) {
-    const attemptExpiry = new Date(submission.expiresAt);
-    const attemptExpiryMs = attemptExpiry.getTime();
-
-    // If attempt expiry is earlier than the contest/phase deadline
-    if (!isNaN(attemptExpiryMs) && attemptExpiryMs < contestDeadline.effectiveDeadlineMs) {
-      const secondsLeft = Math.max(0, Math.floor((attemptExpiryMs - now.getTime()) / 1000));
-      return {
-        effectiveDeadline: attemptExpiry,
-        effectiveDeadlineMs: attemptExpiryMs,
-        isConcluded: contestDeadline.isConcluded || secondsLeft <= 0,
-        secondsLeft,
-        controllingSource: "ATTEMPT_EXPIRY",
-        isAttemptExpired: secondsLeft <= 0,
-      };
-    }
-  }
-
-  // Authoritative fallback: If submission has startedAt and contest has durationMinutes, but expiresAt was null
-  if (submission?.startedAt && contest.durationMinutes && !submission.expiresAt) {
-    const startedAtDate = new Date(submission.startedAt);
-    const calculatedExpiryMs = startedAtDate.getTime() + contest.durationMinutes * 60 * 1000;
-    const effectiveExpiryMs = Math.min(calculatedExpiryMs, contestDeadline.effectiveDeadlineMs);
-    const secondsLeft = Math.max(0, Math.floor((effectiveExpiryMs - now.getTime()) / 1000));
-    const attemptExpiry = new Date(effectiveExpiryMs);
+  // 1. Contest Outer Hard Boundary
+  const concluded = isContestConcluded(contest, now);
+  if (concluded) {
     return {
-      effectiveDeadline: attemptExpiry,
-      effectiveDeadlineMs: effectiveExpiryMs,
-      isConcluded: contestDeadline.isConcluded || secondsLeft <= 0,
-      secondsLeft,
-      controllingSource: "ATTEMPT_EXPIRY",
-      isAttemptExpired: secondsLeft <= 0,
+      effectiveDeadline: contestEndDate,
+      effectiveDeadlineMs: contestEndDateMs,
+      isConcluded: true,
+      secondsLeft: 0,
+      controllingSource: "CONTEST_END_DATE",
+      isAttemptExpired: true,
+      phaseDeadline: contestEndDate,
+      phaseSecondsLeft: 0,
+      isPhaseExpired: true,
     };
   }
 
+  // 2. Phase Boundary Calculation
+  let calendarPhaseDeadlineMs = contestEndDateMs;
+  if (phase?.deadline) {
+    const parsed = new Date(phase.deadline).getTime();
+    if (!isNaN(parsed)) {
+      calendarPhaseDeadlineMs = parsed;
+    }
+  }
+  const phaseCeilingMs = Math.min(calendarPhaseDeadlineMs, contestEndDateMs);
+
+  let effectivePhaseDeadlineMs = phaseCeilingMs;
+  let phaseControllingSource: "PHASE_ATTEMPT_EXPIRY" | "PHASE_DEADLINE" | "CONTEST_END_DATE" =
+    calendarPhaseDeadlineMs < contestEndDateMs ? "PHASE_DEADLINE" : "CONTEST_END_DATE";
+
+  if (phaseAttempt?.expiresAt) {
+    const attemptPhaseExpiryMs = new Date(phaseAttempt.expiresAt).getTime();
+    if (!isNaN(attemptPhaseExpiryMs) && attemptPhaseExpiryMs < phaseCeilingMs) {
+      effectivePhaseDeadlineMs = attemptPhaseExpiryMs;
+      phaseControllingSource = "PHASE_ATTEMPT_EXPIRY";
+    }
+  } else if (phaseAttempt?.startedAt && phase?.durationMinutes && phase.durationMinutes > 0) {
+    const rawPhaseExpiryMs = new Date(phaseAttempt.startedAt).getTime() + phase.durationMinutes * 60 * 1000;
+    if (rawPhaseExpiryMs < phaseCeilingMs) {
+      effectivePhaseDeadlineMs = rawPhaseExpiryMs;
+      phaseControllingSource = "PHASE_ATTEMPT_EXPIRY";
+    }
+  }
+
+  const phaseSecondsLeft = Math.max(0, Math.floor((effectivePhaseDeadlineMs - nowMs) / 1000));
+  const isPhaseExpired = phaseSecondsLeft <= 0;
+
+  // 3. Task Boundary Calculation
+  const hasTaskDuration = Boolean(task?.durationMinutes && task.durationMinutes > 0);
+  let effectiveTaskDeadlineMs = effectivePhaseDeadlineMs;
+  let controllingSource: "TASK_ATTEMPT_EXPIRY" | "PHASE_ATTEMPT_EXPIRY" | "PHASE_DEADLINE" | "CONTEST_END_DATE" = phaseControllingSource;
+
+  if (hasTaskDuration) {
+    const taskMinutes = task!.durationMinutes!;
+    if (submission?.expiresAt) {
+      const taskExpiryMs = new Date(submission.expiresAt).getTime();
+      if (!isNaN(taskExpiryMs) && taskExpiryMs < effectivePhaseDeadlineMs) {
+        effectiveTaskDeadlineMs = taskExpiryMs;
+        controllingSource = "TASK_ATTEMPT_EXPIRY";
+      }
+    } else if (submission?.startedAt) {
+      const calculatedTaskExpiryMs = new Date(submission.startedAt).getTime() + taskMinutes * 60 * 1000;
+      if (calculatedTaskExpiryMs < effectivePhaseDeadlineMs) {
+        effectiveTaskDeadlineMs = calculatedTaskExpiryMs;
+        controllingSource = "TASK_ATTEMPT_EXPIRY";
+      }
+    }
+  }
+
+  const secondsLeft = Math.max(0, Math.floor((effectiveTaskDeadlineMs - nowMs) / 1000));
+  const effectiveDeadline = new Date(effectiveTaskDeadlineMs);
+
   return {
-    effectiveDeadline: contestDeadline.effectiveDeadline,
-    effectiveDeadlineMs: contestDeadline.effectiveDeadlineMs,
-    isConcluded: contestDeadline.isConcluded,
-    secondsLeft: contestDeadline.secondsLeft,
-    controllingSource: contestDeadline.controllingSource,
-    isAttemptExpired: contestDeadline.isConcluded,
+    effectiveDeadline,
+    effectiveDeadlineMs: effectiveTaskDeadlineMs,
+    isConcluded: isPhaseExpired || secondsLeft <= 0,
+    secondsLeft,
+    controllingSource: controllingSource === "TASK_ATTEMPT_EXPIRY" ? "TASK_ATTEMPT_EXPIRY" : controllingSource,
+    isAttemptExpired: secondsLeft <= 0 || isPhaseExpired,
+    phaseDeadline: new Date(effectivePhaseDeadlineMs),
+    phaseSecondsLeft,
+    isPhaseExpired,
   };
 }
 

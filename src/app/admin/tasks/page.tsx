@@ -6,6 +6,7 @@ import {
   getContestPhasesAndTasks,
   createPhaseAction,
   createTaskAction,
+  updateTaskAction,
   createQuestionAction,
   deleteQuestionAction,
   deletePhaseAction,
@@ -52,6 +53,7 @@ export default function AdminTasksPage() {
   const [phaseTitle, setPhaseTitle] = useState("");
   const [phaseDesc, setPhaseDesc] = useState("");
   const [phaseDeadline, setPhaseDeadline] = useState("");
+  const [phaseDuration, setPhaseDuration] = useState<number | null>(null);
   const [isSubmittingPhase, setIsSubmittingPhase] = useState(false);
 
   // Edit Phase Modal
@@ -87,6 +89,15 @@ export default function AdminTasksPage() {
   const [taskPoints, setTaskPoints] = useState(100);
   const [taskDuration, setTaskDuration] = useState<number | null>(null);
   const [isSubmittingTask, setIsSubmittingTask] = useState(false);
+
+  // Edit Task Modal State
+  const [isEditTaskModalOpen, setIsEditTaskModalOpen] = useState(false);
+  const [editingTask, setEditingTask] = useState<TaskBuilderTask | null>(null);
+  const [editTaskTitle, setEditTaskTitle] = useState("");
+  const [editTaskInstructions, setEditTaskInstructions] = useState("");
+  const [editTaskPoints, setEditTaskPoints] = useState(100);
+  const [editTaskDuration, setEditTaskDuration] = useState<number | null>(null);
+  const [isSubmittingEditTask, setIsSubmittingEditTask] = useState(false);
 
   const [isQuestionModalOpen, setIsQuestionModalOpen] = useState(false);
   const [isBulkImportModalOpen, setIsBulkImportModalOpen] = useState(false);
@@ -130,16 +141,20 @@ export default function AdminTasksPage() {
   }, []);
 
   // Load Phases & Tasks when selected contest changes
-  const loadPhasesAndTasks = async (contestId: string) => {
+  const loadPhasesAndTasks = async (contestId: string, keepActiveTaskId?: string) => {
     if (!contestId) return;
     try {
       setIsLoading(true);
-      // Clear stale state immediately so switching contests never shows previous content
-      setPhases([]);
-      setActiveTask(null);
       const res = await getContestPhasesAndTasks(contestId);
       setContestTitle(res.contestTitle);
       setPhases(res.phases);
+      if (keepActiveTaskId) {
+        const found = res.phases.flatMap((p) => p.tasks).find((t) => t.id === keepActiveTaskId);
+        if (found) {
+          setActiveTask(found);
+          return;
+        }
+      }
       if (res.phases.length > 0 && res.phases[0].tasks.length > 0) {
         setActiveTask(res.phases[0].tasks[0]);
       } else {
@@ -154,6 +169,8 @@ export default function AdminTasksPage() {
 
   useEffect(() => {
     if (selectedContestId) {
+      setPhases([]);
+      setActiveTask(null);
       loadPhasesAndTasks(selectedContestId);
     }
   }, [selectedContestId]);
@@ -170,12 +187,14 @@ export default function AdminTasksPage() {
         title: phaseTitle.trim(),
         description: phaseDesc.trim() || undefined,
         deadline: new Date(phaseDeadline).toISOString(),
+        durationMinutes: phaseDuration ? Number(phaseDuration) : null,
       });
 
       if (res.success) {
         setIsPhaseModalOpen(false);
         setPhaseTitle("");
         setPhaseDesc("");
+        setPhaseDuration(null);
         setFeedbackMsg({ type: "success", text: "Phase created successfully." });
         await loadPhasesAndTasks(selectedContestId);
       } else {
@@ -220,6 +239,75 @@ export default function AdminTasksPage() {
       setFeedbackMsg({ type: "error", text: "Unexpected network error" });
     } finally {
       setIsSubmittingTask(false);
+    }
+  };
+
+  const handleOpenEditTask = (task: TaskBuilderTask) => {
+    setEditingTask(task);
+    setEditTaskTitle(task.title);
+    setEditTaskInstructions(task.instructions || "");
+    setEditTaskPoints(task.totalPoints);
+    setEditTaskDuration(task.durationMinutes ?? null);
+    setIsEditTaskModalOpen(true);
+  };
+
+  const handleUpdateTask = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingTask) return;
+    const trimmedTitle = editTaskTitle.trim();
+    if (!trimmedTitle) {
+      setFeedbackMsg({ type: "error", text: "Task title cannot be empty." });
+      return;
+    }
+    if (trimmedTitle.length < 2) {
+      setFeedbackMsg({ type: "error", text: "Task title must be at least 2 characters." });
+      return;
+    }
+    if (trimmedTitle.length > 200) {
+      setFeedbackMsg({ type: "error", text: "Task title cannot exceed 200 characters." });
+      return;
+    }
+
+    try {
+      setIsSubmittingEditTask(true);
+      const res = await updateTaskAction({
+        taskId: editingTask.id,
+        contestId: selectedContestId,
+        phaseId: editingTask.phaseId,
+        title: trimmedTitle,
+        instructions: editTaskInstructions.trim() || undefined,
+        totalPoints: Number(editTaskPoints),
+        durationMinutes: editTaskDuration ? Number(editTaskDuration) : null,
+      });
+
+      if (res.success && res.task) {
+        const updatedTitle = res.task.title;
+        // Immediate local state update for snappy UI feedback
+        setActiveTask((prev) =>
+          prev && prev.id === editingTask.id
+            ? { ...prev, title: updatedTitle, instructions: res.task.instructions, totalPoints: res.task.totalPoints, durationMinutes: res.task.durationMinutes }
+            : prev
+        );
+        setPhases((prevPhases) =>
+          prevPhases.map((phase) => ({
+            ...phase,
+            tasks: phase.tasks.map((t) =>
+              t.id === editingTask.id
+                ? { ...t, title: updatedTitle, instructions: res.task.instructions, totalPoints: res.task.totalPoints, durationMinutes: res.task.durationMinutes }
+                : t
+            ),
+          }))
+        );
+        setIsEditTaskModalOpen(false);
+        setFeedbackMsg({ type: "success", text: `Task "${updatedTitle}" updated successfully.` });
+        await loadPhasesAndTasks(selectedContestId, editingTask.id);
+      } else {
+        setFeedbackMsg({ type: "error", text: res.error || "Failed to update task" });
+      }
+    } catch (err) {
+      setFeedbackMsg({ type: "error", text: "Unexpected network error" });
+    } finally {
+      setIsSubmittingEditTask(false);
     }
   };
 
@@ -484,9 +572,15 @@ export default function AdminTasksPage() {
                         <span className="w-5 h-5 rounded-full bg-primary-container text-on-primary font-label-xs flex items-center justify-center font-bold">
                           {phase.phaseNumber}
                         </span>
-                        <span className="font-label-sm font-semibold text-on-surface">
-                          {phase.title}
-                        </span>
+                        <div>
+                          <span className="font-label-sm font-semibold text-on-surface block">
+                            {phase.title}
+                          </span>
+                          <span className="text-[10px] text-secondary flex items-center gap-0.5">
+                            <span className="material-symbols-outlined text-[11px]">timer</span>
+                            {phase.durationMinutes ? `${phase.durationMinutes}m phase limit` : "Calendar cutoff"}
+                          </span>
+                        </div>
                       </div>
                       <div className="flex items-center gap-1">
                         <button
@@ -523,27 +617,55 @@ export default function AdminTasksPage() {
                     {/* Tasks in this phase */}
                     <div className="p-1 space-y-1 bg-surface-container-lowest">
                       {phase.tasks.map((task) => (
-                        <button
+                        <div
                           key={task.id}
-                          onClick={() => setActiveTask(task)}
-                          className={`w-full text-left p-2 rounded text-xs transition-colors flex items-center justify-between ${
+                          className={`group/task w-full p-2 rounded text-xs transition-colors flex items-center justify-between ${
                             activeTask?.id === task.id
                               ? "bg-primary-container text-on-primary font-medium"
                               : "hover:bg-surface-container-low text-on-surface"
                           }`}
                         >
-                          <div className="flex items-center gap-1.5 truncate">
+                          <button
+                            type="button"
+                            onClick={() => setActiveTask(task)}
+                            className="flex items-center gap-1.5 truncate flex-1 text-left cursor-pointer"
+                          >
                             <span className="material-symbols-outlined text-[14px]">
                               assignment
                             </span>
                             <span className="truncate">{task.title}</span>
+                          </button>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleOpenEditTask(task);
+                              }}
+                              className={`p-0.5 rounded transition-opacity cursor-pointer ${
+                                activeTask?.id === task.id
+                                  ? "hover:bg-white/20 text-white"
+                                  : "opacity-0 group-hover/task:opacity-100 hover:bg-surface-container text-secondary hover:text-on-surface"
+                              }`}
+                              title={`Edit Task Name: ${task.title}`}
+                            >
+                              <span className="material-symbols-outlined text-[13px]">edit</span>
+                            </button>
+                            {task.durationMinutes && (
+                              <span className={`text-[10px] px-1 py-0.2 rounded font-mono flex items-center gap-0.5 ${
+                                activeTask?.id === task.id ? "bg-white/20 text-white" : "bg-surface-container text-secondary"
+                              }`}>
+                                <span className="material-symbols-outlined text-[10px]">timer</span>
+                                {task.durationMinutes}m
+                              </span>
+                            )}
+                            <span className={`text-[10px] px-1.5 py-0.2 rounded font-mono ${
+                              activeTask?.id === task.id ? "bg-white/20 text-white" : "bg-surface-container text-secondary"
+                            }`}>
+                              {task.questions.length} Qs
+                            </span>
                           </div>
-                          <span className={`text-[10px] px-1.5 py-0.2 rounded font-mono ${
-                            activeTask?.id === task.id ? "bg-white/20 text-white" : "bg-surface-container text-secondary"
-                          }`}>
-                            {task.questions.length} Qs
-                          </span>
-                        </button>
+                        </div>
                       ))}
                       {phase.tasks.length === 0 && (
                         <p className="text-secondary text-[11px] italic p-2 text-center">
@@ -582,6 +704,14 @@ export default function AdminTasksPage() {
                       <h2 className="font-headline-sm font-semibold text-on-surface">
                         {activeTask.title}
                       </h2>
+                      <button
+                        type="button"
+                        onClick={() => handleOpenEditTask(activeTask)}
+                        className="p-1 text-secondary hover:text-primary-container hover:bg-surface-container-high rounded transition-colors cursor-pointer"
+                        title="Edit Task Name / Details"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">edit</span>
+                      </button>
                     </div>
                     {activeTask.instructions && (
                       <p className="font-body-sm text-secondary mt-1">
@@ -597,6 +727,14 @@ export default function AdminTasksPage() {
                       <span className="material-symbols-outlined text-[14px]">timer</span>
                       {activeTask.durationMinutes ? `${activeTask.durationMinutes} mins` : "No limit"}
                     </span>
+                    <button
+                      onClick={() => handleOpenEditTask(activeTask)}
+                      className="px-2.5 py-1.5 text-on-surface hover:bg-surface-container-high font-label-xs font-medium rounded border border-[#cbd5e1] flex items-center gap-1 transition-colors cursor-pointer"
+                      title="Edit task name, instructions, points, or duration"
+                    >
+                      <span className="material-symbols-outlined text-[14px] text-primary-container">edit</span>
+                      Edit Task Name
+                    </button>
                     <button
                       onClick={() => handleDeleteTask(activeTask.id, activeTask.title)}
                       className="px-2.5 py-1.5 text-error hover:bg-error/10 font-label-xs font-medium rounded border border-error/20 flex items-center gap-1 transition-colors cursor-pointer"
@@ -831,6 +969,26 @@ export default function AdminTasksPage() {
                 />
               </div>
               <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="font-label-xs text-secondary font-semibold uppercase">
+                    Phase Duration (Minutes)
+                  </label>
+                  <span className="text-[10px] text-secondary">Blank = unlimited</span>
+                </div>
+                <input
+                  type="number"
+                  min="1"
+                  max="1440"
+                  value={phaseDuration ?? ""}
+                  onChange={(e) => setPhaseDuration(e.target.value ? Number(e.target.value) : null)}
+                  placeholder="e.g. 40, 60 (blank for no phase attempt limit)"
+                  className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface focus:outline-none focus:border-primary-container"
+                />
+                <p className="text-[10px] text-secondary mt-1">
+                  If set, countdown starts individually when the participant starts this phase.
+                </p>
+              </div>
+              <div>
                 <label className="font-label-xs text-secondary font-semibold uppercase block mb-1">
                   Phase Deadline (Asia/Dhaka)
                 </label>
@@ -945,6 +1103,118 @@ export default function AdminTasksPage() {
                   className="px-4 py-2 rounded bg-primary-container text-on-primary font-label-md font-medium"
                 >
                   {isSubmittingTask ? "Saving..." : "Create Task"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* EDIT TASK MODAL */}
+      {isEditTaskModalOpen && editingTask && (
+        <div className="fixed inset-0 bg-inverse-surface/40 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-surface-container-lowest rounded-lg border border-[#e2e8f0] shadow-xl max-w-md w-full p-space-lg">
+            <div className="flex items-center justify-between pb-space-sm border-b border-[#e2e8f0] mb-space-md">
+              <div>
+                <h3 className="font-headline-sm font-semibold text-on-surface">Edit Assessment Task</h3>
+                <p className="text-[12px] text-secondary mt-0.5">Update task title, instructions, points, or duration</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsEditTaskModalOpen(false)}
+                className="text-secondary hover:text-on-surface p-1 rounded cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-[20px]">close</span>
+              </button>
+            </div>
+            <form onSubmit={handleUpdateTask} className="space-y-3 font-body-sm">
+              <div>
+                <label className="font-label-xs text-secondary font-semibold uppercase block mb-1">
+                  Task Title *
+                </label>
+                <input
+                  type="text"
+                  required
+                  minLength={2}
+                  maxLength={200}
+                  value={editTaskTitle}
+                  onChange={(e) => setEditTaskTitle(e.target.value)}
+                  placeholder="e.g. Task 1.2: Financial Impact Matrix"
+                  className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface focus:outline-none focus:border-primary-container text-sm font-medium"
+                />
+                <p className="text-[10px] text-secondary mt-1">
+                  Visible to participants in the dashboard, assessment viewer, and official scorecards.
+                </p>
+              </div>
+              <div>
+                <label className="font-label-xs text-secondary font-semibold uppercase block mb-1">
+                  Instructions for Candidate
+                </label>
+                <textarea
+                  rows={2}
+                  value={editTaskInstructions}
+                  onChange={(e) => setEditTaskInstructions(e.target.value)}
+                  placeholder="Provide guidance on what to calculate and submit..."
+                  className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface focus:outline-none focus:border-primary-container resize-none"
+                />
+              </div>
+              <div>
+                <label className="font-label-xs text-secondary font-semibold uppercase block mb-1">
+                  Total Points
+                </label>
+                <input
+                  type="number"
+                  min="10"
+                  max="500"
+                  value={editTaskPoints}
+                  onChange={(e) => setEditTaskPoints(Number(e.target.value))}
+                  className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface focus:outline-none focus:border-primary-container"
+                />
+              </div>
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="font-label-xs text-secondary font-semibold uppercase">
+                    Attempt Duration (Minutes)
+                  </label>
+                  {editTaskDuration !== null && editTaskDuration > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => setEditTaskDuration(null)}
+                      className="text-[10px] text-error hover:underline cursor-pointer"
+                    >
+                      Disable timer (unlimited)
+                    </button>
+                  ) : (
+                    <span className="text-[10px] text-secondary">Unlimited (Phase timer only)</span>
+                  )}
+                </div>
+                <input
+                  type="number"
+                  min="1"
+                  max="480"
+                  value={editTaskDuration ?? ""}
+                  onChange={(e) => setEditTaskDuration(e.target.value ? Number(e.target.value) : null)}
+                  placeholder="e.g. 10, 20, 30 (blank for no individual limit)"
+                  className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface focus:outline-none focus:border-primary-container"
+                />
+                <p className="text-[10px] text-secondary mt-1">
+                  If set, countdown starts individually when the participant starts this task. Effective deadline is the earlier of this timer and the phase deadline.
+                </p>
+              </div>
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-[#e2e8f0]">
+                <button
+                  type="button"
+                  onClick={() => setIsEditTaskModalOpen(false)}
+                  className="px-4 py-2 rounded bg-surface-container-high text-on-surface font-label-md cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingEditTask}
+                  className="px-4 py-2 rounded bg-primary-container text-on-primary font-label-md font-medium cursor-pointer"
+                >
+                  {isSubmittingEditTask ? "Saving..." : "Save Changes"}
                 </button>
               </div>
             </form>

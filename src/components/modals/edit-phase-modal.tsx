@@ -15,6 +15,7 @@ export interface EditPhaseModalProps {
     description?: string | null;
     weightPercentage?: number;
     deadline?: string | Date;
+    durationMinutes?: number | null;
     status?: "UPCOMING" | "OPEN" | "EVALUATING" | "CLOSED" | string;
   } | null;
 }
@@ -25,6 +26,7 @@ export function EditPhaseModal({ isOpen, onClose, onSuccess, phase }: EditPhaseM
   const [description, setDescription] = useState("");
   const [weightPercentage, setWeightPercentage] = useState<number>(100);
   const [deadline, setDeadline] = useState("");
+  const [durationMinutes, setDurationMinutes] = useState<number | null>(null);
   const [status, setStatus] = useState<"UPCOMING" | "OPEN" | "EVALUATING" | "CLOSED">("OPEN");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -35,6 +37,7 @@ export function EditPhaseModal({ isOpen, onClose, onSuccess, phase }: EditPhaseM
       setPhaseNumber(phase.phaseNumber || 1);
       setDescription(phase.description || "");
       setWeightPercentage(phase.weightPercentage !== undefined ? Number(phase.weightPercentage) : 100);
+      setDurationMinutes(phase.durationMinutes ?? null);
       setStatus((phase.status as "UPCOMING" | "OPEN" | "EVALUATING" | "CLOSED") || "OPEN");
 
       if (phase.deadline) {
@@ -84,6 +87,7 @@ export function EditPhaseModal({ isOpen, onClose, onSuccess, phase }: EditPhaseM
         description: description.trim() || null,
         phaseNumber: Number(phaseNumber),
         weightPercentage: Number(weightPercentage),
+        durationMinutes: durationMinutes !== null && durationMinutes > 0 ? Number(durationMinutes) : null,
         status,
       };
 
@@ -211,6 +215,38 @@ export function EditPhaseModal({ isOpen, onClose, onSuccess, phase }: EditPhaseM
                 <option value="CLOSED">CLOSED</option>
               </select>
             </div>
+          </div>
+
+          {/* Phase Attempt Duration */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="font-label-xs text-secondary font-semibold uppercase">
+                Phase Attempt Duration (Minutes)
+              </label>
+              {durationMinutes !== null && durationMinutes > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setDurationMinutes(null)}
+                  className="text-[11px] text-error hover:underline cursor-pointer"
+                >
+                  Disable limit (unlimited)
+                </button>
+              ) : (
+                <span className="text-[11px] text-secondary">Unlimited (Phase calendar deadline only)</span>
+              )}
+            </div>
+            <input
+              type="number"
+              min="1"
+              max="1440"
+              value={durationMinutes ?? ""}
+              onChange={(e) => setDurationMinutes(e.target.value ? Number(e.target.value) : null)}
+              placeholder="e.g. 40, 60, 90 (blank for no phase attempt limit)"
+              className="w-full px-3 py-2 rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface font-label-md"
+            />
+            <p className="text-[11px] text-secondary mt-1">
+              When set, countdown starts individually when participant starts this phase. Bounded by phase calendar deadline and contest end date.
+            </p>
           </div>
 
           {/* Deadline */}
