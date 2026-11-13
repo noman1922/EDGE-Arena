@@ -69,6 +69,7 @@ model User {
   passwordSalt       String?
   mustChangePassword Boolean              @default(true)
   isActive           Boolean              @default(true)
+  sessionVersion     Int                  @default(1)
   createdAt          DateTime             @default(now())
   updatedAt          DateTime             @updatedAt
 
@@ -346,6 +347,7 @@ model Submission {
   evaluations EvaluationScore[]
 
   @@unique([taskId, userId])
+  @@index([contestId, userId])
   @@index([taskId, status])
   @@index([userId, status])
   @@index([contestId, phaseId, finalScore(sort: Desc), submittedAt(sort: Asc)])
@@ -440,7 +442,7 @@ model AuditLog {
   ipAddress  String?
   createdAt  DateTime @default(now())
 
-  @@index([targetType, targetId])
+  @@index([targetType, targetId, action, createdAt])
   @@index([action, createdAt])
 }
 

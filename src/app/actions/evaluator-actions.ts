@@ -1,7 +1,8 @@
 "use server";
 
+import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
-import { ContestStatus } from "@prisma/client";
+import { ContestStatus, Prisma } from "@prisma/client";
 import {
   calculateWeightedRubricScore,
   calculateMcqScore,
@@ -24,7 +25,9 @@ import {
   calculateCandidateFinalScore,
   type ContestPenaltyItem,
 } from "@/lib/monitoring";
+import { autoPublishCandidateResultIfEligible } from "@/lib/auto-publish";
 import { formatMarksInWords } from "@/lib/marks-formatter";
+import { isFreedomContest } from "@/lib/freedom-contest";
 
 function safeRevalidatePath(path: string) {
   try {
@@ -142,7 +145,8 @@ export async function getEvaluatorDashboardDataAction(
       where: {
         OR: [{ id: session.userId }, { email: session.email }],
       },
-      include: {
+      select: {
+        id: true,
         contestEvaluations: { select: { contestId: true } },
       },
     });
@@ -250,7 +254,8 @@ export async function getSubmissionsForGrading(
         where: {
           OR: [{ id: session.userId }, { email: session.email }],
         },
-        include: {
+        select: {
+          id: true,
           contestEvaluations: { select: { contestId: true } },
           evaluatorAssignedCandidates: { select: { contestId: true, participantId: true } },
         },
@@ -602,7 +607,6 @@ export async function getSubmissionsForGrading(
 
 export interface GradeSubmissionInput {
   submissionId: string;
-  evaluatorEmail?: string;
   isDraft?: boolean;
   overallFeedback?: string;
   questionGrades?: Array<{
@@ -619,7 +623,6 @@ export interface GradeSubmissionInput {
 
 export interface SaveRubricScoreInput {
   submissionId: string;
-  evaluatorEmail?: string;
   isDraft?: boolean;
   overallFeedback?: string;
   questionGrades?: Array<{
@@ -637,22 +640,27 @@ export interface SaveRubricScoreInput {
 export async function gradeSubmissionAction(input: GradeSubmissionInput) {
   try {
     const session = await requireRole(["EVALUATOR", "ADMIN"]);
-    const evaluatorEmail = input.evaluatorEmail || session.email;
 
-    // 1. Resolve evaluator user
-    let evaluator = await prisma.user.findUnique({
-      where: { email: evaluatorEmail },
+    // 1. Resolve evaluator exclusively from authenticated session.userId
+    const evaluator = await prisma.user.findUnique({
+      where: { id: session.userId },
+      select: {
+        id: true,
+        role: true,
+        isActive: true,
+      },
     });
 
     if (!evaluator) {
-      evaluator = await prisma.user.create({
-        data: {
-          id: crypto.randomUUID(),
-          email: evaluatorEmail,
-          name: session.name || "Academic Evaluator Panel",
-          role: "EVALUATOR",
-        },
-      });
+      return { success: false, error: "Unauthorized: evaluator account not found." };
+    }
+
+    if (!evaluator.isActive) {
+      return { success: false, error: "Unauthorized: evaluator account is inactive." };
+    }
+
+    if (evaluator.role !== session.role) {
+      return { success: false, error: "Unauthorized: account role mismatch." };
     }
 
     // 2. Permission check: EVALUATOR or ADMIN can grade
@@ -672,7 +680,7 @@ export async function gradeSubmissionAction(input: GradeSubmissionInput) {
 
     // Strict Evaluator Assignment Enforcement:
     // Evaluators can only grade candidates explicitly allocated to them in this contest.
-    if (session.role === "EVALUATOR") {
+    if (evaluator.role === "EVALUATOR") {
       const contestEval = await prisma.contestEvaluator.findFirst({
         where: {
           contestId: baseSub.contestId,
@@ -701,6 +709,11 @@ export async function gradeSubmissionAction(input: GradeSubmissionInput) {
           error: "Unauthorized: You are not assigned to evaluate this candidate.",
         };
       }
+    } else if (evaluator.role !== "ADMIN") {
+      return {
+        success: false,
+        error: "Unauthorized: invalid role for submission grading.",
+      };
     }
 
     // 4. Fetch all tasks and submissions for this candidate in this contest
@@ -977,6 +990,12 @@ export async function gradeSubmissionAction(input: GradeSubmissionInput) {
       totalContestFinal += taskFinalScore;
     }
 
+    if (!input.isDraft) {
+      await autoPublishCandidateResultIfEligible(baseSub.contest.id, baseSub.userId).catch((err) => {
+        console.error("Auto-publish after manual grading error:", err);
+      });
+    }
+
     safeRevalidatePath("/admin");
     safeRevalidatePath("/admin/contests");
     safeRevalidatePath("/admin/submissions");
@@ -1011,7 +1030,6 @@ export async function gradeSubmissionAction(input: GradeSubmissionInput) {
 export async function saveRubricScoreAction(input: SaveRubricScoreInput) {
   return gradeSubmissionAction({
     submissionId: input.submissionId,
-    evaluatorEmail: input.evaluatorEmail,
     isDraft: input.isDraft ?? false,
     overallFeedback: input.overallFeedback,
     questionGrades: input.questionGrades,
@@ -1058,6 +1076,7 @@ export async function publishContestResultsAction(
     // 1. Resolve requester and check ADMIN permission
     const requester = await prisma.user.findUnique({
       where: { email: requesterEmail },
+      select: { id: true, role: true, isActive: true },
     });
 
     if (!requester || !checkUserPermission(requester.role, "PUBLISH_RESULTS")) {
@@ -1073,28 +1092,50 @@ export async function publishContestResultsAction(
       };
     }
 
-    // 2. Fetch contest with all phases, tasks, and enrolled participants
-    const contest = await prisma.contest.findUnique({
-      where: { id: contestId },
-      include: {
-        phases: {
-          include: {
-            tasks: {
-              include: {
-                questions: true,
-                rubrics: true,
+    // 2. Fetch contest structure, enrolled participants, and all submissions in 2 bulk queries
+    const [contest, allContestSubmissions] = await Promise.all([
+      prisma.contest.findUnique({
+        where: { id: contestId },
+        include: {
+          phases: {
+            include: {
+              tasks: {
+                select: {
+                  id: true,
+                  title: true,
+                  taskNumber: true,
+                  totalPoints: true,
+                  questions: { select: { type: true } },
+                  rubrics: { select: { id: true } },
+                },
+                orderBy: { taskNumber: "asc" },
               },
-              orderBy: { taskNumber: "asc" },
+            },
+            orderBy: { phaseNumber: "asc" },
+          },
+          participants: {
+            where: { status: { in: ["ACTIVE", "ENROLLED"] } },
+            select: {
+              userId: true,
+              user: { select: { name: true } },
             },
           },
-          orderBy: { phaseNumber: "asc" },
         },
-        participants: {
-          where: { status: { in: ["ACTIVE", "ENROLLED"] } },
-          include: { user: true },
+      }),
+      prisma.submission.findMany({
+        where: { contestId },
+        select: {
+          id: true,
+          userId: true,
+          taskId: true,
+          status: true,
+          autoGradeScore: true,
+          manualGradeScore: true,
+          finalScore: true,
+          submittedAt: true,
         },
-      },
-    });
+      }),
+    ]);
 
     if (!contest) {
       return {
@@ -1181,19 +1222,22 @@ export async function publishContestResultsAction(
     const unsubmittedCandidates: CandidateDiagnoseInfo[] = [];
     const pendingEvaluationCandidates: CandidateDiagnoseInfo[] = [];
 
+    // Group submissions by userId in memory (O(S)) instead of N per-participant DB queries
+    const submissionsByUserId = new Map<string, typeof allContestSubmissions>();
+    for (const s of allContestSubmissions) {
+      let arr = submissionsByUserId.get(s.userId);
+      if (!arr) {
+        arr = [];
+        submissionsByUserId.set(s.userId, arr);
+      }
+      arr.push(s);
+    }
+
+    const mcqSubmissionIdsToPromote: string[] = [];
+
     // 3. For each candidate, evaluate grading completion and total contest score
     for (const participant of contest.participants) {
-      const userSubmissions = await prisma.submission.findMany({
-        where: { contestId, userId: participant.userId },
-        include: {
-          task: {
-            include: {
-              questions: true,
-              rubrics: true,
-            },
-          },
-        },
-      });
+      const userSubmissions = submissionsByUserId.get(participant.userId) ?? [];
 
       const submissionByTaskId = new Map(userSubmissions.map((s) => [s.taskId, s]));
 
@@ -1246,23 +1290,16 @@ export async function publishContestResultsAction(
           }
         } else {
           // MCQ-only / auto-graded task
-          // If evaluator actively set GRADING_IN_PROGRESS, it is not finalized yet
           if (sub.status === "GRADING_IN_PROGRESS") {
             candidateHasAllTasksGraded = false;
             unfinalizedTaskTitle = t.title;
             break;
           } else if (sub.status === "SUBMITTED") {
-            // Uncontested MCQ submission: promote to GRADED with autoGradeScore
-            const finalScore = sub.autoGradeScore !== null ? Number(sub.autoGradeScore) : 0;
-            await prisma.submission.update({
-              where: { id: sub.id },
-              data: {
-                status: "GRADED",
-                finalScore,
-              },
-            });
+            // Queue auto-promotion to GRADED inside bulk transaction
+            const promotedScore = sub.autoGradeScore !== null ? Number(sub.autoGradeScore) : 0;
+            mcqSubmissionIdsToPromote.push(sub.id);
             sub.status = "GRADED";
-            sub.finalScore = finalScore as any;
+            sub.finalScore = new Prisma.Decimal(promotedScore);
           }
         }
       }
@@ -1395,10 +1432,22 @@ export async function publishContestResultsAction(
       return timeA - timeB;
     });
 
-    // 5. Compute standard competition ranks (1224 ranking) and percentiles across all currently finalized candidates
+    // 5. Compute standard competition ranks (1224 ranking) & prepare bulk DB writes
     const totalCandidates = finalizedCandidates.length;
     const now = new Date();
     let currentRank = 1;
+
+    const cohortRowsToUpsert: Array<{
+      id: string;
+      userId: string;
+      totalScore: number;
+      rank: number;
+      percentile: number;
+      isCertified: boolean;
+    }> = [];
+    const submissionIdsToPublish: string[] = [];
+
+    const isFreedom = isFreedomContest(contest);
 
     for (let i = 0; i < totalCandidates; i++) {
       if (i > 0 && finalizedCandidates[i].totalScore < finalizedCandidates[i - 1].totalScore) {
@@ -1409,56 +1458,109 @@ export async function publishContestResultsAction(
         totalCandidates > 1
           ? Math.round(((totalCandidates - rank) / (totalCandidates - 1)) * 100 * 100) / 100
           : 100.0;
-      const isCertified = finalizedCandidates[i].totalScore >= Math.round(contestTotalPoints * 0.5);
+      const isCertified = isFreedom
+        ? finalizedCandidates[i].totalScore >= 16
+        : finalizedCandidates[i].totalScore >= Math.round(contestTotalPoints * 0.5);
 
-      await prisma.cohortResult.upsert({
-        where: {
-          contestId_userId: {
-            contestId,
-            userId: finalizedCandidates[i].userId,
-          },
-        },
-        update: {
-          totalScore: finalizedCandidates[i].totalScore,
-          rank,
-          percentile,
-          isCertified,
-          publishedAt: now,
-          updatedAt: now,
-        },
-        create: {
-          contestId,
-          userId: finalizedCandidates[i].userId,
-          totalScore: finalizedCandidates[i].totalScore,
-          rank,
-          percentile,
-          isCertified,
-          publishedAt: now,
-        },
+      cohortRowsToUpsert.push({
+        id: crypto.randomUUID(),
+        userId: finalizedCandidates[i].userId,
+        totalScore: finalizedCandidates[i].totalScore,
+        rank,
+        percentile,
+        isCertified,
       });
 
-      // Update submissions to PUBLISHED status for this finalized candidate
       for (const s of finalizedCandidates[i].submissions) {
-        await prisma.submission.update({
-          where: { id: s.id },
-          data: { status: "PUBLISHED" },
-        });
+        submissionIdsToPublish.push(s.id);
       }
     }
 
-    // 6. Update Contest status
-    // If all enrolled candidates are finalized or explicit final certification was requested, mark COMPLETED.
-    // Otherwise keep contest LIVE so remaining participants can continue submitting!
+    // 6. Execute bulk publication updates inside an atomic transaction (~20 queries for 10K candidates)
     const isAllEnrolledFinalized = totalEnrolled > 0 && finalizedCandidates.length === totalEnrolled;
     const shouldMarkCompleted = isFinalCertification || isAllEnrolledFinalized;
 
-    await prisma.contest.update({
-      where: { id: contestId },
-      data: {
-        isPublished: true,
-        ...(shouldMarkCompleted ? { status: "COMPLETED" } : {}),
+    await prisma.$transaction(
+      async (tx) => {
+        if (mcqSubmissionIdsToPromote.length > 0) {
+          for (let offset = 0; offset < mcqSubmissionIdsToPromote.length; offset += 2000) {
+            const idChunk = mcqSubmissionIdsToPromote.slice(offset, offset + 2000);
+            await tx.$executeRaw`
+              UPDATE "Submission"
+              SET
+                "status" = 'GRADED'::"SubmissionStatus",
+                "finalScore" = COALESCE("autoGradeScore", 0),
+                "updatedAt" = ${now}::timestamp
+              WHERE "id" = ANY(${idChunk}::text[])
+            `;
+          }
+        }
+
+        const CHUNK_SIZE = 500;
+        for (let offset = 0; offset < cohortRowsToUpsert.length; offset += CHUNK_SIZE) {
+          const chunk = cohortRowsToUpsert.slice(offset, offset + CHUNK_SIZE);
+          const values = chunk.map(
+            (row) => Prisma.sql`(
+              ${row.id}::text,
+              ${contestId}::text,
+              ${row.userId}::text,
+              ${row.totalScore}::numeric(6,2),
+              ${row.rank}::integer,
+              ${row.percentile}::numeric(5,2),
+              ${row.isCertified}::boolean,
+              ${now}::timestamp,
+              ${now}::timestamp,
+              ${now}::timestamp
+            )`
+          );
+          await tx.$executeRaw`
+            INSERT INTO "CohortResult" (
+              "id",
+              "contestId",
+              "userId",
+              "totalScore",
+              "rank",
+              "percentile",
+              "isCertified",
+              "publishedAt",
+              "createdAt",
+              "updatedAt"
+            )
+            VALUES ${Prisma.join(values)}
+            ON CONFLICT ("contestId", "userId") DO UPDATE SET
+              "totalScore" = EXCLUDED."totalScore",
+              "rank" = EXCLUDED."rank",
+              "percentile" = EXCLUDED."percentile",
+              "isCertified" = EXCLUDED."isCertified",
+              "publishedAt" = EXCLUDED."publishedAt",
+              "updatedAt" = EXCLUDED."updatedAt"
+          `;
+        }
+
+        if (submissionIdsToPublish.length > 0) {
+          for (let offset = 0; offset < submissionIdsToPublish.length; offset += 2000) {
+            const idChunk = submissionIdsToPublish.slice(offset, offset + 2000);
+            await tx.$executeRaw`
+              UPDATE "Submission"
+              SET
+                "status" = 'PUBLISHED'::"SubmissionStatus",
+                "updatedAt" = ${now}::timestamp
+              WHERE "id" = ANY(${idChunk}::text[])
+                AND "status" <> 'PUBLISHED'::"SubmissionStatus"
+            `;
+          }
+        }
+
+        await tx.contest.update({
+          where: { id: contestId },
+          data: {
+            isPublished: true,
+            ...(shouldMarkCompleted ? { status: "COMPLETED" } : {}),
+          },
+        });
       },
-    });
+      { timeout: 30000 }
+    );
 
     // 7. Audit Log: preserve publication history and audit each update
     await recordAuditLog({
@@ -1669,7 +1771,8 @@ export async function getParticipantMonitoringForEvaluatorAction(
     if (session.role === "EVALUATOR") {
       const evalUser = await prisma.user.findFirst({
         where: { OR: [{ id: session.userId }, { email: session.email }] },
-        include: {
+        select: {
+          id: true,
           contestEvaluations: { where: { contestId: submission.contest.id } },
           evaluatorAssignedCandidates: {
             where: {
@@ -1812,7 +1915,8 @@ export async function deductMarksAction(input: DeductMarksInput): Promise<Deduct
     if (session.role === "EVALUATOR") {
       const evalUser = await prisma.user.findFirst({
         where: { OR: [{ id: session.userId }, { email: session.email }] },
-        include: {
+        select: {
+          id: true,
           contestEvaluations: { where: { contestId: submission.contest.id } },
           evaluatorAssignedCandidates: {
             where: {
@@ -1834,8 +1938,8 @@ export async function deductMarksAction(input: DeductMarksInput): Promise<Deduct
 
     // 3. Numeric and precision validation
     const amount = Number(input.amount);
-    if (typeof amount !== "number" || isNaN(amount) || amount <= 0) {
-      return { success: false, error: "Deduction amount must be a positive number greater than 0." };
+    if (typeof amount !== "number" || isNaN(amount) || amount < 0) {
+      return { success: false, error: "Deduction amount must be a number greater than or equal to 0." };
     }
 
     // Check precision: max 2 decimal places

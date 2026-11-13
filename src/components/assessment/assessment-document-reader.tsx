@@ -8,12 +8,13 @@ import { ParticipantFooter } from "@/components/layout/participant-footer";
 import { DeleteConfirmationModal } from "@/components/modals/delete-confirmation-modal";
 import {
   getTaskAssessmentData,
-  saveAnswerDraftAction,
+  saveAnswerBatchAction,
   submitAssessmentAction,
   autoFinalizeExpiredAttemptAction,
   startAssessmentAttemptAction,
   type TaskAssessmentData,
   type AssessmentTaskNavOption,
+  type DraftAnswerBatchItem,
 } from "@/app/actions/assessment-actions";
 import {
   uploadSubmissionAttachmentAction,
@@ -86,6 +87,8 @@ export function AssessmentDocumentReader({
   const [submitSuccessMessage, setSubmitSuccessMessage] = useState<string | null>(null);
   const isSubmittingRef = useRef(false);
   const pendingDraftsRef = useRef<Map<string, { selectedOption?: string; writtenText?: string }>>(new Map());
+  const batchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inFlightFlushRef = useRef<Promise<boolean> | null>(null);
   const [fileToRemove, setFileToRemove] = useState<{
     questionId: string;
     fileName: string;
@@ -93,7 +96,7 @@ export function AssessmentDocumentReader({
   const [isDeletingFile, setIsDeletingFile] = useState(false);
   const [referencesExpanded, setReferencesExpanded] = useState(true);
 
-  // Live timer hook with Asia/Dhaka synchronization, individual attempt countdown and 30s heartbeat
+  // Live timer hook with Asia/Dhaka synchronization, individual attempt countdown and jittered 120s heartbeat
   const timer = useContestTimer({
     contestId: data?.task?.contestId || initialContestId,
     phaseId: data?.phase?.id || initialPhaseId,
@@ -102,9 +105,10 @@ export function AssessmentDocumentReader({
     initialDeadlineIso: data?.task?.deadline,
     initialSecondsLeft: data?.task?.secondsLeft,
     isContestEndedInitial: data?.isContestEnded,
-    heartbeatIntervalMs: 30000,
+    heartbeatIntervalMs: 120000,
     onTimerExpired: async () => {
       if (data?.submission?.id && !submitted) {
+        await flushCurrentDrafts();
         await autoFinalizeExpiredAttemptAction(data.submission.id);
         setSubmitted(true);
       }
@@ -167,15 +171,46 @@ export function AssessmentDocumentReader({
           });
         }
 
-        setSelectedOptions(opts);
-        setWrittenResponses(wr);
-        setUploadedFiles(uf);
-
         const isSubmittedOrGraded =
           res.submission &&
           (res.submission.status === "SUBMITTED" ||
             res.submission.status === "GRADED" ||
             res.submission.status === "PUBLISHED");
+
+        // Recover any locally stored unconfirmed drafts when submission is still editable
+        if (
+          res.submission?.id &&
+          !isSubmittedOrGraded &&
+          !res.isContestEnded &&
+          typeof window !== "undefined"
+        ) {
+          try {
+            const rawStored = window.localStorage.getItem(`edge_pending_drafts_${res.submission.id}`);
+            if (rawStored) {
+              const parsed = JSON.parse(rawStored) as Record<
+                string,
+                { selectedOption?: string; writtenText?: string }
+              >;
+              for (const [qId, draft] of Object.entries(parsed)) {
+                if (draft.selectedOption) opts[qId] = draft.selectedOption;
+                if (draft.writtenText !== undefined) wr[qId] = draft.writtenText;
+                pendingDraftsRef.current.set(qId, draft);
+              }
+            }
+          } catch {
+            // Ignore malformed localStorage cache
+          }
+        } else if (res.submission?.id && typeof window !== "undefined") {
+          try {
+            window.localStorage.removeItem(`edge_pending_drafts_${res.submission.id}`);
+          } catch {
+            // Ignore cleanup failure
+          }
+        }
+
+        setSelectedOptions(opts);
+        setWrittenResponses(wr);
+        setUploadedFiles(uf);
 
         if (isSubmittedOrGraded || res.isContestEnded) {
           setHasConsented(true);
@@ -378,28 +413,140 @@ export function AssessmentDocumentReader({
     };
   }, [hasConsented, submitted, data?.task?.contestId, monitoringSettings, captureScreenSnapshot, captureCameraStill]);
 
-  // Handle MCQ selection with instant autosave
-  const handleSelectOption = async (questionId: string, optKey: string) => {
+  const syncPendingDraftsStorage = useCallback((submissionId?: string) => {
+    if (!submissionId || typeof window === "undefined") return;
+    try {
+      const key = `edge_pending_drafts_${submissionId}`;
+      if (pendingDraftsRef.current.size === 0) {
+        window.localStorage.removeItem(key);
+      } else {
+        const obj: Record<string, { selectedOption?: string; writtenText?: string }> = {};
+        for (const [qId, val] of pendingDraftsRef.current.entries()) {
+          obj[qId] = val;
+        }
+        window.localStorage.setItem(key, JSON.stringify(obj));
+      }
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, []);
+
+  // Confirmed server-side batch flush; returns true only if zero dirty drafts remain unpersisted
+  const flushCurrentDrafts = useCallback(async (): Promise<boolean> => {
+    const submissionId = data?.submission?.id;
+    if (!submissionId || isReadOnly) return true;
+    if (pendingDraftsRef.current.size === 0) return true;
+
+    if (batchTimerRef.current) {
+      clearTimeout(batchTimerRef.current);
+      batchTimerRef.current = null;
+    }
+
+    if (inFlightFlushRef.current) {
+      return await inFlightFlushRef.current;
+    }
+
+    const runFlush = async (): Promise<boolean> => {
+      setIsSaving(true);
+      try {
+        while (pendingDraftsRef.current.size > 0) {
+          const snapshotEntries = Array.from(pendingDraftsRef.current.entries());
+          const batchPayload: DraftAnswerBatchItem[] = snapshotEntries.map(([qId, draft]) => ({
+            questionId: qId,
+            ...(draft.selectedOption !== undefined ? { selectedOption: draft.selectedOption } : {}),
+            ...(draft.writtenText !== undefined ? { writtenText: draft.writtenText } : {}),
+          }));
+
+          const res = await saveAnswerBatchAction(submissionId, batchPayload);
+          if (!res.success) {
+            if (res.isExpired) {
+              setSubmitted(true);
+            }
+            return false;
+          }
+
+          for (const [qId, sentDraft] of snapshotEntries) {
+            const current = pendingDraftsRef.current.get(qId);
+            // Delete only if the user hasn't mutated this question again while the request was in flight
+            if (
+              current &&
+              current.selectedOption === sentDraft.selectedOption &&
+              current.writtenText === sentDraft.writtenText
+            ) {
+              pendingDraftsRef.current.delete(qId);
+            }
+          }
+          syncPendingDraftsStorage(submissionId);
+          if (res.savedAt) {
+            setLastSaved(`Saved at ${res.savedAt}`);
+          } else {
+            setLastSaved(
+              `Saved at ${new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit" })}`
+            );
+          }
+        }
+        return pendingDraftsRef.current.size === 0;
+      } catch (err) {
+        console.error("Error flushing drafts:", err);
+        return false;
+      } finally {
+        setIsSaving(false);
+        inFlightFlushRef.current = null;
+      }
+    };
+
+    const promise = runFlush();
+    inFlightFlushRef.current = promise;
+    return await promise;
+  }, [data?.submission?.id, isReadOnly, syncPendingDraftsStorage]);
+
+  const scheduleBatchFlush = useCallback(() => {
+    if (isReadOnly || !data?.submission?.id) return;
+    if (pendingDraftsRef.current.size >= 5) {
+      void flushCurrentDrafts();
+      return;
+    }
+    if (batchTimerRef.current) {
+      clearTimeout(batchTimerRef.current);
+    }
+    batchTimerRef.current = setTimeout(() => {
+      batchTimerRef.current = null;
+      void flushCurrentDrafts();
+    }, 2500);
+  }, [data?.submission?.id, flushCurrentDrafts, isReadOnly]);
+
+  // Safety net: periodic 10s flush for dirty drafts + secondary pagehide attempt (primary save is 2.5s debounced + pre-submit flush)
+  useEffect(() => {
+    if (!data?.submission?.id || isReadOnly) return;
+    const intervalId = setInterval(() => {
+      if (pendingDraftsRef.current.size > 0) {
+        void flushCurrentDrafts();
+      }
+    }, 10000);
+
+    const handlePageHide = () => {
+      if (pendingDraftsRef.current.size > 0) {
+        void flushCurrentDrafts();
+      }
+    };
+    window.addEventListener("pagehide", handlePageHide);
+    return () => {
+      clearInterval(intervalId);
+      window.removeEventListener("pagehide", handlePageHide);
+      if (batchTimerRef.current) {
+        clearTimeout(batchTimerRef.current);
+        batchTimerRef.current = null;
+      }
+    };
+  }, [data?.submission?.id, isReadOnly, flushCurrentDrafts]);
+
+  // Handle MCQ selection with debounced batch autosave + durable local backup
+  const handleSelectOption = (questionId: string, optKey: string) => {
     if (isReadOnly || !data?.submission?.id) return;
     setSelectedOptions((prev) => ({ ...prev, [questionId]: optKey }));
     pendingDraftsRef.current.set(questionId, { selectedOption: optKey });
-
-    setIsSaving(true);
-    try {
-      const res = await saveAnswerDraftAction(data.submission.id, questionId, {
-        selectedOption: optKey,
-      });
-      if (res.success) {
-        pendingDraftsRef.current.delete(questionId);
-        if (res.savedAt) {
-          setLastSaved(`Saved at ${res.savedAt}`);
-        }
-      }
-    } catch (err) {
-      console.error("Option save error:", err);
-    } finally {
-      setIsSaving(false);
-    }
+    syncPendingDraftsStorage(data.submission.id);
+    scheduleBatchFlush();
   };
 
   // Handle Written input change
@@ -407,61 +554,27 @@ export function AssessmentDocumentReader({
     if (isReadOnly) return;
     setWrittenResponses((prev) => ({ ...prev, [questionId]: text }));
     pendingDraftsRef.current.set(questionId, { writtenText: text });
+    syncPendingDraftsStorage(data?.submission?.id);
   };
 
-  // Autosave written answer on blur
+  // Autosave written answer on blur via confirmed batch flush
   const handleWrittenBlur = async (questionId: string) => {
     if (isReadOnly || !data?.submission?.id) return;
     const text = writtenResponses[questionId] ?? "";
-    setIsSaving(true);
-    try {
-      const res = await saveAnswerDraftAction(data.submission.id, questionId, {
-        writtenText: text,
-      });
-      if (res.success) {
-        pendingDraftsRef.current.delete(questionId);
-        if (res.savedAt) {
-          setLastSaved(`Saved at ${res.savedAt}`);
-        }
-      }
-    } catch (err) {
-      console.error("Written save error:", err);
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  // Flush only pending/unsaved drafts concurrently to avoid slow sequential loops
-  const flushCurrentDrafts = async () => {
-    if (!data?.submission?.id || isReadOnly || pendingDraftsRef.current.size === 0) return;
-    setIsSaving(true);
-    try {
-      const pendingTasks: Promise<any>[] = [];
-      for (const [qId, draft] of pendingDraftsRef.current.entries()) {
-        pendingTasks.push(
-          saveAnswerDraftAction(data.submission.id, qId, draft).then((res) => {
-            if (res.success) {
-              pendingDraftsRef.current.delete(qId);
-            }
-          })
-        );
-      }
-      await Promise.all(pendingTasks);
-      setLastSaved(
-        `Saved at ${new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit" })}`
-      );
-    } catch (err) {
-      console.error("Error flushing drafts:", err);
-    } finally {
-      setIsSaving(false);
-    }
+    pendingDraftsRef.current.set(questionId, { writtenText: text });
+    syncPendingDraftsStorage(data.submission.id);
+    await flushCurrentDrafts();
   };
 
   // Navigate to another unit with progression completion
   const handleNavigateToTask = async (targetTask: AssessmentTaskNavOption) => {
     if (!targetTask || targetTask.id === data?.task?.id) return;
 
-    await flushCurrentDrafts();
+    const flushedOk = await flushCurrentDrafts();
+    if (!flushedOk) {
+      alert("Unable to persist your latest answers to the server. Please check your connection and retry.");
+      return;
+    }
 
     // Auto-finalize current unit submission if questions are answered and moving forward
     if (data?.submission?.id && !isReadOnly && !submitted) {
@@ -749,17 +862,23 @@ export function AssessmentDocumentReader({
     }
   };
 
-  // Final submit handler with duplicate submission prevention
+  // Final submit handler with duplicate submission prevention and confirmed answer persistence
   const handleFinalSubmit = async () => {
     if (isSubmittingRef.current || !data?.submission?.id || isReadOnly) return;
     isSubmittingRef.current = true;
     setIsSubmitting(true);
     setSubmitSuccessMessage(null);
     try {
-      await flushCurrentDrafts();
+      const flushedOk = await flushCurrentDrafts();
+      if (!flushedOk) {
+        isSubmittingRef.current = false;
+        alert("Unable to confirm your latest saved answers with the server. Please check your connection and try submitting again.");
+        return;
+      }
 
       const res = await submitAssessmentAction(data.submission.id);
       if (res.success) {
+        syncPendingDraftsStorage(data.submission.id);
         setSubmitted(true);
         setSubmitSuccessMessage("Assessment successfully submitted! Redirecting...");
         setLastSaved(

@@ -2101,10 +2101,16 @@ export default function ContestManagementPage() {
                         <div className="flex items-center gap-1">
                           <input
                             type="number"
-                            min="1"
+                            min="0"
                             max="50"
                             value={monitoringSettings.alertPenaltyPoints}
-                            onChange={(e) => setMonitoringSettings((prev) => ({ ...prev, alertPenaltyPoints: Math.max(1, parseInt(e.target.value) || 5) }))}
+                            onChange={(e) => {
+                              const val = parseInt(e.target.value);
+                              setMonitoringSettings((prev) => ({
+                                ...prev,
+                                alertPenaltyPoints: isNaN(val) ? 0 : Math.max(0, val),
+                              }));
+                            }}
                             className="w-14 px-1.5 py-0.5 text-right font-mono rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface"
                           />
                           <span className="text-secondary">pts</span>
@@ -2136,10 +2142,16 @@ export default function ContestManagementPage() {
                         <div className="flex items-center gap-1">
                           <input
                             type="number"
-                            min="1"
+                            min="0"
                             max="100"
                             value={monitoringSettings.aiPenaltyPoints}
-                            onChange={(e) => setMonitoringSettings((prev) => ({ ...prev, aiPenaltyPoints: Math.max(1, parseInt(e.target.value) || 10) }))}
+                            onChange={(e) => {
+                              const val = parseInt(e.target.value);
+                              setMonitoringSettings((prev) => ({
+                                ...prev,
+                                aiPenaltyPoints: isNaN(val) ? 0 : Math.max(0, val),
+                              }));
+                            }}
                             className="w-14 px-1.5 py-0.5 text-right font-mono rounded bg-surface-container-low border border-[#e2e8f0] text-on-surface"
                           />
                           <span className="text-secondary">pts</span>

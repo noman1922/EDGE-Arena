@@ -202,8 +202,19 @@ describe("Document Reader Suite, Admin Deadline Actions & Asia/Dhaka Timer Sync"
       name: "Reader Admin",
     });
 
-    // Set new deadline 6 days into future
-    const futureDhakaString = "2026-10-26T20:00";
+    // Set new deadline 6 days into future (Asia/Dhaka YYYY-MM-DDTHH:mm format)
+    const futureDhakaDate = new Date(Date.now() + 6 * 24 * 3600 * 1000);
+    const dhakaParts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Dhaka",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(futureDhakaDate);
+    const getPart = (type: string) => dhakaParts.find((p) => p.type === type)?.value || "00";
+    const futureDhakaString = `${getPart("year")}-${getPart("month")}-${getPart("day")}T${getPart("hour")}:${getPart("minute")}`;
 
     const updateRes = await updatePhaseDeadlineAction(phaseId, futureDhakaString);
     assert.equal(updateRes.success, true, `Admin deadline update failed: ${updateRes.error}`);

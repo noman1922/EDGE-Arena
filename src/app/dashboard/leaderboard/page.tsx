@@ -15,12 +15,13 @@ function ParticipantLeaderboardContent() {
 
   const [data, setData] = useState<ParticipantLeaderboardData | null>(null);
   const [selectedContestId, setSelectedContestId] = useState<string>(contestIdParam);
+  const [page, setPage] = useState<number>(1);
   const [isLoading, setIsLoading] = useState(true);
 
-  const loadLeaderboard = async (contestId?: string) => {
+  const loadLeaderboard = async (contestId?: string, targetPage: number = 1) => {
     try {
       setIsLoading(true);
-      const res = await getParticipantLeaderboard(contestId);
+      const res = await getParticipantLeaderboard(contestId, { page: targetPage, limit: 100 });
       setData(res);
       if (!selectedContestId && res.contestsList.length > 0) {
         setSelectedContestId(res.contestsList[0].id);
@@ -35,12 +36,13 @@ function ParticipantLeaderboardContent() {
   useEffect(() => {
     if (contestIdParam && contestIdParam !== selectedContestId) {
       setSelectedContestId(contestIdParam);
+      setPage(1);
     }
   }, [contestIdParam]);
 
   useEffect(() => {
-    loadLeaderboard(selectedContestId || undefined);
-  }, [selectedContestId]);
+    loadLeaderboard(selectedContestId || undefined, page);
+  }, [selectedContestId, page]);
 
   return (
     <div className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-space-lg sm:py-space-xl flex flex-col gap-space-lg">
@@ -68,7 +70,10 @@ function ParticipantLeaderboardContent() {
             </label>
             <select
               value={selectedContestId}
-              onChange={(e) => setSelectedContestId(e.target.value)}
+              onChange={(e) => {
+                setSelectedContestId(e.target.value);
+                setPage(1);
+              }}
               className="px-3 py-2 bg-surface-container-lowest border border-[#e2e8f0] rounded text-on-surface font-label-sm font-medium focus:outline-none focus:border-primary-container"
             >
               {data.contestsList.map((c: { id: string; title: string }) => (
@@ -113,13 +118,13 @@ function ParticipantLeaderboardContent() {
               </div>
               <h3 className="font-headline-md font-bold text-on-surface mt-0.5">
                 {data.isPublished && data.currentUserRank
-                  ? `Rank #${data.currentUserRank}`
+                  ? `Rank #${data.currentUserRank}${data.currentUserRow ? ` · ${data.currentUserRow.finalScore} pts` : ""}`
                   : "Official Results Pending"}
               </h3>
               <p className="font-body-xs text-secondary mt-0.5">
                 {data.isPublished
                   ? "This rank is officially certified by platform administrators."
-                  : "Evaluators and administrators are currently verifying submissions. Official ranks, percentiles, and scores will appear once certified and published."}
+                  : "Evaluators and administrators are currently verifying submissions. Official ranks and scores will appear once certified and published."}
               </p>
             </div>
           </div>
@@ -212,20 +217,57 @@ function ParticipantLeaderboardContent() {
                       )}
                     </td>
                     <td className="py-3.5 px-space-md text-center">
-                      <span
-                        className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
-                          row.isCertified
-                            ? "bg-[#dcfce7] text-[#166534]"
-                            : "bg-[#fef3c7] text-[#92400e]"
-                        }`}
-                      >
-                        {row.isCertified ? "Certified" : "Provisional"}
-                      </span>
+                      {row.selectionStatus ? (
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                            row.selectionStatus === "SELECTED"
+                              ? "bg-[#dcfce7] text-[#166534] border border-[#bbf7d0]"
+                              : "bg-amber-100 text-amber-900 border border-amber-300"
+                          }`}
+                        >
+                          {row.selectionStatus}
+                        </span>
+                      ) : (
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                            row.isCertified
+                              ? "bg-[#dcfce7] text-[#166534]"
+                              : "bg-[#fef3c7] text-[#92400e]"
+                          }`}
+                        >
+                          {row.isCertified ? "Certified" : "Provisional"}
+                        </span>
+                      )}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
+            {(data.totalPages ?? 1) > 1 && (
+              <div className="flex items-center justify-between px-space-md py-3 bg-surface-container-low border-t border-[#e2e8f0] text-xs text-secondary">
+                <span>
+                  Page {data.page ?? page} of {data.totalPages} ({data.totalCount ?? data.rows.length} ranked candidates)
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={(data.page ?? page) <= 1}
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    className="px-2.5 py-1 rounded border border-[#e2e8f0] bg-surface-container-lowest disabled:opacity-40"
+                  >
+                    Previous
+                  </button>
+                  <button
+                    type="button"
+                    disabled={(data.page ?? page) >= (data.totalPages ?? 1)}
+                    onClick={() => setPage((p) => Math.min(data.totalPages ?? p + 1, p + 1))}
+                    className="px-2.5 py-1 rounded border border-[#e2e8f0] bg-surface-container-lowest disabled:opacity-40"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

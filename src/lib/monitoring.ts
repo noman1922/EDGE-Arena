@@ -110,12 +110,24 @@ export interface ContestMonitoringOverview {
   };
 }
 
+const MONITORING_SETTINGS_CACHE_TTL_MS = 30000;
+const monitoringSettingsCache = new Map<
+  string,
+  { settings: ContestMonitoringSettings; expiresAt: number }
+>();
+
 /**
- * Loads the active monitoring configuration for a specific contest.
+ * Loads the active monitoring configuration for a specific contest (short-TTL cached).
  */
 export async function getContestMonitoringSettings(
   contestId: string
 ): Promise<ContestMonitoringSettings> {
+  const now = Date.now();
+  const cached = monitoringSettingsCache.get(contestId);
+  if (cached && cached.expiresAt > now) {
+    return cached.settings;
+  }
+
   try {
     const record = await prisma.auditLog.findFirst({
       where: {
@@ -126,11 +138,17 @@ export async function getContestMonitoringSettings(
     });
 
     if (!record || !record.metadata || typeof record.metadata !== "object") {
-      return { ...DEFAULT_MONITORING_SETTINGS };
+      const defaults = { ...DEFAULT_MONITORING_SETTINGS };
+      if (monitoringSettingsCache.size > 500) monitoringSettingsCache.clear();
+      monitoringSettingsCache.set(contestId, {
+        settings: defaults,
+        expiresAt: now + MONITORING_SETTINGS_CACHE_TTL_MS,
+      });
+      return defaults;
     }
 
     const meta = record.metadata as Record<string, unknown>;
-    return {
+    const resolved: ContestMonitoringSettings = {
       cameraEnabled: Boolean(meta.cameraEnabled),
       micEnabled: Boolean(meta.micEnabled),
       fullscreenEnabled: meta.fullscreenEnabled !== undefined ? Boolean(meta.fullscreenEnabled) : true,
@@ -147,6 +165,12 @@ export async function getContestMonitoringSettings(
       noticeText: (meta.noticeText as string) || DEFAULT_MONITORING_SETTINGS.noticeText,
       updatedAt: record.createdAt.toISOString(),
     };
+    if (monitoringSettingsCache.size > 500) monitoringSettingsCache.clear();
+    monitoringSettingsCache.set(contestId, {
+      settings: resolved,
+      expiresAt: now + MONITORING_SETTINGS_CACHE_TTL_MS,
+    });
+    return resolved;
   } catch (err) {
     console.error("Error reading contest monitoring settings:", err);
     return { ...DEFAULT_MONITORING_SETTINGS };
@@ -196,6 +220,11 @@ export async function saveContestMonitoringSettings(
       },
     });
   }
+
+  monitoringSettingsCache.set(contestId, {
+    settings: updated,
+    expiresAt: Date.now() + MONITORING_SETTINGS_CACHE_TTL_MS,
+  });
 
   return updated;
 }

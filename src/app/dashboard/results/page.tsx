@@ -42,7 +42,7 @@ export default function ParticipantResultsPage() {
             Official Performance Diagnostic Scorecard
           </h1>
           <p className="font-body-sm text-secondary mt-0.5">
-            Verified assessment outcome, percentile benchmarks, and evaluator rubric feedback.
+            Verified assessment outcome, standing benchmarks, and evaluator rubric feedback.
           </p>
         </div>
 
@@ -96,7 +96,7 @@ export default function ParticipantResultsPage() {
               Candidate Privacy Assurance
             </div>
             <p>
-              In accordance with enterprise assessment governance, scores and rank percentiles are withheld until all submissions in the cohort are independently reviewed and certified by platform administrators.
+              In accordance with enterprise assessment governance, scores and standings are withheld until all submissions in the cohort are independently reviewed and certified by platform administrators.
             </p>
           </div>
         </div>
@@ -111,8 +111,16 @@ export default function ParticipantResultsPage() {
                   <span className="px-2.5 py-0.5 rounded bg-surface-container font-label-xs font-semibold text-secondary uppercase tracking-wider">
                     {scorecard.track}
                   </span>
-                  <span className="px-2.5 py-0.5 rounded bg-[#dcfce7] text-[#166534] font-label-xs font-bold uppercase tracking-wider">
-                    Official Certified Outcome
+                  <span
+                    className={`px-2.5 py-0.5 rounded font-label-xs font-bold uppercase tracking-wider ${
+                      scorecard.selectionStatus === "SELECTED"
+                        ? "bg-[#dcfce7] text-[#166534] border border-[#bbf7d0]"
+                        : scorecard.selectionStatus === "PROVISIONAL"
+                        ? "bg-amber-100 text-amber-900 border border-amber-300"
+                        : "bg-[#dcfce7] text-[#166534]"
+                    }`}
+                  >
+                    {scorecard.selectionStatus || "Official Certified Outcome"}
                   </span>
                 </div>
                 <h2 className="font-headline-lg font-bold text-on-surface tracking-tight mt-1.5">
@@ -172,13 +180,29 @@ export default function ParticipantResultsPage() {
 
               <div className="p-space-md bg-surface-container-low rounded-lg border border-[#e2e8f0]">
                 <span className="font-label-xs uppercase font-semibold text-secondary block">
-                  Cohort Percentile
+                  {scorecard.isFreedomContest ? "Selection Status" : "Cohort Percentile"}
                 </span>
-                <div className="text-3xl font-bold text-on-surface font-mono mt-1">
-                  {scorecard.percentile !== null ? `${scorecard.percentile}%` : "—"}
+                <div
+                  className={`text-3xl font-bold font-mono mt-1 ${
+                    scorecard.selectionStatus === "SELECTED"
+                      ? "text-[#166534]"
+                      : scorecard.selectionStatus === "PROVISIONAL"
+                      ? "text-amber-800"
+                      : "text-on-surface"
+                  }`}
+                >
+                  {scorecard.isFreedomContest
+                    ? scorecard.selectionStatus || "—"
+                    : scorecard.percentile !== null
+                    ? `${scorecard.percentile}%`
+                    : "—"}
                 </div>
                 <span className="font-label-xs text-secondary mt-1 block">
-                  Outperformed Peer Group
+                  {scorecard.isFreedomContest
+                    ? scorecard.selectionStatus === "SELECTED"
+                      ? "Qualified (16-20 Marks)"
+                      : "Provisional (0-15 Marks)"
+                    : "Outperformed Peer Group"}
                 </span>
               </div>
             </div>

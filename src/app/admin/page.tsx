@@ -12,7 +12,6 @@ import {
   getAdminOverviewSummaryAction,
   type AdminOverviewSummaryResult,
 } from "@/app/actions/contest-actions";
-import { getCurrentUserSession } from "@/app/actions/auth-actions";
 import { useAdminContest } from "@/context/admin-contest-context";
 
 export default function AdminOverviewPage() {
@@ -21,7 +20,6 @@ export default function AdminOverviewPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [submissions, setSubmissions] = useState<SubmissionToGrade[]>([]);
   const [summary, setSummary] = useState<AdminOverviewSummaryResult | null>(null);
-  const [currentAdminEmail, setCurrentAdminEmail] = useState<string>("admin@career-edge.internal");
   const [isLoading, setIsLoading] = useState(true);
 
   // Grading Drawer State
@@ -41,17 +39,13 @@ export default function AdminOverviewPage() {
       const targetScope = scopeId ?? selectedContestId;
       const targetContestId = targetScope && targetScope !== "ALL" ? targetScope : undefined;
 
-      const [subs, summaryData, session] = await Promise.all([
+      const [subs, summaryData] = await Promise.all([
         getSubmissionsForGrading(targetContestId),
         getAdminOverviewSummaryAction(targetContestId),
-        getCurrentUserSession(),
       ]);
 
       setSubmissions(subs);
       setSummary(summaryData);
-      if (session?.email) {
-        setCurrentAdminEmail(session.email);
-      }
     } catch (err) {
       console.error("Failed to load admin overview data:", err);
     } finally {
@@ -94,7 +88,6 @@ export default function AdminOverviewPage() {
 
       const res = await saveRubricScoreAction({
         submissionId: selectedSub.id,
-        evaluatorEmail: currentAdminEmail,
         scores: scorePayload,
       });
 
@@ -476,7 +469,7 @@ export default function AdminOverviewPage() {
             </div>
 
             <p className="font-body-sm text-secondary mb-4">
-              Publishing locks final evaluations, computes cohort percentiles, and certifies candidate achievement records.
+              Publishing locks final evaluations and certifies candidate achievement records.
             </p>
 
             {publishMessage && (

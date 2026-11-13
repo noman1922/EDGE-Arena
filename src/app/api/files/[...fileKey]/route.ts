@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
-import { downloadFromStorage } from "@/lib/storage";
+import { authorizeFileAccess } from "@/lib/file-authorization";
+import { downloadFromStorage, validateStorageSegments } from "@/lib/storage";
 
 export async function GET(
   _request: NextRequest,
@@ -16,6 +16,12 @@ export async function GET(
         { status: 401, headers: { "Content-Type": "application/json" } }
       );
     }
+    if (session.mustChangePassword) {
+      return new NextResponse(
+        JSON.stringify({ error: "Forbidden: Password change required before accessing files." }),
+        { status: 403, headers: { "Content-Type": "application/json" } }
+      );
+    }
 
     const resolvedParams = await params;
     if (!resolvedParams?.fileKey || resolvedParams.fileKey.length === 0) {
@@ -25,135 +31,28 @@ export async function GET(
       );
     }
 
-    const fileKey = resolvedParams.fileKey.join("/");
-
-    // 2. Authorization verification
-    let resolvedFileName = "document.pdf";
-
-    // Check if it's a candidate submission answer
-    const answer = await prisma.submissionAnswer.findFirst({
-      where: { fileKey },
-      include: {
-        submission: {
-          include: {
-            user: true,
-          },
-        },
-      },
-    });
-
-    if (answer) {
-      resolvedFileName = answer.fileName || "submission.pdf";
-
-      if (session.role === "PARTICIPANT") {
-        const isOwner =
-          answer.submission.userId === session.userId ||
-          answer.submission.user.email === session.email;
-
-        if (!isOwner) {
-          return new NextResponse(
-            JSON.stringify({
-              error: "Forbidden: You are not authorized to view this participant's submission file.",
-            }),
-            { status: 403, headers: { "Content-Type": "application/json" } }
-          );
-        }
-      } else if (session.role === "EVALUATOR") {
-        const evalUser = await prisma.user.findFirst({
-          where: { OR: [{ id: session.userId }, { email: session.email }] },
-        });
-        const evalId = evalUser?.id || session.userId;
-        const assignment = await prisma.evaluatorCandidateAssignment.findFirst({
-          where: {
-            contestId: answer.submission.contestId,
-            evaluatorId: evalId,
-            participantId: answer.submission.userId,
-          },
-        });
-        if (!assignment) {
-          return new NextResponse(
-            JSON.stringify({
-              error: "Forbidden: You are not assigned to evaluate this candidate.",
-            }),
-            { status: 403, headers: { "Content-Type": "application/json" } }
-          );
-        }
-      }
-      // Admins are permitted to inspect all submission answers
-    } else {
-      // Check if it's a reference material
-      const reference = await prisma.referenceMaterial.findFirst({
-        where: { fileKey },
-        include: {
-          task: {
-            include: {
-              phase: {
-                include: {
-                  contest: {
-                    include: {
-                      participants: true,
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
-      });
-
-      if (reference) {
-        resolvedFileName = reference.title || "reference.pdf";
-
-        if (session.role === "PARTICIPANT") {
-          const contestParticipants =
-            reference.task?.phase?.contest?.participants || [];
-          const isEnrolled = contestParticipants.some(
-            (p) => p.userId === session.userId
-          );
-
-          if (!isEnrolled && reference.task?.phase?.contest?.isPublished === false) {
-            return new NextResponse(
-              JSON.stringify({
-                error: "Forbidden: You are not enrolled in the contest for this reference material.",
-              }),
-              { status: 403, headers: { "Content-Type": "application/json" } }
-            );
-          }
-        } else if (session.role === "EVALUATOR") {
-          const contestId = reference.task?.phase?.contestId;
-          if (contestId) {
-            const evalUser = await prisma.user.findFirst({
-              where: { OR: [{ id: session.userId }, { email: session.email }] },
-            });
-            const evalId = evalUser?.id || session.userId;
-            const contestEval = await prisma.contestEvaluator.findFirst({
-              where: {
-                contestId,
-                userId: evalId,
-              },
-            });
-            if (!contestEval) {
-              return new NextResponse(
-                JSON.stringify({
-                  error: "Forbidden: You are not assigned to this contest.",
-                }),
-                { status: 403, headers: { "Content-Type": "application/json" } }
-              );
-            }
-          }
-        }
-      } else if (session.role !== "ADMIN") {
-        return new NextResponse(
-          JSON.stringify({ error: "Not Found or Access Denied." }),
-          { status: 404, headers: { "Content-Type": "application/json" } }
-        );
-      }
+    // 2. Reject path traversal or malformed segments before joining
+    const segmentCheck = validateStorageSegments(resolvedParams.fileKey);
+    if (!segmentCheck.isValid || !segmentCheck.normalizedKey) {
+      return new NextResponse(
+        JSON.stringify({ error: "Bad Request: Invalid file key." }),
+        { status: 400, headers: { "Content-Type": "application/json" } }
+      );
     }
 
-    // 3. Download and stream the file from secure storage
-    const { buffer, contentType, contentLength } = await downloadFromStorage(fileKey);
+    // 3. Enforce unified path, active DB account, and relationship authorization
+    const access = await authorizeFileAccess(session, segmentCheck.normalizedKey);
+    if (!access.authorized) {
+      return new NextResponse(
+        JSON.stringify({ error: access.error }),
+        { status: access.status, headers: { "Content-Type": "application/json" } }
+      );
+    }
 
-    const safeFileName = resolvedFileName.replace(/["\r\n]/g, "_");
+    // 4. Download and stream the file from secure storage
+    const { buffer, contentType, contentLength } = await downloadFromStorage(access.fileKey);
+
+    const safeFileName = access.fileName.replace(/["\r\n]/g, "_");
     const searchParams = _request.nextUrl.searchParams;
     const isDownload =
       searchParams.get("download") === "1" ||
@@ -176,9 +75,8 @@ export async function GET(
   } catch (error) {
     console.error("Secure file download route error:", error);
     return new NextResponse(
-      JSON.stringify({ error: "Internal Server Error streaming file." }),
+      JSON.stringify({ error: "Unable to retrieve requested file." }),
       { status: 500, headers: { "Content-Type": "application/json" } }
     );
   }
 }
-

@@ -1,9 +1,16 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
-import { ContestStatus } from "@prisma/client";
-import { requireRole, requireSession } from "@/lib/auth";
+import { ContestStatus, PhaseAttemptStatus, PhaseStatus } from "@prisma/client";
+import { requireRole, requireSession, type SessionPayload } from "@/lib/auth";
+import { authorizeFileAccess } from "@/lib/file-authorization";
 import { checkSubmissionDeadline } from "@/lib/scoring";
+import {
+  getAuthoritativeAttemptDeadline,
+  isContestConcluded,
+  isContestUpcoming,
+} from "@/lib/contest-lifecycle";
+import { autoFinalizeExpiredSubmissionInternal } from "@/app/actions/assessment-actions";
 import {
   uploadToStorage,
   getSignedDownloadUrl,
@@ -36,12 +43,248 @@ export interface DownloadUrlResult {
   error?: string;
 }
 
+async function authorizeMutableSubmissionAttachment(
+  session: SessionPayload,
+  submissionId: string,
+  questionId: string,
+  operation: "upload" | "delete"
+): Promise<
+  | {
+      ok: true;
+      now: Date;
+      submissionId: string;
+      questionId: string;
+      maxFileSizeBytes: bigint | null;
+    }
+  | {
+      ok: false;
+      error: string;
+    }
+> {
+  const normalizedSubmissionId =
+    typeof submissionId === "string" ? submissionId.trim() : "";
+  const normalizedQuestionId =
+    typeof questionId === "string" ? questionId.trim() : "";
+
+  if (!normalizedSubmissionId || !normalizedQuestionId) {
+    return {
+      ok: false,
+      error: "Missing required parameters: submissionId or questionId.",
+    };
+  }
+
+  // Verify active participant DB record rather than trusting client-supplied IDs or timers
+  const actor = await prisma.user.findUnique({
+    where: { id: session.userId },
+    select: { id: true, role: true, isActive: true },
+  });
+
+  if (!actor || !actor.isActive || actor.role !== "PARTICIPANT") {
+    return {
+      ok: false,
+      error: "Unauthorized: Active participant account required.",
+    };
+  }
+
+  const submission = await prisma.submission.findUnique({
+    where: { id: normalizedSubmissionId },
+    include: {
+      phase: true,
+      contest: true,
+      task: true,
+    },
+  });
+
+  if (!submission) {
+    return { ok: false, error: "Submission session not found." };
+  }
+
+  if (submission.userId !== actor.id) {
+    return {
+      ok: false,
+      error:
+        "Unauthorized access: You cannot modify another candidate's submission.",
+    };
+  }
+
+  if (
+    submission.phase.contestId !== submission.contestId ||
+    submission.task.phaseId !== submission.phaseId
+  ) {
+    return {
+      ok: false,
+      error: "Invalid assessment submission hierarchy.",
+    };
+  }
+
+  const [enrollment, question, phaseAttempt] = await Promise.all([
+    prisma.contestParticipant.findUnique({
+      where: {
+        contestId_userId: {
+          contestId: submission.contestId,
+          userId: actor.id,
+        },
+      },
+      select: { status: true },
+    }),
+    prisma.question.findUnique({
+      where: { id: normalizedQuestionId },
+      select: {
+        id: true,
+        taskId: true,
+        maxFileSizeBytes: true,
+      },
+    }),
+    prisma.phaseAttempt.findUnique({
+      where: {
+        phaseId_userId: {
+          phaseId: submission.phaseId,
+          userId: actor.id,
+        },
+      },
+      select: {
+        id: true,
+        status: true,
+        startedAt: true,
+        expiresAt: true,
+      },
+    }),
+  ]);
+
+  if (
+    !enrollment ||
+    (enrollment.status !== "ACTIVE" && enrollment.status !== "ENROLLED")
+  ) {
+    return {
+      ok: false,
+      error: "Unauthorized: Participant is not actively enrolled in this contest.",
+    };
+  }
+
+  if (!question || question.taskId !== submission.taskId) {
+    return {
+      ok: false,
+      error: "Specified question does not belong to this assessment task.",
+    };
+  }
+
+  if (submission.status !== "DRAFT") {
+    return {
+      ok: false,
+      error: "Assessment has already been finalized and locked.",
+    };
+  }
+
+  const now = new Date();
+  if (isContestConcluded(submission.contest, now)) {
+    return {
+      ok: false,
+      error: "Contest has concluded. Attachment modifications are locked.",
+    };
+  }
+
+  if (
+    submission.contest.status !== ContestStatus.LIVE ||
+    isContestUpcoming(submission.contest, now)
+  ) {
+    return {
+      ok: false,
+      error: "Contest is not currently active for attachment modifications.",
+    };
+  }
+
+  if (submission.phase.status !== PhaseStatus.OPEN) {
+    return {
+      ok: false,
+      error: "Assessment phase is not open for attachment modifications.",
+    };
+  }
+
+  if (
+    phaseAttempt &&
+    (phaseAttempt.status === PhaseAttemptStatus.EXPIRED ||
+      phaseAttempt.status === PhaseAttemptStatus.COMPLETED)
+  ) {
+    if (phaseAttempt.status === PhaseAttemptStatus.EXPIRED) {
+      await autoFinalizeExpiredSubmissionInternal(
+        submission.id,
+        `Phase attempt expired before attachment ${operation}`
+      ).catch(() => {});
+    }
+    return {
+      ok: false,
+      error: "Assessment timer has expired. Attachment modifications are locked.",
+    };
+  }
+
+  // Enforce authoritative hierarchical deadline across contest, phase, PhaseAttempt, and task timers
+  const effectiveTaskForDeadline = {
+    id: submission.task.id,
+    durationMinutes:
+      submission.task.durationMinutes ??
+      submission.contest.durationMinutes ??
+      (submission.expiresAt ? 1 : null),
+  };
+  const attemptDeadline = getAuthoritativeAttemptDeadline(
+    submission.contest,
+    submission.phase,
+    submission,
+    now,
+    effectiveTaskForDeadline,
+    phaseAttempt
+  );
+  const deadlineCheck = checkSubmissionDeadline(
+    attemptDeadline.effectiveDeadline,
+    now,
+    0
+  );
+
+  if (
+    attemptDeadline.isAttemptExpired ||
+    attemptDeadline.isPhaseExpired ||
+    attemptDeadline.isConcluded ||
+    !deadlineCheck.isEligible
+  ) {
+    if (
+      phaseAttempt &&
+      attemptDeadline.isPhaseExpired &&
+      phaseAttempt.status === PhaseAttemptStatus.IN_PROGRESS
+    ) {
+      await prisma.phaseAttempt
+        .update({
+          where: { id: phaseAttempt.id },
+          data: { status: PhaseAttemptStatus.EXPIRED },
+        })
+        .catch(() => {});
+    }
+
+    await autoFinalizeExpiredSubmissionInternal(
+      submission.id,
+      `Cut-off deadline elapsed during attachment ${operation}`
+    ).catch(() => {});
+
+    return {
+      ok: false,
+      error:
+        "Assessment cut-off deadline has elapsed. Attachment modifications are locked.",
+    };
+  }
+
+  return {
+    ok: true,
+    now,
+    submissionId: submission.id,
+    questionId: question.id,
+    maxFileSizeBytes: question.maxFileSizeBytes ?? null,
+  };
+}
+
 /**
  * Handles participant file uploads for assessment submissions (e.g., Question 4 PDF pitch deck).
  * Strict server-side verification:
- * - Participant role enforcement
- * - Submission ownership and open status verification
- * - Deadline compliance check
+ * - Participant role enforcement and active enrollment verification
+ * - Submission ownership, open status, and contest/phase/task relationship checks
+ * - Authoritative server-side hierarchical timer & deadline compliance (0s post-expiry)
  * - Server-side PDF validation (size, MIME, magic bytes %PDF)
  * - Anti-collision object key generation
  * - Immediate orphaned file rollback on DB failure
@@ -53,11 +296,16 @@ export async function uploadSubmissionAttachmentAction(
 
   try {
     const session = await requireRole(["PARTICIPANT"]);
-    const submissionId = formData.get("submissionId") as string;
-    const questionId = formData.get("questionId") as string;
+    const rawSubmissionId = formData.get("submissionId");
+    const rawQuestionId = formData.get("questionId");
     const file = formData.get("file") as File | null;
 
-    if (!submissionId || !questionId) {
+    if (
+      typeof rawSubmissionId !== "string" ||
+      typeof rawQuestionId !== "string" ||
+      !rawSubmissionId.trim() ||
+      !rawQuestionId.trim()
+    ) {
       return { success: false, error: "Missing required parameters: submissionId or questionId." };
     }
 
@@ -65,63 +313,19 @@ export async function uploadSubmissionAttachmentAction(
       return { success: false, error: "No file was selected for upload." };
     }
 
-    // 1. Verify submission exists and belongs to the active participant
-    const submission = await prisma.submission.findUnique({
-      where: { id: submissionId },
-      include: {
-        user: true,
-        phase: true,
-        contest: true,
-      },
-    });
-
-    if (!submission) {
-      return { success: false, error: "Submission session not found." };
-    }
-
-    if (submission.userId !== session.userId && submission.user.email !== session.email) {
-      return {
-        success: false,
-        error: "Unauthorized access: You cannot attach files to another candidate's submission.",
-      };
-    }
-
-    const isSubmitted =
-      submission.status === "SUBMITTED" ||
-      submission.status === "GRADED" ||
-      submission.status === "PUBLISHED";
-    if (isSubmitted) {
-      return { success: false, error: "Assessment has already been finalized and locked." };
-    }
-
-    const now = new Date();
-    if (
-      submission.contest.status === ContestStatus.COMPLETED ||
-      submission.contest.status === ContestStatus.ARCHIVED ||
-      now > submission.contest.endDate
-    ) {
-      return { success: false, error: "Contest has concluded. File uploads are locked." };
-    }
-
-    // 2. Server-side deadline check (60s network grace period)
-    const effectiveDeadline = new Date(
-      Math.min(submission.phase.deadline.getTime(), submission.contest.endDate.getTime())
+    const authCheck = await authorizeMutableSubmissionAttachment(
+      session,
+      rawSubmissionId,
+      rawQuestionId,
+      "upload"
     );
-    const deadlineCheck = checkSubmissionDeadline(effectiveDeadline, now, 60);
-    if (!deadlineCheck.isEligible) {
-      return { success: false, error: "Assessment cut-off deadline has elapsed. Uploads are locked." };
+    if (!authCheck.ok) {
+      return { success: false, error: authCheck.error };
     }
 
-    // 3. Question validation
-    const question = await prisma.question.findUnique({
-      where: { id: questionId },
-    });
+    const { now, submissionId, questionId, maxFileSizeBytes } = authCheck;
 
-    if (!question || question.taskId !== submission.taskId) {
-      return { success: false, error: "Specified question does not belong to this assessment task." };
-    }
-
-    // 4. Read file bytes and validate
+    // Read file bytes and validate PDF constraints
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
@@ -131,15 +335,15 @@ export async function uploadSubmissionAttachmentAction(
     }
 
     // Enforce question-level constraints if specified
-    if (question.maxFileSizeBytes && BigInt(buffer.length) > question.maxFileSizeBytes) {
-      const maxMb = (Number(question.maxFileSizeBytes) / (1024 * 1024)).toFixed(0);
+    if (maxFileSizeBytes && BigInt(buffer.length) > maxFileSizeBytes) {
+      const maxMb = (Number(maxFileSizeBytes) / (1024 * 1024)).toFixed(0);
       return {
         success: false,
         error: `File size exceeds the specific question limit of ${maxMb} MB.`,
       };
     }
 
-    // 5. Check if previous file exists on this answer to clean up
+    // Check if previous file exists on this answer to clean up after commit
     const existingAnswer = await prisma.submissionAnswer.findUnique({
       where: {
         submissionId_questionId: {
@@ -151,7 +355,7 @@ export async function uploadSubmissionAttachmentAction(
 
     const oldFileKey = existingAnswer?.fileKey;
 
-    // 6. Upload file to private storage
+    // Upload file to private storage
     const uploadResult = await uploadToStorage({
       buffer,
       fileName: file.name,
@@ -162,7 +366,7 @@ export async function uploadSubmissionAttachmentAction(
 
     uploadedFileKey = uploadResult.fileKey;
 
-    // 7. Persist file metadata in database
+    // Persist file metadata in database
     await prisma.submissionAnswer.upsert({
       where: {
         submissionId_questionId: {
@@ -193,14 +397,14 @@ export async function uploadSubmissionAttachmentAction(
       data: { autoSavedAt: now },
     });
 
-    // 8. Safely delete superseded file if one existed
+    // Safely delete superseded file if one existed
     if (oldFileKey && oldFileKey !== uploadResult.fileKey) {
       await deleteFromStorage(oldFileKey).catch((e) =>
         console.warn("Non-fatal: Failed to clean up superseded file:", oldFileKey, e)
       );
     }
 
-    // 9. Generate temporary preview signed URL
+    // Generate temporary preview signed URL
     const signedDownloadUrl = await getSignedDownloadUrl(uploadResult.fileKey, 3600);
 
     const sizeFormatted = (buffer.length / (1024 * 1024)).toFixed(1) + " MB";
@@ -237,7 +441,7 @@ export async function uploadSubmissionAttachmentAction(
 }
 
 /**
- * Removes an uploaded submission attachment (if not yet submitted).
+ * Removes an uploaded submission attachment (strictly before deadline and before finalization).
  */
 export async function deleteSubmissionAttachmentAction(
   submissionId: string,
@@ -246,41 +450,21 @@ export async function deleteSubmissionAttachmentAction(
   try {
     const session = await requireRole(["PARTICIPANT"]);
 
-    const submission = await prisma.submission.findUnique({
-      where: { id: submissionId },
-      include: { user: true, phase: true, contest: true },
-    });
-
-    if (!submission) {
-      return { success: false, error: "Submission not found." };
-    }
-
-    if (submission.userId !== session.userId && submission.user.email !== session.email) {
-      return { success: false, error: "Forbidden: You cannot modify another candidate's submission." };
-    }
-
-    const isSubmitted =
-      submission.status === "SUBMITTED" ||
-      submission.status === "GRADED" ||
-      submission.status === "PUBLISHED";
-    if (isSubmitted) {
-      return { success: false, error: "Submission has already been finalized." };
-    }
-
-    const now = new Date();
-    if (
-      submission.contest.status === ContestStatus.COMPLETED ||
-      submission.contest.status === ContestStatus.ARCHIVED ||
-      now > submission.contest.endDate
-    ) {
-      return { success: false, error: "Contest has concluded. File modifications are locked." };
+    const authCheck = await authorizeMutableSubmissionAttachment(
+      session,
+      submissionId,
+      questionId,
+      "delete"
+    );
+    if (!authCheck.ok) {
+      return { success: false, error: authCheck.error };
     }
 
     const answer = await prisma.submissionAnswer.findUnique({
       where: {
         submissionId_questionId: {
-          submissionId,
-          questionId,
+          submissionId: authCheck.submissionId,
+          questionId: authCheck.questionId,
         },
       },
     });
@@ -295,8 +479,8 @@ export async function deleteSubmissionAttachmentAction(
     await prisma.submissionAnswer.update({
       where: {
         submissionId_questionId: {
-          submissionId,
-          questionId,
+          submissionId: authCheck.submissionId,
+          questionId: authCheck.questionId,
         },
       },
       data: {
@@ -322,183 +506,39 @@ export async function deleteSubmissionAttachmentAction(
 
 /**
  * Generates an authorized, short-lived signed download URL for private files.
- * Enforces strict role-based access control:
- * - PARTICIPANT: Can only access their own submissions or reference files for their enrolled contests.
- * - EVALUATOR: Can access submissions and reference materials for grading.
- * - ADMIN: Full access to all assessment deliverables and references.
+ * Enforces strict path validation and role-based database authorization:
+ * - PARTICIPANT: Only own submission files or reference materials for enrolled contests.
+ * - EVALUATOR: Assigned contest references and assigned candidate submission files.
+ * - ADMIN: DB-verified submission answers and reference materials only.
  */
 export async function getFileDownloadUrlAction(
   fileKey: string
 ): Promise<DownloadUrlResult> {
   try {
     const session = await requireSession();
+    const access = await authorizeFileAccess(session, fileKey);
 
-    if (!fileKey || typeof fileKey !== "string") {
-      return { success: false, error: "Invalid file key specified." };
+    if (!access.authorized) {
+      return {
+        success: false,
+        error: access.error,
+      };
     }
 
-    // 1. Check if the file is a candidate's submission answer
-    const answer = await prisma.submissionAnswer.findFirst({
-      where: { fileKey },
-      include: {
-        submission: {
-          include: {
-            user: true,
-            contest: true,
-          },
-        },
-      },
-    });
-
-    if (answer) {
-      // Role authorization check for candidate submission
-      if (session.role === "PARTICIPANT") {
-        if (
-          answer.submission.userId !== session.userId &&
-          answer.submission.user.email !== session.email
-        ) {
-          return {
-            success: false,
-            error: "Forbidden: You are not authorized to view this participant's submission file.",
-          };
-        }
-      } else if (session.role === "EVALUATOR") {
-        const evalUser = await prisma.user.findFirst({
-          where: { OR: [{ id: session.userId }, { email: session.email }] },
-        });
-        const evalId = evalUser?.id || session.userId;
-        const assignment = await prisma.evaluatorCandidateAssignment.findFirst({
-          where: {
-            contestId: answer.submission.contestId,
-            evaluatorId: evalId,
-            participantId: answer.submission.userId,
-          },
-        });
-        if (!assignment) {
-          return {
-            success: false,
-            error: "Forbidden: You are not assigned to evaluate this candidate.",
-          };
-        }
-      }
-      // ADMIN is authorized to review all candidate submissions
-      try {
-        const signedUrl = await getSignedDownloadUrl(fileKey, 3600);
-        return {
-          success: true,
-          downloadUrl: signedUrl,
-          fileName: answer.fileName || "submission.pdf",
-        };
-      } catch {
-        return {
-          success: true,
-          downloadUrl: `/api/files/${fileKey}`,
-          fileName: answer.fileName || "submission.pdf",
-        };
-      }
+    try {
+      const signedUrl = await getSignedDownloadUrl(access.fileKey, 3600);
+      return {
+        success: true,
+        downloadUrl: signedUrl,
+        fileName: access.fileName,
+      };
+    } catch {
+      return {
+        success: true,
+        downloadUrl: `/api/files/${access.fileKey}`,
+        fileName: access.fileName,
+      };
     }
-
-    // 2. Check if the file is a contest ReferenceMaterial
-    const reference = await prisma.referenceMaterial.findFirst({
-      where: { fileKey },
-      include: {
-        task: {
-          include: {
-            phase: {
-              include: {
-                contest: {
-                  include: {
-                    participants: true,
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    });
-
-    if (reference) {
-      if (session.role === "PARTICIPANT") {
-        const contestParticipants = reference.task?.phase?.contest?.participants || [];
-        const isEnrolled = contestParticipants.some(
-          (p) => p.userId === session.userId
-        );
-        if (!isEnrolled && reference.task?.phase?.contest?.isPublished === false) {
-          // If participant is enrolled in contest or it's accessible
-          const userEnrollment = await prisma.contestParticipant.findFirst({
-            where: {
-              userId: session.userId,
-              contestId: reference.task?.phase?.contestId,
-            },
-          });
-          if (!userEnrollment) {
-            return {
-              success: false,
-              error: "Forbidden: You are not enrolled in the contest for this reference material.",
-            };
-          }
-        }
-      } else if (session.role === "EVALUATOR") {
-        const contestId = reference.task?.phase?.contestId;
-        if (contestId) {
-          const evalUser = await prisma.user.findFirst({
-            where: { OR: [{ id: session.userId }, { email: session.email }] },
-          });
-          const evalId = evalUser?.id || session.userId;
-          const contestEval = await prisma.contestEvaluator.findFirst({
-            where: {
-              contestId,
-              userId: evalId,
-            },
-          });
-          if (!contestEval) {
-            return {
-              success: false,
-              error: "Forbidden: You are not assigned to this contest.",
-            };
-          }
-        }
-      }
-
-      try {
-        const signedUrl = await getSignedDownloadUrl(fileKey, 3600);
-        return {
-          success: true,
-          downloadUrl: signedUrl,
-          fileName: reference.title || "reference.pdf",
-        };
-      } catch {
-        return {
-          success: true,
-          downloadUrl: `/api/files/${fileKey}`,
-          fileName: reference.title || "reference.pdf",
-        };
-      }
-    }
-
-    // 3. Fallback check for admin access to any valid key in storage
-    if (session.role === "ADMIN") {
-      try {
-        const signedUrl = await getSignedDownloadUrl(fileKey, 3600);
-        return {
-          success: true,
-          downloadUrl: signedUrl,
-          fileName: "document.pdf",
-        };
-      } catch {
-        return {
-          success: true,
-          downloadUrl: `/api/files/${fileKey}`,
-          fileName: "document.pdf",
-        };
-      }
-    }
-
-    return {
-      success: false,
-      error: "File record not found or access denied.",
-    };
   } catch (error) {
     console.error("Get download URL error:", error);
     return {

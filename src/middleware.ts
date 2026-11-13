@@ -4,7 +4,8 @@ import {
   verifySessionToken,
   SESSION_COOKIE_NAME,
   getRoleDestination,
-} from "./lib/auth";
+  resolvePostLoginRedirect,
+} from "./lib/session-token";
 
 export async function middleware(request: NextRequest) {
   // Gracefully discard already aborted client requests
@@ -51,10 +52,15 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(new URL("/login", request.url));
   }
 
-  // 4. Login page: If already authenticated -> redirect to role panel
+  // 4. Login page: If already authenticated -> redirect to role panel (or safe same-role target)
   if (pathname === "/login") {
     if (session) {
-      const destination = getRoleDestination(session.role);
+      const requestedRedirect = request.nextUrl.searchParams.get("redirect");
+      const destination = resolvePostLoginRedirect(
+        session.role,
+        requestedRedirect,
+        session.mustChangePassword
+      );
       return NextResponse.redirect(new URL(destination, request.url));
     }
     return NextResponse.next();

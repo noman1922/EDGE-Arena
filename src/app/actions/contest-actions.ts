@@ -69,7 +69,7 @@ export async function getAdminContestOptions(): Promise<AdminContestOption[]> {
     if (session.role === "EVALUATOR") {
       const evalUser = await prisma.user.findFirst({
         where: { OR: [{ id: session.userId }, { email: session.email }] },
-        include: { contestEvaluations: { select: { contestId: true } } },
+        select: { id: true, contestEvaluations: { select: { contestId: true } } },
       });
       const contestIds = evalUser?.contestEvaluations.map((c) => c.contestId) || [];
       whereClause = { id: { in: contestIds } };
@@ -1464,6 +1464,7 @@ export async function assignParticipantAction(contestId: string, email: string, 
     // 1. Strict verification: only enroll existing accounts
     const user = await prisma.user.findUnique({
       where: { email: trimmedEmail },
+      select: { id: true, email: true, name: true, role: true },
     });
 
     if (!user) {

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { BrandLogo } from "@/components/ui/brand-logo";
 import { logoutAction, getCurrentUserSession } from "@/app/actions/auth-actions";
+import { LiveDateTime } from "@/components/ui/live-date-time";
 
 interface ParticipantHeaderProps {
   onToggleMobileNav?: () => void;
@@ -18,8 +19,9 @@ export function ParticipantHeader({
   const pathname = usePathname();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
-  const [candidateUser, setCandidateUser] = useState<{ name: string; initials: string }>({
+  const [candidateUser, setCandidateUser] = useState<{ name: string; email: string; initials: string }>({
     name: "Candidate",
+    email: "",
     initials: "CD",
   });
 
@@ -27,13 +29,14 @@ export function ParticipantHeader({
     getCurrentUserSession().then((session) => {
       if (session) {
         const name = session.name || "Candidate";
+        const email = session.email || "";
         const initials = name
           .split(" ")
           .map((n) => n[0])
           .slice(0, 2)
           .join("")
           .toUpperCase() || "CD";
-        setCandidateUser({ name, initials });
+        setCandidateUser({ name, email, initials });
       }
     });
   }, []);
@@ -83,9 +86,9 @@ export function ParticipantHeader({
             </Link>
           )}
 
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded font-label-xs bg-emerald-50 text-emerald-800 border border-emerald-200">
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded font-label-xs bg-emerald-50 text-emerald-800 border border-emerald-200">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-600"></span>
-            Participant Workspace
+            <span className="font-semibold">Participant</span>
           </span>
         </div>
 
@@ -113,14 +116,9 @@ export function ParticipantHeader({
           </nav>
 
         {/* Right Controls */}
-        <div className="flex items-center gap-space-sm sm:gap-space-md">
-          {/* Notifications */}
-          <button
-            aria-label="Notifications"
-            className="p-1.5 text-secondary hover:text-on-surface rounded hover:bg-surface-container transition-colors"
-          >
-            <span className="material-symbols-outlined text-[22px]">notifications</span>
-          </button>
+        <div className="flex items-center gap-2.5 sm:gap-space-md">
+          {/* Live Date and Time */}
+          <LiveDateTime />
 
           {/* Profile Lockup */}
           <div className="flex items-center gap-space-sm pl-space-xs border-l border-[#e2e8f0]">
@@ -131,8 +129,8 @@ export function ParticipantHeader({
               <span className="font-label-sm text-on-surface font-medium leading-tight">
                 {candidateUser.name}
               </span>
-              <span className="font-label-xs text-secondary leading-tight">
-                Candidate
+              <span className="font-label-xs text-secondary leading-tight truncate max-w-[150px]">
+                {candidateUser.email || "Candidate"}
               </span>
             </div>
           </div>

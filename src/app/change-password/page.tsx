@@ -39,7 +39,11 @@ export default function ChangePasswordPage() {
 
     try {
       setIsLoading(true);
-      const res = await changePasswordAction(currentPassword, newPassword, confirmPassword);
+      const formData = new FormData();
+      formData.append("currentPassword", currentPassword);
+      formData.append("newPassword", newPassword);
+      formData.append("confirmPassword", confirmPassword);
+      const res = await changePasswordAction(formData);
       if (res.success && res.redirectTo) {
         setIsSuccess(true);
         setTimeout(() => {
