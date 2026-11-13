@@ -1,7 +1,9 @@
 "use server";
 
+import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
 import { ContestStatus, PhaseStatus, PhaseAttemptStatus, Prisma } from "@prisma/client";
+import { checkActionRateLimitAsync } from "@/lib/rate-limiter";
 import {
   calculateMcqScore,
   checkSubmissionDeadline,
@@ -20,6 +22,7 @@ import {
 } from "@/lib/contest-lifecycle";
 import { revalidatePath } from "next/cache";
 import { requireRole, getSession } from "@/lib/auth";
+import { autoPublishCandidateResultIfEligible } from "@/lib/auto-publish";
 
 export interface AssessmentTaskNavOption {
   id: string;
@@ -566,7 +569,6 @@ export async function getTaskAssessmentData(
                           options: {
                             orderBy: { optionKey: "asc" },
                           },
-                          answerKey: true,
                         },
                       },
                       references: true,
@@ -600,7 +602,6 @@ export async function getTaskAssessmentData(
                           options: {
                             orderBy: { optionKey: "asc" },
                           },
-                          answerKey: true,
                         },
                       },
                       references: true,
@@ -1134,8 +1135,29 @@ export async function getTaskAssessmentData(
     }
 
     // 9. Strict security: Strip answerKey from questions UNLESS results are officially released
+    const answerKeyByQuestionId = new Map<string, { correctOptionKey: string | null; explanation: string | null }>();
+    if (isResultReleased && targetTask.questions.length > 0) {
+      const releasedKeys = await prisma.questionAnswerKey.findMany({
+        where: {
+          questionId: { in: targetTask.questions.map((q) => q.id) },
+        },
+        select: {
+          questionId: true,
+          correctOptionKey: true,
+          explanation: true,
+        },
+      });
+      for (const key of releasedKeys) {
+        answerKeyByQuestionId.set(key.questionId, {
+          correctOptionKey: key.correctOptionKey,
+          explanation: key.explanation,
+        });
+      }
+    }
+
     const sanitizedQuestions = targetTask.questions.map((q) => {
       if (isResultReleased) {
+        const key = answerKeyByQuestionId.get(q.id);
         return {
           id: q.id,
           questionNumber: q.questionNumber,
@@ -1147,8 +1169,8 @@ export async function getTaskAssessmentData(
           minWords: q.minWords,
           maxWords: q.maxWords,
           options: q.options,
-          correctOptionKey: q.answerKey?.correctOptionKey || null,
-          explanation: q.answerKey?.explanation || null,
+          correctOptionKey: key?.correctOptionKey || null,
+          explanation: key?.explanation || null,
         };
       }
       return sanitizeQuestionForParticipant(q);
@@ -1322,39 +1344,115 @@ export async function getTaskAssessmentData(
  * Preserves all saved answers and auto-grades MCQs.
  * Prevents duplicate finalization.
  */
-export async function autoFinalizeExpiredSubmissionInternal(
+type FinalizeSubmissionTxResult =
+  | { kind: "NOT_FOUND" }
+  | { kind: "UNAUTHORIZED" }
+  | { kind: "CONTEST_CONCLUDED" }
+  | {
+      kind: "ALREADY_FINALIZED" | "FINALIZED";
+      submission: {
+        id: string;
+        contestId: string;
+        phaseId: string;
+        taskId: string;
+        userId: string;
+        status: string;
+        submittedAt: Date | null;
+        expiresAt: Date | null;
+        isLate: boolean;
+        autoGradeScore: Prisma.Decimal | null;
+        finalScore: Prisma.Decimal | null;
+        feedbackSummary: string | null;
+      };
+    };
+
+async function finalizeSubmissionInTransaction(
   submissionId: string,
-  reason: string = "Assessment timer expired"
-): Promise<{ success: boolean; submission?: any; error?: string }> {
-  try {
-    const submission = await prisma.submission.findUnique({
+  options: {
+    expectedUserId?: string;
+    reason?: string;
+    isAutoExpire?: boolean;
+  }
+): Promise<FinalizeSubmissionTxResult> {
+  return await prisma.$transaction(async (tx) => {
+    // Serialize concurrent manual submit vs timer expiry on this single submission row
+    await tx.$queryRaw`SELECT "id" FROM "Submission" WHERE "id" = ${submissionId} FOR UPDATE`;
+
+    const submission = await tx.submission.findUnique({
       where: { id: submissionId },
       include: {
+        phase: true,
+        contest: true,
         task: {
-          include: {
+          select: {
+            id: true,
+            durationMinutes: true,
             questions: {
-              include: { answerKey: true },
+              select: {
+                id: true,
+                type: true,
+                points: true,
+                answerKey: {
+                  select: {
+                    correctOptionKey: true,
+                  },
+                },
+              },
             },
           },
         },
-        answers: true,
+        answers: {
+          select: {
+            id: true,
+            questionId: true,
+            selectedOption: true,
+          },
+        },
       },
     });
 
     if (!submission) {
-      return { success: false, error: "Submission not found" };
+      return { kind: "NOT_FOUND" };
     }
 
-    // Idempotent guard: if already finalized, do nothing
+    if (options.expectedUserId && submission.userId !== options.expectedUserId) {
+      return { kind: "UNAUTHORIZED" };
+    }
+
     if (
       submission.status === "SUBMITTED" ||
       submission.status === "GRADED" ||
       submission.status === "PUBLISHED"
     ) {
-      return { success: true, submission };
+      return { kind: "ALREADY_FINALIZED", submission };
     }
 
-    // Server-side MCQ auto-grading
+    const now = new Date();
+    if (!options.isAutoExpire && isContestConcluded(submission.contest, now)) {
+      return { kind: "CONTEST_CONCLUDED" };
+    }
+
+    const phaseAttempt = await tx.phaseAttempt.findUnique({
+      where: {
+        phaseId_userId: {
+          phaseId: submission.phaseId,
+          userId: submission.userId,
+        },
+      },
+    });
+
+    const attemptDeadline = getAuthoritativeAttemptDeadline(
+      submission.contest,
+      submission.phase,
+      submission,
+      now,
+      submission.task,
+      phaseAttempt
+    );
+    const deadlineCheck = checkSubmissionDeadline(attemptDeadline.effectiveDeadline, now, 60);
+    const isLate = !deadlineCheck.isEligible;
+
+    // Authoritative server-side MCQ grading
     const mcqKeys: McqAnswerKey[] = [];
     for (const q of submission.task.questions) {
       if (q.type === "MCQ" && q.answerKey?.correctOptionKey) {
@@ -1375,14 +1473,13 @@ export async function autoFinalizeExpiredSubmissionInternal(
 
     const mcqResult = calculateMcqScore(participantAnswers, mcqKeys);
 
-    // Update answers in single atomic batch operation
     if (mcqResult.itemResults.length > 0) {
       const values = mcqResult.itemResults.map(
         (item) => Prisma.sql`(${item.questionId}, ${item.pointsAwarded}::numeric, ${item.isCorrect}::boolean)`
       );
-      await prisma.$executeRaw`
+      await tx.$executeRaw`
         UPDATE "SubmissionAnswer" AS sa
-        SET 
+        SET
           "score" = v.score,
           "isCorrect" = v.is_correct,
           "updatedAt" = NOW()
@@ -1391,27 +1488,72 @@ export async function autoFinalizeExpiredSubmissionInternal(
       `;
     }
 
-    const submittedAt = submission.expiresAt ?? new Date();
-    const updated = await prisma.submission.update({
+    const submittedAt = options.isAutoExpire
+      ? (submission.expiresAt ?? now)
+      : now;
+
+    const updated = await tx.submission.update({
       where: { id: submissionId },
       data: {
         status: "SUBMITTED",
         submittedAt,
+        isLate: options.isAutoExpire ? false : isLate,
         autoGradeScore: mcqResult.totalPointsAwarded,
         finalScore: mcqResult.totalPointsAwarded,
-        feedbackSummary: reason,
+        ...(options.reason ? { feedbackSummary: options.reason } : {}),
       },
     });
 
-    try {
-      revalidatePath("/assessment");
-      revalidatePath("/admin/submissions");
-      revalidatePath("/dashboard");
-    } catch {
-      // test runner fallback
+    // Keep PhaseAttempt consistent inside the same atomic transaction
+    if (phaseAttempt && phaseAttempt.status === "IN_PROGRESS") {
+      const [phaseTasksCount, submittedCount] = await Promise.all([
+        tx.task.count({ where: { phaseId: submission.phaseId } }),
+        tx.submission.count({
+          where: {
+            phaseId: submission.phaseId,
+            userId: submission.userId,
+            status: { in: ["SUBMITTED", "GRADED", "PUBLISHED"] },
+          },
+        }),
+      ]);
+
+      if (phaseTasksCount > 0 && submittedCount >= phaseTasksCount) {
+        await tx.phaseAttempt.update({
+          where: { id: phaseAttempt.id },
+          data: { status: "COMPLETED", completedAt: now },
+        });
+      } else if (options.isAutoExpire && attemptDeadline.isPhaseExpired) {
+        await tx.phaseAttempt.update({
+          where: { id: phaseAttempt.id },
+          data: { status: "EXPIRED" },
+        });
+      }
     }
 
-    return { success: true, submission: updated };
+    return { kind: "FINALIZED", submission: updated };
+  });
+}
+
+export async function autoFinalizeExpiredSubmissionInternal(
+  submissionId: string,
+  reason: string = "Assessment timer expired"
+): Promise<{ success: boolean; submission?: any; error?: string }> {
+  try {
+    const result = await finalizeSubmissionInTransaction(submissionId, {
+      reason,
+      isAutoExpire: true,
+    });
+
+    if (result.kind === "NOT_FOUND") {
+      return { success: false, error: "Submission not found" };
+    }
+    if (result.kind === "ALREADY_FINALIZED" || result.kind === "FINALIZED") {
+      if (result.kind === "FINALIZED") {
+        await autoPublishCandidateResultIfEligible(result.submission.contestId, result.submission.userId).catch(() => {});
+      }
+      return { success: true, submission: result.submission };
+    }
+    return { success: false, error: "Auto-finalization failed" };
   } catch (error) {
     console.error("Error auto-finalizing expired submission:", error);
     return {
@@ -1830,6 +1972,21 @@ export async function getContestDeadlineAction(
   submissionId?: string
 ) {
   try {
+    const session = await requireRole(["PARTICIPANT", "EVALUATOR", "ADMIN"]);
+
+    if (!contestId || typeof contestId !== "string") {
+      return { success: false, error: "Contest not found." };
+    }
+
+    const actor = await prisma.user.findUnique({
+      where: { id: session.userId },
+      select: { id: true, role: true, isActive: true },
+    });
+
+    if (!actor || !actor.isActive || actor.role !== session.role) {
+      return { success: false, error: "Unauthorized access to assessment deadline." };
+    }
+
     const contest = await prisma.contest.findUnique({
       where: { id: contestId },
       include: {
@@ -1841,21 +1998,66 @@ export async function getContestDeadlineAction(
       return { success: false, error: "Contest not found." };
     }
 
-    const targetPhase = phaseId
+    let targetPhase = phaseId
       ? contest.phases.find((p) => p.id === phaseId)
       : contest.phases.find((p) => p.status === "OPEN") || contest.phases[0];
 
+    if (phaseId && !targetPhase) {
+      return { success: false, error: "Unauthorized access to assessment deadline." };
+    }
+
+    if (actor.role === "PARTICIPANT") {
+      const enrollment = await prisma.contestParticipant.findUnique({
+        where: {
+          contestId_userId: {
+            contestId: contest.id,
+            userId: actor.id,
+          },
+        },
+        select: { status: true },
+      });
+
+      if (!enrollment || (enrollment.status !== "ACTIVE" && enrollment.status !== "ENROLLED")) {
+        return { success: false, error: "Unauthorized: Participant is not enrolled in this contest." };
+      }
+    } else if (actor.role === "EVALUATOR") {
+      const contestAssignment = await prisma.contestEvaluator.findFirst({
+        where: {
+          contestId: contest.id,
+          userId: actor.id,
+        },
+        select: { id: true },
+      });
+
+      if (!contestAssignment) {
+        return { success: false, error: "Unauthorized: Evaluator is not assigned to this contest." };
+      }
+    }
+
     const now = new Date();
 
-    let submission = null;
+    let submission: {
+      id: string;
+      contestId: string;
+      phaseId: string;
+      taskId: string;
+      userId: string;
+      status: string;
+      startedAt: Date | null;
+      expiresAt: Date | null;
+      task: { durationMinutes: number | null } | null;
+    } | null = null;
     let submissionTask = null;
-    let participantUserId: string | null = null;
+    let participantUserId: string | null = actor.role === "PARTICIPANT" ? actor.id : null;
 
     if (submissionId) {
       submission = await prisma.submission.findUnique({
         where: { id: submissionId },
         select: {
           id: true,
+          contestId: true,
+          phaseId: true,
+          taskId: true,
           userId: true,
           status: true,
           startedAt: true,
@@ -1863,18 +2065,60 @@ export async function getContestDeadlineAction(
           task: { select: { durationMinutes: true } },
         },
       });
-      if (submission) {
-        participantUserId = submission.userId;
-        if (submission.task) {
-          submissionTask = submission.task;
+
+      const phaseMismatch = Boolean(phaseId && submission && submission.phaseId !== phaseId);
+      const taskMismatch = Boolean(taskId && submission && submission.taskId !== taskId);
+
+      if (!submission || submission.contestId !== contest.id || phaseMismatch || taskMismatch) {
+        return { success: false, error: "Unauthorized access to assessment deadline." };
+      }
+
+      if (actor.role === "PARTICIPANT" && submission.userId !== actor.id) {
+        return { success: false, error: "Unauthorized access to assessment deadline." };
+      }
+
+      if (actor.role === "EVALUATOR") {
+        const candidateAssignment = await prisma.evaluatorCandidateAssignment.findFirst({
+          where: {
+            contestId: contest.id,
+            evaluatorId: actor.id,
+            participantId: submission.userId,
+          },
+          select: { id: true },
+        });
+        if (!candidateAssignment) {
+          return { success: false, error: "Unauthorized access to assessment deadline." };
         }
       }
-    }
 
-    if (!participantUserId) {
-      const session = await getSession();
-      if (session?.userId) {
-        participantUserId = session.userId;
+      if (!phaseId) {
+        targetPhase = contest.phases.find((p) => p.id === submission!.phaseId) ?? targetPhase;
+      }
+
+      participantUserId = submission.userId;
+      if (submission.task) {
+        submissionTask = submission.task;
+      }
+    } else if (taskId) {
+      const targetTask = await prisma.task.findUnique({
+        where: { id: taskId },
+        select: {
+          id: true,
+          phaseId: true,
+          phase: { select: { contestId: true } },
+        },
+      });
+
+      if (
+        !targetTask ||
+        targetTask.phase.contestId !== contest.id ||
+        (phaseId && targetTask.phaseId !== phaseId)
+      ) {
+        return { success: false, error: "Unauthorized access to assessment deadline." };
+      }
+
+      if (!phaseId) {
+        targetPhase = contest.phases.find((p) => p.id === targetTask.phaseId) ?? targetPhase;
       }
     }
 
@@ -1902,8 +2146,14 @@ export async function getContestDeadlineAction(
       isPhaseExpired,
     } = getAuthoritativeAttemptDeadline(contest, targetPhase, submission, now, submissionTask, phaseAttempt);
 
-    // If attempt has expired and is still DRAFT, finalize it
-    if (isAttemptExpired && submission && submission.status === "DRAFT") {
+    // Automatic finalization may only run for an authorized participant's own draft submission
+    if (
+      isAttemptExpired &&
+      submission &&
+      submission.status === "DRAFT" &&
+      actor.role === "PARTICIPANT" &&
+      submission.userId === actor.id
+    ) {
       await autoFinalizeExpiredSubmissionInternal(submission.id, "Heartbeat detected timer expiry");
     }
 
@@ -1939,24 +2189,68 @@ export async function getContestDeadlineAction(
   }
 }
 
-export async function saveAnswerDraftAction(
+export interface DraftAnswerBatchItem {
+  questionId: string;
+  selectedOption?: string;
+  writtenText?: string;
+  fileName?: string;
+  fileKey?: string;
+}
+
+/**
+ * Persists a batch of draft answers atomically in a single DB transaction + SQL upsert,
+ * enforcing submission ownership, task question membership, rate limits, and authoritative deadlines.
+ */
+export async function saveAnswerBatchAction(
   submissionId: string,
-  questionId: string,
-  data: {
-    selectedOption?: string;
-    writtenText?: string;
-    fileName?: string;
-    fileKey?: string;
-  }
-) {
+  items: DraftAnswerBatchItem[]
+): Promise<{
+  success: boolean;
+  savedCount?: number;
+  savedQuestionIds?: string[];
+  savedAt?: string;
+  isExpired?: boolean;
+  error?: string;
+}> {
   try {
     const session = await requireRole(["PARTICIPANT"]);
+
+    const rateCheck = await checkActionRateLimitAsync("draft-batch", session.userId, 120, 60);
+    if (!rateCheck.allowed) {
+      return {
+        success: false,
+        error: `Too many save requests. Please wait ${rateCheck.retryAfterSeconds || 5} seconds and retry.`,
+      };
+    }
+
+    if (!Array.isArray(items) || items.length === 0) {
+      return {
+        success: true,
+        savedCount: 0,
+        savedQuestionIds: [],
+        savedAt: new Date().toLocaleTimeString("en-US", { hour12: false }),
+      };
+    }
+
+    if (items.length > 200) {
+      return { success: false, error: "Batch exceeds maximum allowed question count." };
+    }
+
+    // Deduplicate by questionId (latest write in batch wins per question)
+    const deduped = new Map<string, DraftAnswerBatchItem>();
+    for (const item of items) {
+      if (!item || typeof item.questionId !== "string" || !item.questionId.trim()) {
+        return { success: false, error: "Invalid question identifier in batch." };
+      }
+      deduped.set(item.questionId, item);
+    }
+
+    const questionIds = Array.from(deduped.keys());
 
     // 1. Verify submission exists and belongs to participant
     const submission = await prisma.submission.findUnique({
       where: { id: submissionId },
       include: {
-        user: true,
         phase: true,
         contest: true,
         task: true,
@@ -1980,20 +2274,34 @@ export async function saveAnswerDraftAction(
     }
 
     const now = new Date();
-    // Check contest lifecycle status
     if (isContestConcluded(submission.contest, now)) {
       return { success: false, error: "Contest has concluded. Edits and submissions are locked." };
     }
 
-    // Hierarchical deadline check with PhaseAttempt
-    const phaseAttempt = await prisma.phaseAttempt.findUnique({
-      where: {
-        phaseId_userId: {
-          phaseId: submission.phaseId,
-          userId: submission.userId,
+    const [phaseAttempt, validQuestions] = await Promise.all([
+      prisma.phaseAttempt.findUnique({
+        where: {
+          phaseId_userId: {
+            phaseId: submission.phaseId,
+            userId: submission.userId,
+          },
         },
-      },
-    });
+      }),
+      prisma.question.findMany({
+        where: {
+          id: { in: questionIds },
+          taskId: submission.taskId,
+        },
+        select: { id: true },
+      }),
+    ]);
+
+    if (validQuestions.length !== questionIds.length) {
+      return {
+        success: false,
+        error: "Invalid question reference: One or more questions do not belong to this assessment task.",
+      };
+    }
 
     // 2. Server-side deadline & attempt expiry check (60s network grace period)
     const { effectiveDeadline } = getAuthoritativeAttemptDeadline(
@@ -2017,104 +2325,112 @@ export async function saveAnswerDraftAction(
       };
     }
 
-    // 3. Calculate word count for written text
-    let wordCount: number | undefined = undefined;
-    if (data.writtenText !== undefined) {
-      wordCount = data.writtenText.trim().length === 0
-        ? 0
-        : data.writtenText.trim().split(/\s+/).filter(Boolean).length;
-    }
+    // 3. Bulk atomic upsert + Submission.autoSavedAt bump inside a single transaction
+    const entries = Array.from(deduped.values());
+    const values = entries.map((item) => {
+      const sel = item.selectedOption !== undefined ? item.selectedOption : null;
+      const txt = item.writtenText !== undefined ? item.writtenText : null;
+      const wc =
+        item.writtenText !== undefined
+          ? item.writtenText.trim().length === 0
+            ? 0
+            : item.writtenText.trim().split(/\s+/).filter(Boolean).length
+          : null;
+      const fname = item.fileName !== undefined ? item.fileName : null;
+      const fkey = item.fileKey !== undefined ? item.fileKey : null;
 
-    // 4. Upsert the SubmissionAnswer
-    await prisma.submissionAnswer.upsert({
-      where: {
-        submissionId_questionId: {
-          submissionId,
-          questionId,
-        },
-      },
-      update: {
-        ...(data.selectedOption !== undefined && { selectedOption: data.selectedOption }),
-        ...(data.writtenText !== undefined && { writtenText: data.writtenText }),
-        ...(wordCount !== undefined && { wordCount }),
-        ...(data.fileName !== undefined && { fileName: data.fileName }),
-        ...(data.fileKey !== undefined && { fileKey: data.fileKey }),
-        updatedAt: new Date(),
-      },
-      create: {
-        submissionId,
-        questionId,
-        selectedOption: data.selectedOption,
-        writtenText: data.writtenText,
-        wordCount,
-        fileName: data.fileName,
-        fileKey: data.fileKey,
-      },
+      return Prisma.sql`(
+        ${crypto.randomUUID()}::text,
+        ${submissionId}::text,
+        ${item.questionId}::text,
+        ${sel}::text,
+        ${txt}::text,
+        ${wc}::integer,
+        ${fname}::text,
+        ${fkey}::text,
+        ${now}::timestamp,
+        ${now}::timestamp
+      )`;
     });
 
-    // 5. Update submission autoSavedAt timestamp
-    await prisma.submission.update({
-      where: { id: submissionId },
-      data: { autoSavedAt: now },
-    });
+    await prisma.$transaction([
+      prisma.$executeRaw`
+        INSERT INTO "SubmissionAnswer" (
+          "id",
+          "submissionId",
+          "questionId",
+          "selectedOption",
+          "writtenText",
+          "wordCount",
+          "fileName",
+          "fileKey",
+          "createdAt",
+          "updatedAt"
+        )
+        VALUES ${Prisma.join(values)}
+        ON CONFLICT ("submissionId", "questionId") DO UPDATE SET
+          "selectedOption" = COALESCE(EXCLUDED."selectedOption", "SubmissionAnswer"."selectedOption"),
+          "writtenText" = COALESCE(EXCLUDED."writtenText", "SubmissionAnswer"."writtenText"),
+          "wordCount" = COALESCE(EXCLUDED."wordCount", "SubmissionAnswer"."wordCount"),
+          "fileName" = COALESCE(EXCLUDED."fileName", "SubmissionAnswer"."fileName"),
+          "fileKey" = COALESCE(EXCLUDED."fileKey", "SubmissionAnswer"."fileKey"),
+          "updatedAt" = EXCLUDED."updatedAt"
+      `,
+      prisma.submission.update({
+        where: { id: submissionId },
+        data: { autoSavedAt: now },
+      }),
+    ]);
 
     return {
       success: true,
+      savedCount: entries.length,
+      savedQuestionIds: questionIds,
       savedAt: now.toLocaleTimeString("en-US", { hour12: false }),
     };
   } catch (error) {
-    console.error("Error saving draft answer:", error);
+    console.error("Error saving draft answer batch:", error);
     return { success: false, error: error instanceof Error ? error.message : "Failed to save draft" };
   }
 }
 
-export async function submitAssessmentAction(submissionId: string) {
+export async function saveAnswerDraftAction(
+  submissionId: string,
+  questionId: string,
+  data: {
+    selectedOption?: string;
+    writtenText?: string;
+    fileName?: string;
+    fileKey?: string;
+  }
+) {
+  const res = await saveAnswerBatchAction(submissionId, [{ questionId, ...data }]);
+  return {
+    success: res.success,
+    ...(res.savedAt ? { savedAt: res.savedAt } : {}),
+    ...(res.isExpired ? { isExpired: res.isExpired } : {}),
+    ...(res.error ? { error: res.error } : {}),
+  };
+}
+
+export async function submitAssessmentAction(
+  submissionId: string,
+  pendingDrafts?: DraftAnswerBatchItem[]
+) {
   try {
     const session = await requireRole(["PARTICIPANT"]);
 
-    // 1. Fetch submission with task, phase, and answers
-    const submission = await prisma.submission.findUnique({
-      where: { id: submissionId },
-      include: {
-        phase: true,
-        contest: true,
-        task: {
-          select: {
-            id: true,
-            durationMinutes: true,
-            questions: {
-              select: {
-                id: true,
-                type: true,
-                points: true,
-                answerKey: {
-                  select: {
-                    correctOptionKey: true,
-                  },
-                },
-              },
-            },
-          },
-        },
-        answers: {
-          select: {
-            id: true,
-            questionId: true,
-            selectedOption: true,
-          },
-        },
-      },
-    });
-
-    if (!submission) {
-      return { success: false, error: "Submission not found." };
+    // If caller included final dirty drafts in submit call, persist & verify them before atomic finalization
+    if (Array.isArray(pendingDrafts) && pendingDrafts.length > 0) {
+      const saveRes = await saveAnswerBatchAction(submissionId, pendingDrafts);
+      if (!saveRes.success && !saveRes.isExpired) {
+        return {
+          success: false,
+          error: saveRes.error || "Failed to persist pending answers before submission.",
+        };
+      }
     }
 
-    if (submission.userId !== session.userId) {
-      return { success: false, error: "Unauthorized access: Cross-user submission finalization is blocked." };
-    }
-
-    // Helper to query contest progression and detect if this is the final contest task
     async function determineContestProgression(targetContestId: string, targetTaskId: string, targetUserId: string) {
       const [contestStructure, candidateSubmissions] = await Promise.all([
         prisma.contest.findUnique({
@@ -2165,7 +2481,6 @@ export async function submitAssessmentAction(submissionId: string) {
 
       const allContestTasksSubmitted = allTasksFlat.length > 0 && allTasksFlat.every((t) => submittedTaskIds.has(t.id));
 
-      // Find next required unsubmitted task
       const nextUnsubmittedAfterCurrent = currentTaskIndex >= 0
         ? allTasksFlat.slice(currentTaskIndex + 1).find((t) => !submittedTaskIds.has(t.id))
         : undefined;
@@ -2188,160 +2503,54 @@ export async function submitAssessmentAction(submissionId: string) {
       };
     }
 
-    const isSubmitted =
-      submission.status === "SUBMITTED" ||
-      submission.status === "GRADED" ||
-      submission.status === "PUBLISHED";
+    const finalized = await finalizeSubmissionInTransaction(submissionId, {
+      expectedUserId: session.userId,
+      isAutoExpire: false,
+    });
 
-    if (isSubmitted) {
-      const prog = await determineContestProgression(submission.contestId, submission.taskId, submission.userId);
-      return {
-        success: true,
-        message: "Already submitted.",
-        status: submission.status,
-        submittedAt: submission.submittedAt ? submission.submittedAt.toISOString() : new Date().toISOString(),
-        isFinalSubmission: prog.isFinalSubmission,
-        contestId: submission.contestId,
-        nextTaskId: prog.nextTaskId,
-        nextPhaseId: prog.nextPhaseId,
-      };
+    if (finalized.kind === "NOT_FOUND") {
+      return { success: false, error: "Submission not found." };
     }
-
-    const now = new Date();
-    // Check contest lifecycle status
-    if (isContestConcluded(submission.contest, now)) {
+    if (finalized.kind === "UNAUTHORIZED") {
+      return { success: false, error: "Unauthorized access: Cross-user submission finalization is blocked." };
+    }
+    if (finalized.kind === "CONTEST_CONCLUDED") {
       return { success: false, error: "Contest has concluded. Further submissions are closed." };
     }
 
-    // Hierarchical PhaseAttempt verification
-    const phaseAttempt = await prisma.phaseAttempt.findUnique({
-      where: {
-        phaseId_userId: {
-          phaseId: submission.phaseId,
-          userId: submission.userId,
-        },
-      },
-    });
-
-    // 2. Server-side deadline & attempt expiry check
-    const { effectiveDeadline } = getAuthoritativeAttemptDeadline(
-      submission.contest,
-      submission.phase,
-      submission,
-      now,
-      submission.task,
-      phaseAttempt
+    const updated = finalized.submission;
+    const progression = await determineContestProgression(
+      updated.contestId,
+      updated.taskId,
+      updated.userId
     );
-    const deadlineCheck = checkSubmissionDeadline(effectiveDeadline, now, 60);
-    const isLate = !deadlineCheck.isEligible;
 
-    // 3. Server-side MCQ auto-grading
-    const mcqKeys: McqAnswerKey[] = [];
-    for (const q of submission.task.questions) {
-      if (q.type === "MCQ" && q.answerKey?.correctOptionKey) {
-        mcqKeys.push({
-          questionId: q.id,
-          correctOptionKey: q.answerKey.correctOptionKey,
-          points: q.points,
-        });
-      }
+    if (progression.isFinalSubmission) {
+      await autoPublishCandidateResultIfEligible(updated.contestId, updated.userId).catch((err) => {
+        console.error("Auto-publish on submission error:", err);
+      });
     }
 
-    const participantAnswers: ParticipantMcqAnswer[] = submission.answers
-      .filter((a) => a.selectedOption)
-      .map((a) => ({
-        questionId: a.questionId,
-        selectedOption: a.selectedOption!,
-      }));
-
-    const mcqResult = calculateMcqScore(participantAnswers, mcqKeys);
-
-    // 4. Update MCQ answers with individual score and correctness in a single atomic batch operation
-    if (mcqResult.itemResults.length > 0) {
-      const values = mcqResult.itemResults.map(
-        (item) => Prisma.sql`(${item.questionId}, ${item.pointsAwarded}::numeric, ${item.isCorrect}::boolean)`
-      );
-      await prisma.$executeRaw`
-        UPDATE "SubmissionAnswer" AS sa
-        SET 
-          "score" = v.score,
-          "isCorrect" = v.is_correct,
-          "updatedAt" = NOW()
-        FROM (VALUES ${Prisma.join(values)}) AS v(question_id, score, is_correct)
-        WHERE sa."submissionId" = ${submissionId} AND sa."questionId" = v.question_id
-      `;
+    if (finalized.kind === "ALREADY_FINALIZED") {
+      return {
+        success: true,
+        message: "Already submitted.",
+        status: updated.status,
+        submittedAt: (updated.submittedAt ?? new Date()).toISOString(),
+        isFinalSubmission: progression.isFinalSubmission,
+        contestId: updated.contestId,
+        nextTaskId: progression.nextTaskId,
+        nextPhaseId: progression.nextPhaseId,
+      };
     }
-
-    // 5. Finalize submission in database & calculate progression in parallel
-    const submittedAt = new Date();
-    const [updated, progression] = await Promise.all([
-      prisma.submission.update({
-        where: { id: submissionId },
-        data: {
-          status: "SUBMITTED",
-          submittedAt,
-          isLate,
-          autoGradeScore: mcqResult.totalPointsAwarded,
-          finalScore: mcqResult.totalPointsAwarded, // manual evaluation can add to this later
-        },
-      }),
-      determineContestProgression(submission.contestId, submission.taskId, submission.userId),
-    ]);
-
-    // Check if all tasks in this phase are now completed by this user
-    if (phaseAttempt && phaseAttempt.status === "IN_PROGRESS") {
-      try {
-        const phaseTasks = await prisma.task.findMany({
-          where: { phaseId: submission.phaseId },
-          select: { id: true },
-        });
-        const submittedCount = await prisma.submission.count({
-          where: {
-            phaseId: submission.phaseId,
-            userId: submission.userId,
-            status: { in: ["SUBMITTED", "GRADED", "PUBLISHED"] },
-          },
-        });
-        if (phaseTasks.length > 0 && submittedCount >= phaseTasks.length) {
-          await prisma.phaseAttempt.update({
-            where: { id: phaseAttempt.id },
-            data: { status: "COMPLETED", completedAt: new Date() },
-          });
-        }
-      } catch (phaseUpdateErr) {
-        console.error("Non-fatal: could not update PhaseAttempt status to COMPLETED:", phaseUpdateErr);
-      }
-    }
-
-    function safeRevalidatePath(path: string, type?: "layout" | "page") {
-      try {
-        if (type) {
-          revalidatePath(path, type);
-        } else {
-          revalidatePath(path);
-        }
-      } catch {
-        // Fallback for runner environments
-      }
-    }
-
-    safeRevalidatePath("/assessment");
-    safeRevalidatePath("/assessment", "layout");
-    safeRevalidatePath("/dashboard");
-    safeRevalidatePath("/dashboard", "layout");
-    safeRevalidatePath(`/dashboard/contests/${submission.contestId}`);
-    safeRevalidatePath(`/dashboard/leaderboard`);
-    safeRevalidatePath(`/assessment/${submission.contestId}/${submission.phaseId}/${submission.taskId}`);
-    safeRevalidatePath("/admin/contests");
-    safeRevalidatePath("/admin/submissions");
 
     return {
       success: true,
       status: updated.status,
-      submittedAt: submittedAt.toISOString(),
-      isLate,
+      submittedAt: (updated.submittedAt ?? new Date()).toISOString(),
+      isLate: updated.isLate,
       isFinalSubmission: progression.isFinalSubmission,
-      contestId: submission.contestId,
+      contestId: updated.contestId,
       nextTaskId: progression.nextTaskId,
       nextPhaseId: progression.nextPhaseId,
     };

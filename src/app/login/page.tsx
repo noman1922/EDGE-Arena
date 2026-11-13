@@ -4,6 +4,7 @@ import React, { useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { BrandLogo } from "@/components/ui/brand-logo";
 import { loginAction } from "@/app/actions/auth-actions";
+import { resolvePostLoginRedirect } from "@/lib/session-token";
 
 function LoginContent() {
   const searchParams = useSearchParams();
@@ -18,13 +19,22 @@ function LoginContent() {
     try {
       setIsLoading(true);
       setErrorMessage(null);
-      const res = await loginAction(targetEmail, password);
+      const formData = new FormData();
+      formData.append("email", targetEmail);
+      formData.append("password", password);
+      if (redirectTarget) {
+        formData.append("redirectTo", redirectTarget);
+      }
+      const res = await loginAction(formData);
 
       if (res.success && res.redirectTo) {
         if (res.mustChangePassword) {
           window.location.href = "/change-password";
         } else {
-          window.location.href = redirectTarget || res.redirectTo;
+          const safeDestination = res.role
+            ? resolvePostLoginRedirect(res.role, redirectTarget, false)
+            : res.redirectTo;
+          window.location.href = safeDestination;
         }
       } else {
         setErrorMessage(res.error || "Invalid email or password.");

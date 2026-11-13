@@ -88,15 +88,6 @@ export function ParticipantSidebar({
             })}
           </nav>
         </div>
-
-        {/* Bottom Integrity Badge */}
-        <div className="p-space-md bg-surface-container-low mx-space-sm mb-space-sm rounded border border-[#e2e8f0]">
-          <div className="flex items-center gap-space-xs text-primary-container font-label-xs uppercase tracking-wider mb-1 font-semibold">
-            <span className="material-symbols-outlined text-[16px]">verified_user</span>
-            Assessment Verified
-          </div>
-          <p className="font-body-sm text-secondary">Candidate diagnostic session active</p>
-        </div>
       </aside>
     </>
   );

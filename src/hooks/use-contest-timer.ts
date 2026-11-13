@@ -53,7 +53,7 @@ export function useContestTimer({
   initialDeadlineIso,
   initialSecondsLeft,
   isContestEndedInitial = false,
-  heartbeatIntervalMs = 30000,
+  heartbeatIntervalMs = 120000,
   onDeadlineExtended,
   onTimerExpired,
 }: UseContestTimerOptions) {
@@ -74,6 +74,7 @@ export function useContestTimer({
 
   const deadlineRef = useRef<string>(deadlineIso);
   const onTimerExpiredRef = useRef(onTimerExpired);
+  const lastSyncAtRef = useRef<number>(0);
 
   useEffect(() => {
     deadlineRef.current = deadlineIso;
@@ -121,6 +122,7 @@ export function useContestTimer({
   const checkServerDeadline = useCallback(async () => {
     if (!contestId) return;
 
+    lastSyncAtRef.current = Date.now();
     try {
       const res = await getContestDeadlineAction(contestId, phaseId, taskId, submissionId);
       if (res.success && res.deadline) {
@@ -148,15 +150,29 @@ export function useContestTimer({
     }
   }, [contestId, phaseId, taskId, submissionId, onDeadlineExtended]);
 
-  // Background heartbeat polling (every 30s) + focus re-sync
+  // Jittered background heartbeat polling (default 120s +-15s) + rate-limited focus re-sync
   useEffect(() => {
     if (!contestId) return;
 
-    const timer = setInterval(() => {
-      checkServerDeadline();
-    }, heartbeatIntervalMs);
+    let cancelled = false;
+    let timerId: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleNext = () => {
+      if (cancelled) return;
+      const jitterSpan = Math.min(15000, Math.floor(heartbeatIntervalMs * 0.2));
+      const jitter = Math.floor((Math.random() * 2 - 1) * jitterSpan);
+      const delay = Math.max(5000, heartbeatIntervalMs + jitter);
+      timerId = setTimeout(async () => {
+        await checkServerDeadline();
+        scheduleNext();
+      }, delay);
+    };
+
+    scheduleNext();
 
     const handleFocus = () => {
+      if (document.visibilityState === "hidden") return;
+      if (Date.now() - lastSyncAtRef.current < 30000) return;
       checkServerDeadline();
     };
 
@@ -164,7 +180,8 @@ export function useContestTimer({
     document.addEventListener("visibilitychange", handleFocus);
 
     return () => {
-      clearInterval(timer);
+      cancelled = true;
+      if (timerId) clearTimeout(timerId);
       window.removeEventListener("focus", handleFocus);
       document.removeEventListener("visibilitychange", handleFocus);
     };

@@ -2,7 +2,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { ParticipantStatus, UserRole } from "@prisma/client";
-import { requireRole } from "@/lib/auth";
+import { requireRole, revokeUserSessions } from "@/lib/auth";
 import { recordAuditLog } from "@/lib/audit";
 import { revalidatePath } from "next/cache";
 
@@ -182,6 +182,7 @@ export async function createParticipantAccountAction(input: CreateAccountInput) 
     // Check duplicate email
     const existingUser = await prisma.user.findUnique({
       where: { email: trimmedEmail },
+      select: { id: true },
     });
     if (existingUser) {
       return {
@@ -197,6 +198,7 @@ export async function createParticipantAccountAction(input: CreateAccountInput) 
     // Check duplicate candidate ID
     const existingCandidate = await prisma.user.findUnique({
       where: { candidateId },
+      select: { id: true },
     });
     if (existingCandidate) {
       return {
@@ -462,6 +464,7 @@ export async function bulkImportUsersAction(
       // Check duplicate in database
       const existing = await prisma.user.findUnique({
         where: { email: trimmedEmail },
+        select: { id: true },
       });
       if (existing) {
         errors.push({
@@ -629,7 +632,18 @@ export async function updateParticipantByAdminAction(
 
     const user = await prisma.user.findUnique({
       where: { id: input.userId },
-      include: {
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        candidateId: true,
+        institution: true,
+        role: true,
+        isActive: true,
+        mustChangePassword: true,
+        avatarUrl: true,
+        createdAt: true,
+        cohortId: true,
         cohort: true,
         participants: { include: { contest: true } },
         submissions: true,
@@ -729,6 +743,15 @@ export async function updateParticipantByAdminAction(
       },
     });
 
+    if (passwordUpdateData.passwordHash) {
+      await revokeUserSessions(
+        user.id,
+        "ADMIN_PASSWORD_RESET",
+        undefined,
+        session.userId
+      );
+    }
+
     // Optional Contest Enrollment / Assignment (preserving existing submissions & enrollments)
     if (input.contestId && input.contestId.trim()) {
       const contest = await prisma.contest.findUnique({
@@ -768,7 +791,18 @@ export async function updateParticipantByAdminAction(
     // Fetch refreshed participant data with contest relationships
     const refreshed = await prisma.user.findUnique({
       where: { id: user.id },
-      include: {
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        candidateId: true,
+        institution: true,
+        role: true,
+        isActive: true,
+        mustChangePassword: true,
+        avatarUrl: true,
+        createdAt: true,
+        cohortId: true,
         cohort: true,
         participants: { include: { contest: true } },
         submissions: true,

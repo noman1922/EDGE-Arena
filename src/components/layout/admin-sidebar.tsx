@@ -107,24 +107,6 @@ export function AdminSidebar({ mobileOpen = false, onCloseMobile }: AdminSidebar
             );
           })}
         </nav>
-
-        {/* Bottom Integrity Badge */}
-        <Link
-          href="/admin/errors"
-          className="p-space-sm bg-surface-container-low mx-space-sm mb-space-sm rounded border border-[#e2e8f0] hover:bg-surface-container transition-colors block"
-          title="View system errors, audit logs, and diagnostic telemetry"
-        >
-          <div className="flex items-center justify-between text-secondary font-label-xs uppercase tracking-wider mb-0.5 font-semibold">
-            <span className="flex items-center gap-1 text-primary-container">
-              <span className="material-symbols-outlined text-[15px]">verified_user</span>
-              System Telemetry
-            </span>
-            <span className="text-[10px] text-emerald-700 font-semibold bg-emerald-50 px-1.5 py-0.2 rounded border border-emerald-200">
-              Operational
-            </span>
-          </div>
-          <p className="text-[11px] text-secondary">Audit Logging & Diagnostics Console</p>
-        </Link>
       </aside>
     </>
   );

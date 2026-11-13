@@ -107,6 +107,7 @@ export async function createEvaluatorAccountAction(input: CreateEvaluatorInput) 
     // Check duplicate email
     const existing = await prisma.user.findUnique({
       where: { email: trimmedEmail },
+      select: { id: true },
     });
     if (existing) {
       return {
@@ -119,6 +120,7 @@ export async function createEvaluatorAccountAction(input: CreateEvaluatorInput) 
     if (input.evaluatorId && input.evaluatorId.trim()) {
       const existingId = await prisma.user.findUnique({
         where: { candidateId: input.evaluatorId.trim() },
+        select: { id: true },
       });
       if (existingId) {
         return {
@@ -320,6 +322,7 @@ export async function bulkImportEvaluatorsAction(csvContent: string): Promise<Cs
       try {
         const existing = await prisma.user.findUnique({
           where: { email: record.email },
+          select: { id: true },
         });
 
         if (existing) {

@@ -98,12 +98,109 @@ export function validatePdfFile(
   return { isValid: true };
 }
 
+export const ALLOWED_STORAGE_FOLDERS = ["submissions", "references", "audit"] as const;
+export type StorageFolder = (typeof ALLOWED_STORAGE_FOLDERS)[number];
+
+const SAFE_SEGMENT_REGEX = /^[a-zA-Z0-9._-]+$/;
+const MAX_STORAGE_KEY_LENGTH = 512;
+
+export interface StorageKeyValidationResult {
+  isValid: boolean;
+  normalizedKey?: string;
+  error?: string;
+}
+
+/**
+ * Validates individual storage path segments before joining.
+ * Blocks empty segments, dot-segments (., ..), encoded characters, and path separators.
+ */
+export function validateStorageSegments(
+  segments: string[]
+): StorageKeyValidationResult {
+  if (!Array.isArray(segments) || segments.length < 2) {
+    return { isValid: false, error: "Invalid file key path structure." };
+  }
+
+  for (const segment of segments) {
+    if (
+      typeof segment !== "string" ||
+      segment.length === 0 ||
+      segment === "." ||
+      segment === ".." ||
+      segment.includes("..") ||
+      segment.includes("/") ||
+      segment.includes("\\") ||
+      segment.includes("%") ||
+      segment.includes("?") ||
+      segment.includes("#") ||
+      /[\x00-\x1f\x7f]/.test(segment) ||
+      !SAFE_SEGMENT_REGEX.test(segment)
+    ) {
+      return { isValid: false, error: "Invalid file key segment." };
+    }
+  }
+
+  const folder = segments[0] as StorageFolder;
+  if (!ALLOWED_STORAGE_FOLDERS.includes(folder)) {
+    return { isValid: false, error: "Unsupported storage folder." };
+  }
+
+  const normalizedKey = segments.join("/");
+  if (normalizedKey.length > MAX_STORAGE_KEY_LENGTH) {
+    return { isValid: false, error: "File key exceeds maximum allowed length." };
+  }
+
+  return { isValid: true, normalizedKey };
+}
+
+/**
+ * Strict path-safe validation for storage object keys.
+ * Prevents path traversal, backslash/encoded/query injection, and arbitrary prefixes.
+ */
+export function validateStorageKey(rawKey: string): StorageKeyValidationResult {
+  if (typeof rawKey !== "string" || rawKey.length === 0) {
+    return { isValid: false, error: "File key is required." };
+  }
+
+  if (rawKey !== rawKey.trim() || rawKey.length > MAX_STORAGE_KEY_LENGTH) {
+    return { isValid: false, error: "Invalid file key format." };
+  }
+
+  if (
+    rawKey.startsWith("/") ||
+    rawKey.endsWith("/") ||
+    rawKey.includes("//") ||
+    rawKey.includes("\\") ||
+    rawKey.includes("..") ||
+    rawKey.includes("%") ||
+    rawKey.includes("?") ||
+    rawKey.includes("#") ||
+    rawKey.includes(":") ||
+    /[\x00-\x1f\x7f\s]/.test(rawKey)
+  ) {
+    return { isValid: false, error: "Invalid characters in file key." };
+  }
+
+  return validateStorageSegments(rawKey.split("/"));
+}
+
+/**
+ * Asserts a storage key is path-safe before interacting with object storage.
+ */
+export function assertValidStorageKey(fileKey: string): string {
+  const check = validateStorageKey(fileKey);
+  if (!check.isValid || !check.normalizedKey) {
+    throw new Error(check.error || "Invalid storage key.");
+  }
+  return check.normalizedKey;
+}
+
 /**
  * Generates a collision-resistant, sanitized storage key.
  * Never uses untrusted user paths.
  */
 export function generateStorageKey(
-  folder: "submissions" | "references" | "audit",
+  folder: StorageFolder,
   subFolder?: string
 ): string {
   const uniqueId = crypto.randomUUID();
@@ -209,6 +306,7 @@ export async function getSignedDownloadUrl(
   fileKey: string,
   expiresInSeconds: number = 3600
 ): Promise<string> {
+  const safeKey = assertValidStorageKey(fileKey);
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -217,7 +315,7 @@ export async function getSignedDownloadUrl(
   }
 
   const bucketName = DEFAULT_BUCKET_NAME;
-  const signEndpoint = `${supabaseUrl}/storage/v1/object/sign/${bucketName}/${fileKey}`;
+  const signEndpoint = `${supabaseUrl}/storage/v1/object/sign/${bucketName}/${safeKey}`;
 
   const response = await fetch(signEndpoint, {
     method: "POST",
@@ -251,6 +349,7 @@ export async function downloadFromStorage(fileKey: string): Promise<{
   contentType: string;
   contentLength: number;
 }> {
+  const safeKey = assertValidStorageKey(fileKey);
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -259,7 +358,7 @@ export async function downloadFromStorage(fileKey: string): Promise<{
   }
 
   const bucketName = DEFAULT_BUCKET_NAME;
-  const downloadEndpoint = `${supabaseUrl}/storage/v1/object/authenticated/${bucketName}/${fileKey}`;
+  const downloadEndpoint = `${supabaseUrl}/storage/v1/object/authenticated/${bucketName}/${safeKey}`;
 
   const response = await fetch(downloadEndpoint, {
     headers: {
@@ -287,6 +386,11 @@ export async function downloadFromStorage(fileKey: string): Promise<{
  * Deletes a file from storage to avoid orphaned objects.
  */
 export async function deleteFromStorage(fileKey: string): Promise<boolean> {
+  const keyCheck = validateStorageKey(fileKey);
+  if (!keyCheck.isValid || !keyCheck.normalizedKey) {
+    return false;
+  }
+  const safeKey = keyCheck.normalizedKey;
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -295,7 +399,7 @@ export async function deleteFromStorage(fileKey: string): Promise<boolean> {
   }
 
   const bucketName = DEFAULT_BUCKET_NAME;
-  const deleteEndpoint = `${supabaseUrl}/storage/v1/object/${bucketName}/${fileKey}`;
+  const deleteEndpoint = `${supabaseUrl}/storage/v1/object/${bucketName}/${safeKey}`;
 
   try {
     const response = await fetch(deleteEndpoint, {

@@ -19,6 +19,7 @@ import {
   isContestConcluded,
   normalizeContestStatus,
 } from "@/lib/contest-lifecycle";
+import { isFreedomContest, getFreedomSelectionStatus } from "@/lib/freedom-contest";
 
 export interface ParticipantContestCard {
   id: string;
@@ -151,26 +152,41 @@ export interface ParticipantLeaderboardRow {
   finalScore: number;
   isCurrentUser: boolean;
   isCertified: boolean;
+  selectionStatus?: "SELECTED" | "PROVISIONAL" | null;
 }
 
 export interface ParticipantLeaderboardData {
   contestTitle: string;
   isPublished: boolean;
+  isFreedomContest?: boolean;
   currentUserRank: number | null;
+  currentUserRow?: ParticipantLeaderboardRow | null;
+  totalCount?: number;
+  page?: number;
+  totalPages?: number;
   rows: ParticipantLeaderboardRow[];
   contestsList: Array<{ id: string; title: string }>;
 }
 
 export async function getParticipantLeaderboard(
-  contestId?: string
+  contestId?: string,
+  options?: { page?: number; limit?: number }
 ): Promise<ParticipantLeaderboardData> {
   try {
     const session = await requireRole(["PARTICIPANT"]);
 
-    // Find enrolled contests
+    const limit = Math.max(1, Math.min(200, Math.floor(options?.limit ?? 100)));
+    const page = Math.max(1, Math.floor(options?.page ?? 1));
+    const skip = (page - 1) * limit;
+
+    // Find enrolled contests with narrow projection
     const enrollments = await prisma.contestParticipant.findMany({
       where: { userId: session.userId },
-      include: { contest: true },
+      select: {
+        contest: {
+          select: { id: true, title: true },
+        },
+      },
     });
 
     const enrolledContests = enrollments.map((e) => ({
@@ -183,6 +199,10 @@ export async function getParticipantLeaderboard(
         contestTitle: "No Enrolled Contests",
         isPublished: false,
         currentUserRank: null,
+        currentUserRow: null,
+        totalCount: 0,
+        page: 1,
+        totalPages: 0,
         rows: [],
         contestsList: [],
       };
@@ -191,18 +211,11 @@ export async function getParticipantLeaderboard(
     const targetContestId = contestId || enrolledContests[0].id;
     const contest = await prisma.contest.findUnique({
       where: { id: targetContestId },
-      include: {
-        results: {
-          include: {
-            user: true,
-          },
-          orderBy: { rank: "asc" },
-        },
-        submissions: {
-          where: { status: { in: ["GRADED", "PUBLISHED"] } },
-          include: { user: true },
-          orderBy: { finalScore: "desc" },
-        },
+      select: {
+        id: true,
+        slug: true,
+        title: true,
+        isPublished: true,
       },
     });
 
@@ -211,47 +224,126 @@ export async function getParticipantLeaderboard(
         contestTitle: "Contest not found",
         isPublished: false,
         currentUserRank: null,
+        currentUserRow: null,
+        totalCount: 0,
+        page: 1,
+        totalPages: 0,
         rows: [],
         contestsList: enrolledContests,
       };
     }
 
-    // If published, read certified CohortResult rows
-    if (contest.isPublished && contest.results.length > 0) {
-      let userRank: number | null = null;
-      const rows: ParticipantLeaderboardRow[] = contest.results.map((r) => {
-        const isCurrent = r.userId === session.userId;
-        if (isCurrent) userRank = r.rank;
-
-        return {
-          userId: r.userId,
-          candidateName: r.user.name,
-          candidateId: isCurrent
-            ? `${r.user.candidateId || "YOU"} (You)`
-            : r.user.candidateId || `ACI-CAND-${r.userId.slice(0, 4).toUpperCase()}`,
-          rank: r.rank,
-          finalScore: Number(r.totalScore),
-          isCurrentUser: isCurrent,
-          isCertified: r.isCertified,
-        };
-      });
-
+    // Strict assessment integrity protocol: never load or expose unpublished rows
+    if (!contest.isPublished) {
       return {
         contestTitle: contest.title,
-        isPublished: true,
-        currentUserRank: userRank,
-        rows,
+        isPublished: false,
+        currentUserRank: null,
+        currentUserRow: null,
+        totalCount: 0,
+        page: 1,
+        totalPages: 0,
+        rows: [],
         contestsList: enrolledContests,
       };
     }
 
-    // If results are not certified/published yet, return empty rows and currentUserRank: null.
-    // In strict adherence to assessment integrity protocol: do not expose unpublished scores or rankings.
+    // Fetch paginated leaderboard slice, total count, and caller's own standing in parallel
+    const [totalCount, pagedResults, ownResult] = await Promise.all([
+      prisma.cohortResult.count({
+        where: { contestId: targetContestId },
+      }),
+      prisma.cohortResult.findMany({
+        where: { contestId: targetContestId },
+        orderBy: { rank: "asc" },
+        skip,
+        take: limit,
+        select: {
+          userId: true,
+          rank: true,
+          totalScore: true,
+          isCertified: true,
+          user: {
+            select: {
+              name: true,
+              candidateId: true,
+            },
+          },
+        },
+      }),
+      prisma.cohortResult.findUnique({
+        where: {
+          contestId_userId: {
+            contestId: targetContestId,
+            userId: session.userId,
+          },
+        },
+        select: {
+          userId: true,
+          rank: true,
+          totalScore: true,
+          isCertified: true,
+          user: {
+            select: {
+              name: true,
+              candidateId: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    if (totalCount === 0) {
+      return {
+        contestTitle: contest.title,
+        isPublished: false,
+        currentUserRank: null,
+        currentUserRow: null,
+        totalCount: 0,
+        page: 1,
+        totalPages: 0,
+        rows: [],
+        contestsList: enrolledContests,
+      };
+    }
+
+    const isFreedom = isFreedomContest(contest);
+
+    const formatRow = (r: (typeof pagedResults)[number]): ParticipantLeaderboardRow => {
+      const isCurrent = r.userId === session.userId;
+      const finalScore = Number(r.totalScore);
+      const selectionStatus = isFreedom && contest.isPublished
+        ? getFreedomSelectionStatus(finalScore)
+        : null;
+
+      return {
+        userId: r.userId,
+        candidateName: r.user?.name || "Candidate",
+        candidateId: isCurrent
+          ? `${r.user?.candidateId || "YOU"} (You)`
+          : r.user?.candidateId || `ACI-CAND-${r.userId.slice(0, 4).toUpperCase()}`,
+        rank: r.rank,
+        finalScore,
+        isCurrentUser: isCurrent,
+        isCertified: r.isCertified,
+        selectionStatus,
+      };
+    };
+
+    const rows = pagedResults.map(formatRow);
+    const currentUserRow = ownResult ? formatRow(ownResult) : null;
+    const totalPages = Math.max(1, Math.ceil(totalCount / limit));
+
     return {
       contestTitle: contest.title,
-      isPublished: false,
-      currentUserRank: null,
-      rows: [],
+      isPublished: true,
+      isFreedomContest: isFreedom,
+      currentUserRank: ownResult ? ownResult.rank : null,
+      currentUserRow,
+      totalCount,
+      page,
+      totalPages,
+      rows,
       contestsList: enrolledContests,
     };
   } catch (error) {
@@ -260,6 +352,10 @@ export async function getParticipantLeaderboard(
       contestTitle: "",
       isPublished: false,
       currentUserRank: null,
+      currentUserRow: null,
+      totalCount: 0,
+      page: 1,
+      totalPages: 0,
       rows: [],
       contestsList: [],
     };
@@ -298,6 +394,8 @@ export interface ParticipantScorecardData {
   contestTitle: string;
   track: string;
   isPublished: boolean;
+  isFreedomContest?: boolean;
+  selectionStatus?: "SELECTED" | "PROVISIONAL" | null;
   submissionStatus: string;
   submittedAt: string | null;
   totalScore: number;
@@ -321,11 +419,60 @@ export async function getParticipantScorecard(
   try {
     const session = await requireRole(["PARTICIPANT"]);
 
-    // Find all submissions for this user in this contest
-    const submissions = await prisma.submission.findMany({
+    // Lightweight pre-check before joining questions, answer keys, answers, and rubrics
+    const primaryMeta = await prisma.submission.findFirst({
       where: {
         userId: session.userId,
         ...(contestId ? { contestId } : {}),
+      },
+      orderBy: [{ phase: { phaseNumber: "asc" } }, { task: { taskNumber: "asc" } }],
+      select: {
+        contestId: true,
+        status: true,
+        submittedAt: true,
+        contest: {
+          select: {
+            id: true,
+            slug: true,
+            title: true,
+            track: true,
+            isPublished: true,
+            results: {
+              where: { userId: session.userId },
+              select: { id: true },
+            },
+          },
+        },
+      },
+    });
+
+    if (!primaryMeta) {
+      return null;
+    }
+
+    // Strict security: return shielded pending scorecard immediately when unpublished/uncertified
+    if (!primaryMeta.contest.isPublished || primaryMeta.contest.results.length === 0) {
+      return {
+        contestTitle: primaryMeta.contest.title,
+        track: primaryMeta.contest.track,
+        isPublished: false,
+        submissionStatus: primaryMeta.status,
+        submittedAt: primaryMeta.submittedAt?.toISOString() || null,
+        totalScore: 0,
+        maxScore: 100,
+        rank: null,
+        percentile: null,
+        isCertified: false,
+        rubrics: [],
+        questionReviews: [],
+      };
+    }
+
+    // Find all submissions for this user in this contest (only when published & certified)
+    const submissions = await prisma.submission.findMany({
+      where: {
+        userId: session.userId,
+        contestId: primaryMeta.contestId,
       },
       include: {
         contest: {
@@ -492,10 +639,17 @@ export async function getParticipantScorecard(
       ? Number(cohortResult.totalScore)
       : submissions.reduce((sum, s) => sum + (s.finalScore ? Number(s.finalScore) : 0), 0);
 
+    const isFreedom = isFreedomContest(contest);
+    const selectionStatus = isFreedom && isPublished && cohortResult
+      ? getFreedomSelectionStatus(totalScore)
+      : null;
+
     return {
       contestTitle: contest.title,
       track: contest.track,
       isPublished: true,
+      isFreedomContest: isFreedom,
+      selectionStatus,
       submissionStatus: primarySub.status,
       submittedAt: primarySub.submittedAt?.toISOString() || null,
       totalScore,
@@ -530,7 +684,13 @@ export async function getParticipantProfile(): Promise<ParticipantProfileData | 
 
     const user = await prisma.user.findUnique({
       where: { id: session.userId },
-      include: {
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        candidateId: true,
+        institution: true,
+        createdAt: true,
         cohort: true,
         participants: true,
         submissions: {

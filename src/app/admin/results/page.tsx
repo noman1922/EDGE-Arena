@@ -4,6 +4,7 @@ import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import {
   getAdminLeaderboardAndResults,
+  setContestAutoPublishSettingAction,
   type AdminResultsOverview,
   type AdminLeaderboardRow,
 } from "@/app/actions/results-actions";
@@ -22,6 +23,7 @@ export default function AdminResultsPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isPublishing, setIsPublishing] = useState(false);
+  const [isUpdatingAutoPublish, setIsUpdatingAutoPublish] = useState(false);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   // Sync with global contest context when changed elsewhere
@@ -54,7 +56,7 @@ export default function AdminResultsPage() {
     if (!selectedContestId) return;
     const confirmMsg = isFinalCertification
       ? "Are you sure you want to perform Final Certification and Lock this contest? This requires all enrolled participants to have completed assessments."
-      : "Publish progressive leaderboard update? This will calculate official ranks and percentiles for all currently finalized candidates and make standings visible to enrolled participants without locking the contest.";
+      : "Publish progressive leaderboard update? This will calculate official ranks for all currently finalized candidates and make standings visible to enrolled participants without locking the contest.";
     if (!confirm(confirmMsg)) return;
 
     try {
@@ -107,6 +109,37 @@ export default function AdminResultsPage() {
     }
   };
 
+  const handleToggleAutoPublish = async () => {
+    if (!selectedContestId || !data?.current) return;
+    const currentVal = Boolean(data.current.autoPublish);
+    const nextVal = !currentVal;
+    const confirmMsg = nextVal
+      ? "Are you sure you want to turn ON automatic leaderboard publication for this contest? When ON, candidate results will automatically publish immediately after all required scoring and evaluations are finalized."
+      : "Are you sure you want to turn OFF automatic leaderboard publication for this contest? When OFF, results will remain private until an administrator manually clicks Publish.";
+    if (!confirm(confirmMsg)) return;
+
+    try {
+      setIsUpdatingAutoPublish(true);
+      const res = await setContestAutoPublishSettingAction(selectedContestId, nextVal);
+      if (res.success) {
+        setFeedback({
+          type: "success",
+          text: `Auto Publish successfully turned ${nextVal ? "ON" : "OFF"} for this contest.`,
+        });
+        await loadResults(selectedContestId);
+      } else {
+        setFeedback({
+          type: "error",
+          text: res.error || "Failed to update Auto Publish setting.",
+        });
+      }
+    } catch {
+      setFeedback({ type: "error", text: "Network or server failure." });
+    } finally {
+      setIsUpdatingAutoPublish(false);
+    }
+  };
+
   const handleExportCsv = () => {
     if (!data?.current?.rows || data.current.rows.length === 0) return;
 
@@ -119,7 +152,6 @@ export default function AdminResultsPage() {
       "Raw Score",
       "Penalties Deducted",
       "Final Score",
-      "Percentile",
       "Status",
       "Certified",
     ];
@@ -133,8 +165,7 @@ export default function AdminResultsPage() {
       r.rawScore,
       r.penalties,
       r.finalScore,
-      `${r.percentile}%`,
-      r.submissionStatus,
+      r.selectionStatus || r.submissionStatus,
       r.isCertified ? "Yes" : "No",
     ]);
 
@@ -176,7 +207,7 @@ export default function AdminResultsPage() {
             Official Cohort Standings & Certification
           </h1>
           <p className="font-body-sm text-secondary mt-0.5">
-            Audit provisional leaderboards, tie-broken standings, compute certified percentiles, and publish official scorecards.
+            Audit provisional leaderboards, tie-broken standings, and publish official scorecards.
           </p>
         </div>
 
@@ -269,6 +300,41 @@ export default function AdminResultsPage() {
                 <span>Pending Evaluation: <strong className="text-blue-800">{data.current.pendingEvaluationCount}</strong></span>
                 <span>•</span>
                 <span>Finalized / Published: <strong className="text-emerald-800">{data.current.finalizedCount}</strong></span>
+              </div>
+              <div className="mt-3 pt-2.5 border-t border-[#f1f5f9] flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-on-surface">Auto Publish:</span>
+                  <span
+                    className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                      data.current.autoPublish
+                        ? "bg-emerald-100 text-emerald-800 border border-emerald-300"
+                        : "bg-slate-100 text-slate-700 border border-slate-300"
+                    }`}
+                  >
+                    {data.current.autoPublish ? "Enabled (ON)" : "Disabled (OFF)"}
+                  </span>
+                  <span className="text-xs text-secondary hidden sm:inline">
+                    {data.current.autoPublish
+                      ? "Eligible submissions auto-publish when grading and penalties are finalized."
+                      : "Results remain private until manually published by an Admin."}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleToggleAutoPublish}
+                  disabled={isUpdatingAutoPublish}
+                  className={`px-2.5 py-1 text-xs font-medium rounded border transition-colors cursor-pointer disabled:opacity-50 ${
+                    data.current.autoPublish
+                      ? "bg-slate-100 hover:bg-slate-200 text-slate-800 border-slate-300"
+                      : "bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300"
+                  }`}
+                >
+                  {isUpdatingAutoPublish
+                    ? "Updating..."
+                    : data.current.autoPublish
+                    ? "Turn Auto Publish OFF"
+                    : "Turn Auto Publish ON"}
+                </button>
               </div>
             </div>
           </div>
@@ -367,7 +433,6 @@ export default function AdminResultsPage() {
                   <th className="py-3 px-space-md text-right">Raw Score</th>
                   <th className="py-3 px-space-md text-right">Penalties</th>
                   <th className="py-3 px-space-md text-right">Final Score</th>
-                  <th className="py-3 px-space-md text-right">Percentile</th>
                   <th className="py-3 px-space-md text-center">Status</th>
                 </tr>
               </thead>
@@ -417,19 +482,28 @@ export default function AdminResultsPage() {
                     <td className="py-3.5 px-space-md text-right font-mono font-bold text-primary-container">
                       {row.finalScore} pts
                     </td>
-                    <td className="py-3.5 px-space-md text-right font-mono text-xs font-semibold text-secondary">
-                      {row.percentile}%
-                    </td>
                     <td className="py-3.5 px-space-md text-center">
-                      <span
-                        className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
-                          row.isCertified
-                            ? "bg-[#dcfce7] text-[#166534]"
-                            : "bg-[#fef3c7] text-[#92400e]"
-                        }`}
-                      >
-                        {row.isCertified ? "Certified" : "Provisional"}
-                      </span>
+                      {row.selectionStatus ? (
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                            row.selectionStatus === "SELECTED"
+                              ? "bg-[#dcfce7] text-[#166534] border border-[#bbf7d0]"
+                              : "bg-amber-100 text-amber-900 border border-amber-300"
+                          }`}
+                        >
+                          {row.selectionStatus}
+                        </span>
+                      ) : (
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                            row.isCertified
+                              ? "bg-[#dcfce7] text-[#166534]"
+                              : "bg-[#fef3c7] text-[#92400e]"
+                          }`}
+                        >
+                          {row.isCertified ? "Certified" : "Provisional"}
+                        </span>
+                      )}
                     </td>
                   </tr>
                 ))}

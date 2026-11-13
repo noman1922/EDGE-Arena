@@ -10,7 +10,10 @@
  */
 
 import crypto from "crypto";
+import { promisify } from "util";
 import { prisma } from "@/lib/prisma";
+
+const scryptAsync = promisify(crypto.scrypt);
 
 export interface StoredCredentials {
   passwordHash: string;
@@ -73,6 +76,26 @@ export function verifyPassword(
   try {
     if (!password || !storedHash || !salt) return false;
     const derivedKey = crypto.scryptSync(password, salt, 64);
+    const storedBuffer = Buffer.from(storedHash, "hex");
+    if (derivedKey.length !== storedBuffer.length) return false;
+    return crypto.timingSafeEqual(derivedKey, storedBuffer);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Non-blocking async password verification using libuv threadpool scrypt
+ * so high-concurrency login bursts do not block the Node.js event loop.
+ */
+export async function verifyPasswordAsync(
+  password: string,
+  storedHash: string,
+  salt: string
+): Promise<boolean> {
+  try {
+    if (!password || !storedHash || !salt) return false;
+    const derivedKey = (await scryptAsync(password, salt, 64)) as Buffer;
     const storedBuffer = Buffer.from(storedHash, "hex");
     if (derivedKey.length !== storedBuffer.length) return false;
     return crypto.timingSafeEqual(derivedKey, storedBuffer);

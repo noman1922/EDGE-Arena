@@ -3,6 +3,11 @@
 import { prisma } from "@/lib/prisma";
 import { requireRole } from "@/lib/auth";
 import { getContestPenalties, calculateCandidateFinalScore } from "@/lib/monitoring";
+import { isFreedomContest, getFreedomSelectionStatus } from "@/lib/freedom-contest";
+import {
+  getContestPublicationSettings,
+  saveContestPublicationSettings,
+} from "@/lib/auto-publish";
 import { revalidatePath } from "next/cache";
 
 function safeRevalidatePath(path: string, type?: "layout" | "page") {
@@ -35,6 +40,7 @@ export interface AdminLeaderboardRow {
   percentile: number;
   isCertified: boolean;
   publishedAt: string | null;
+  selectionStatus?: "SELECTED" | "PROVISIONAL" | null;
 }
 
 export interface AdminResultsOverview {
@@ -42,6 +48,8 @@ export interface AdminResultsOverview {
   contestTitle: string;
   contestTrack: string;
   isPublished: boolean;
+  autoPublish?: boolean;
+  isFreedomContest?: boolean;
   totalEnrolled: number;
   totalSubmissions: number;
   unsubmittedCount: number;
@@ -253,10 +261,13 @@ export async function getAdminLeaderboardAndResults(
     const unsubmittedCount = Math.max(0, totalEnrolled - totalCandidatesWithSubmissions);
     const finalizedCount = gradedCandidateCount;
 
+    // Map results by userId for O(1) lookup during sorting and projection
+    const resultByUserId = new Map(contest.results.map((r) => [r.userId, r]));
+
     // Sort candidate attempts by finalScore DESC, submittedAt ASC for tie-breaking
     candidateRows.sort((a, b) => {
-      const cohortA = contest.results.find((r) => r.userId === a.userId);
-      const cohortB = contest.results.find((r) => r.userId === b.userId);
+      const cohortA = resultByUserId.get(a.userId);
+      const cohortB = resultByUserId.get(b.userId);
       const scoreA = cohortA ? Number(cohortA.totalScore) : a.finalScore;
       const scoreB = cohortB ? Number(cohortB.totalScore) : b.finalScore;
 
@@ -264,8 +275,11 @@ export async function getAdminLeaderboardAndResults(
       return (a.submittedAt?.getTime() ?? 0) - (b.submittedAt?.getTime() ?? 0);
     });
 
+    const publicationSettings = await getContestPublicationSettings(contest.id);
+    const isFreedom = isFreedomContest(contest);
+
     const rows: AdminLeaderboardRow[] = candidateRows.map((cand, index) => {
-      const cohortRes = contest.results.find((r) => r.userId === cand.userId);
+      const cohortRes = resultByUserId.get(cand.userId);
       const provisionalRank = index + 1;
       const rank = cohortRes ? cohortRes.rank : provisionalRank;
       const totalCount = totalCandidatesWithSubmissions;
@@ -275,6 +289,9 @@ export async function getAdminLeaderboardAndResults(
         ? Math.round(((totalCount - provisionalRank) / (totalCount - 1)) * 100 * 10) / 10
         : 100.0;
       const finalScore = cohortRes ? Number(cohortRes.totalScore) : cand.finalScore;
+
+      const isPub = contest.isPublished || Boolean(cohortRes?.publishedAt);
+      const selectionStatus = isFreedom ? getFreedomSelectionStatus(finalScore) : null;
 
       return {
         userId: cand.userId,
@@ -294,6 +311,7 @@ export async function getAdminLeaderboardAndResults(
         percentile,
         isCertified: cohortRes ? cohortRes.isCertified : false,
         publishedAt: cohortRes?.publishedAt ? cohortRes.publishedAt.toISOString() : null,
+        selectionStatus,
       };
     });
 
@@ -304,6 +322,8 @@ export async function getAdminLeaderboardAndResults(
         contestTitle: contest.title,
         contestTrack: contest.track,
         isPublished: contest.isPublished,
+        autoPublish: publicationSettings.autoPublish,
+        isFreedomContest: isFreedom,
         totalEnrolled,
         totalSubmissions: totalCandidatesWithSubmissions,
         unsubmittedCount,
@@ -316,6 +336,40 @@ export async function getAdminLeaderboardAndResults(
   } catch (error) {
     console.error("Error fetching leaderboard and results:", error);
     return { contests: [], current: null };
+  }
+}
+
+export async function getContestAutoPublishSettingAction(
+  contestId: string
+): Promise<{ success: boolean; autoPublish: boolean; error?: string }> {
+  try {
+    await requireRole(["ADMIN"]);
+    const settings = await getContestPublicationSettings(contestId);
+    return { success: true, autoPublish: settings.autoPublish };
+  } catch (err) {
+    return {
+      success: false,
+      autoPublish: false,
+      error: err instanceof Error ? err.message : "Failed to load auto-publish setting.",
+    };
+  }
+}
+
+export async function setContestAutoPublishSettingAction(
+  contestId: string,
+  autoPublish: boolean
+): Promise<{ success: boolean; autoPublish: boolean; error?: string }> {
+  try {
+    const session = await requireRole(["ADMIN"]);
+    const settings = await saveContestPublicationSettings(contestId, autoPublish, session.userId);
+    safeRevalidatePath("/admin/results");
+    return { success: true, autoPublish: settings.autoPublish };
+  } catch (err) {
+    return {
+      success: false,
+      autoPublish: false,
+      error: err instanceof Error ? err.message : "Failed to update auto-publish setting.",
+    };
   }
 }
 
@@ -762,7 +816,9 @@ export async function resetParticipantSubmissionAction(
     const submission = await prisma.submission.findUnique({
       where: { id: input.submissionId },
       include: {
-        user: true,
+        user: {
+          select: { id: true, name: true, email: true, candidateId: true },
+        },
         contest: true,
         task: true,
         phase: true,

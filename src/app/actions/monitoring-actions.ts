@@ -175,7 +175,10 @@ export async function recordMonitoringEventAction(params: {
     const isAlertEvent = params.eventType === "TAB_SWITCH" || params.eventType === "FULLSCREEN_EXIT";
 
     if (isAlertEvent && settings.enableAlertPenalties) {
-      const penaltyPoints = settings.alertPenaltyPoints || 5;
+      const penaltyPoints =
+        typeof settings.alertPenaltyPoints === "number"
+          ? Math.max(0, settings.alertPenaltyPoints)
+          : 5;
       const dedupPenaltyId = `${params.contestId}:${session.userId}:${eventId}:MONITORING_ALERT`;
 
       const existingPenalty = await prisma.auditLog.findFirst({
@@ -270,7 +273,12 @@ export async function confirmAiViolationPenaltyAction(params: {
       };
     }
 
-    const points = typeof params.points === "number" ? params.points : (settings.aiPenaltyPoints || 10);
+    const points =
+      typeof params.points === "number"
+        ? Math.max(0, params.points)
+        : typeof settings.aiPenaltyPoints === "number"
+        ? Math.max(0, settings.aiPenaltyPoints)
+        : 10;
     const dedupTargetId = `${params.contestId}:${params.userId}:${params.submissionId || "AI_WRITTEN"}:AI_VIOLATION`;
 
     const existing = await prisma.auditLog.findFirst({
@@ -371,7 +379,10 @@ export async function getMonitoringEvidenceAction(params: {
     if (session.role === "EVALUATOR") {
       const evalUser = await prisma.user.findFirst({
         where: { OR: [{ id: session.userId }, { email: session.email }] },
-        include: { contestEvaluations: { where: { contestId: params.contestId } } },
+        select: {
+          id: true,
+          contestEvaluations: { where: { contestId: params.contestId } },
+        },
       });
       if (!evalUser || evalUser.contestEvaluations.length === 0) {
         return { success: false, error: "Access denied: Not assigned to this contest." };
@@ -502,7 +513,10 @@ export async function getContestMonitoringDashboardAction(
       // EVALUATOR: find contests explicitly assigned to this evaluator
       const evalUser = await prisma.user.findFirst({
         where: { OR: [{ id: session.userId }, { email: session.email }] },
-        include: { contestEvaluations: { select: { contestId: true } } },
+        select: {
+          id: true,
+          contestEvaluations: { select: { contestId: true } },
+        },
       });
 
       const assignedContestIds = evalUser?.contestEvaluations.map((ce) => ce.contestId) || [];
@@ -546,7 +560,8 @@ export async function getContestMonitoringDashboardAction(
     if (session.role === "EVALUATOR") {
       const evalUser = await prisma.user.findFirst({
         where: { OR: [{ id: session.userId }, { email: session.email }] },
-        include: {
+        select: {
+          id: true,
           evaluatorAssignedCandidates: {
             where: { contestId: activeContestId },
             select: { participantId: true },
