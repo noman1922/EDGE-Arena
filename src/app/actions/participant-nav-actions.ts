@@ -20,6 +20,8 @@ import {
   normalizeContestStatus,
 } from "@/lib/contest-lifecycle";
 import { isFreedomContest, getFreedomSelectionStatus } from "@/lib/freedom-contest";
+import { getContestPenalties } from "@/lib/monitoring";
+import { refreshContestLeaderboard } from "@/lib/auto-publish";
 
 export interface ParticipantContestCard {
   id: string;
@@ -148,8 +150,11 @@ export interface ParticipantLeaderboardRow {
   userId?: string;
   candidateName?: string;
   candidateId: string;
-  rank: number;
+  institution: string;
+  rawScore: number;
+  penalties: number;
   finalScore: number;
+  rank: number;
   isCurrentUser: boolean;
   isCertified: boolean;
   selectionStatus?: "SELECTED" | "PROVISIONAL" | null;
@@ -249,13 +254,13 @@ export async function getParticipantLeaderboard(
     }
 
     // Fetch paginated leaderboard slice, total count, and caller's own standing in parallel
-    const [totalCount, pagedResults, ownResult] = await Promise.all([
+    let [totalCount, pagedResults, ownResult] = await Promise.all([
       prisma.cohortResult.count({
         where: { contestId: targetContestId },
       }),
       prisma.cohortResult.findMany({
         where: { contestId: targetContestId },
-        orderBy: { rank: "asc" },
+        orderBy: [{ rank: "asc" }, { totalScore: "desc" }],
         skip,
         take: limit,
         select: {
@@ -267,6 +272,7 @@ export async function getParticipantLeaderboard(
             select: {
               name: true,
               candidateId: true,
+              institution: true,
             },
           },
         },
@@ -287,11 +293,61 @@ export async function getParticipantLeaderboard(
             select: {
               name: true,
               candidateId: true,
+              institution: true,
             },
           },
         },
       }),
     ]);
+
+    // Safety net: if contest is marked published but CohortResult is not yet populated,
+    // trigger on-demand refresh once to populate results for eligible participants
+    if (totalCount === 0) {
+      const refreshRes = await refreshContestLeaderboard(targetContestId, { isAutoTrigger: true }).catch(() => null);
+      if (refreshRes && refreshRes.success && refreshRes.publishedCount > 0) {
+        const [reTotalCount, rePagedResults, reOwnResult] = await Promise.all([
+          prisma.cohortResult.count({ where: { contestId: targetContestId } }),
+          prisma.cohortResult.findMany({
+            where: { contestId: targetContestId },
+            orderBy: [{ rank: "asc" }, { totalScore: "desc" }],
+            skip,
+            take: limit,
+            select: {
+              userId: true,
+              rank: true,
+              totalScore: true,
+              isCertified: true,
+              user: {
+                select: {
+                  name: true,
+                  candidateId: true,
+                  institution: true,
+                },
+              },
+            },
+          }),
+          prisma.cohortResult.findUnique({
+            where: { contestId_userId: { contestId: targetContestId, userId: session.userId } },
+            select: {
+              userId: true,
+              rank: true,
+              totalScore: true,
+              isCertified: true,
+              user: {
+                select: {
+                  name: true,
+                  candidateId: true,
+                  institution: true,
+                },
+              },
+            },
+          }),
+        ]);
+        totalCount = reTotalCount;
+        pagedResults = rePagedResults;
+        ownResult = reOwnResult;
+      }
+    }
 
     if (totalCount === 0) {
       return {
@@ -309,12 +365,55 @@ export async function getParticipantLeaderboard(
 
     const isFreedom = isFreedomContest(contest);
 
+    // Fetch penalties and raw scores for displayed slice
+    const displayedUserIds = Array.from(
+      new Set([
+        ...pagedResults.map((r) => r.userId),
+        ...(ownResult ? [ownResult.userId] : []),
+      ])
+    );
+
+    const [contestPenalties, pagedSubmissions] = await Promise.all([
+      getContestPenalties(targetContestId).catch(() => []),
+      prisma.submission.findMany({
+        where: {
+          contestId: targetContestId,
+          userId: { in: displayedUserIds },
+          status: { in: ["GRADED", "PUBLISHED"] },
+        },
+        select: {
+          userId: true,
+          finalScore: true,
+          autoGradeScore: true,
+        },
+      }).catch(() => []),
+    ]);
+
+    const penaltiesByUser: Record<string, number> = {};
+    for (const p of contestPenalties) {
+      penaltiesByUser[p.userId] = (penaltiesByUser[p.userId] || 0) + p.points;
+    }
+
+    const rawScoreByUser: Record<string, number> = {};
+    for (const s of pagedSubmissions) {
+      const sScore =
+        s.finalScore !== null
+          ? Number(s.finalScore)
+          : s.autoGradeScore !== null
+          ? Number(s.autoGradeScore)
+          : 0;
+      rawScoreByUser[s.userId] = (rawScoreByUser[s.userId] || 0) + sScore;
+    }
+
     const formatRow = (r: (typeof pagedResults)[number]): ParticipantLeaderboardRow => {
       const isCurrent = r.userId === session.userId;
       const finalScore = Number(r.totalScore);
+      const penalties = penaltiesByUser[r.userId] || 0;
+      const rawScore = rawScoreByUser[r.userId] ?? (finalScore + penalties);
       const selectionStatus = isFreedom && contest.isPublished
         ? getFreedomSelectionStatus(finalScore)
         : null;
+      const institution = (r.user as any)?.institution || "National Campus Cluster";
 
       return {
         userId: r.userId,
@@ -322,8 +421,11 @@ export async function getParticipantLeaderboard(
         candidateId: isCurrent
           ? `${r.user?.candidateId || "YOU"} (You)`
           : r.user?.candidateId || `ACI-CAND-${r.userId.slice(0, 4).toUpperCase()}`,
-        rank: r.rank,
+        institution,
+        rawScore,
+        penalties,
         finalScore,
+        rank: r.rank,
         isCurrentUser: isCurrent,
         isCertified: r.isCertified,
         selectionStatus,
