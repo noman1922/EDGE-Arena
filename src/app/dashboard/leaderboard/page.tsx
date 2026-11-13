@@ -18,9 +18,9 @@ function ParticipantLeaderboardContent() {
   const [page, setPage] = useState<number>(1);
   const [isLoading, setIsLoading] = useState(true);
 
-  const loadLeaderboard = async (contestId?: string, targetPage: number = 1) => {
+  const loadLeaderboard = async (contestId?: string, targetPage: number = 1, isSilent: boolean = false) => {
     try {
-      setIsLoading(true);
+      if (!isSilent) setIsLoading(true);
       const res = await getParticipantLeaderboard(contestId, { page: targetPage, limit: 100 });
       setData(res);
       if (!selectedContestId && res.contestsList.length > 0) {
@@ -29,7 +29,7 @@ function ParticipantLeaderboardContent() {
     } catch (err) {
       console.error("Failed to load participant leaderboard:", err);
     } finally {
-      setIsLoading(false);
+      if (!isSilent) setIsLoading(false);
     }
   };
 
@@ -42,6 +42,34 @@ function ParticipantLeaderboardContent() {
 
   useEffect(() => {
     loadLeaderboard(selectedContestId || undefined, page);
+  }, [selectedContestId, page]);
+
+  // Smart live refresh: poll quietly only when tab is actively focused and visible
+  useEffect(() => {
+    if (!selectedContestId) return;
+
+    // Refresh every 30 seconds if tab is actively focused and visible
+    const interval = setInterval(() => {
+      if (typeof document !== "undefined" && !document.hidden) {
+        loadLeaderboard(selectedContestId, page, true);
+      }
+    }, 30000);
+
+    // Refresh immediately when user returns to this browser tab
+    const handleVisibilityChange = () => {
+      if (typeof document !== "undefined" && !document.hidden) {
+        loadLeaderboard(selectedContestId, page, true);
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("focus", handleVisibilityChange);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", handleVisibilityChange);
+    };
   }, [selectedContestId, page]);
 
   return (
@@ -62,28 +90,43 @@ function ParticipantLeaderboardContent() {
           </p>
         </div>
 
-        {/* Contest Switcher */}
-        {data && data.contestsList.length > 0 && (
-          <div className="flex items-center gap-space-sm">
-            <label className="font-label-xs text-secondary font-medium whitespace-nowrap">
-              Challenge:
-            </label>
-            <select
-              value={selectedContestId}
-              onChange={(e) => {
-                setSelectedContestId(e.target.value);
-                setPage(1);
-              }}
-              className="px-3 py-2 bg-surface-container-lowest border border-[#e2e8f0] rounded text-on-surface font-label-sm font-medium focus:outline-none focus:border-primary-container"
-            >
-              {data.contestsList.map((c: { id: string; title: string }) => (
-                <option key={c.id} value={c.id}>
-                  {c.title}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
+        {/* Controls: Challenge Switcher & Refresh Standings */}
+        <div className="flex items-center gap-space-sm flex-wrap">
+          {data && data.contestsList.length > 0 && (
+            <div className="flex items-center gap-space-sm">
+              <label className="font-label-xs text-secondary font-medium whitespace-nowrap">
+                Challenge:
+              </label>
+              <select
+                value={selectedContestId}
+                onChange={(e) => {
+                  setSelectedContestId(e.target.value);
+                  setPage(1);
+                }}
+                className="px-3 py-2 bg-surface-container-lowest border border-[#e2e8f0] rounded text-on-surface font-label-sm font-medium focus:outline-none focus:border-primary-container"
+              >
+                {data.contestsList.map((c: { id: string; title: string }) => (
+                  <option key={c.id} value={c.id}>
+                    {c.title}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={() => loadLeaderboard(selectedContestId || undefined, page)}
+            disabled={isLoading}
+            className="inline-flex items-center gap-1.5 px-3 py-2 bg-surface-container-lowest border border-[#e2e8f0] rounded text-on-surface hover:bg-surface-container-low font-label-xs font-medium transition-colors disabled:opacity-50"
+            title="Refresh Standings"
+          >
+            <span className={`material-symbols-outlined text-[16px] ${isLoading ? "animate-spin" : ""}`}>
+              refresh
+            </span>
+            <span>Refresh Standings</span>
+          </button>
+        </div>
       </div>
 
       {/* Standings Banner & Current Candidate Standing Card */}
@@ -166,10 +209,13 @@ function ParticipantLeaderboardContent() {
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="bg-surface-container-low border-b border-[#e2e8f0] font-label-xs uppercase font-semibold text-secondary">
-                  <th className="py-3 px-space-md w-20 text-center">Rank</th>
-                  <th className="py-3 px-space-md">Candidate Identifier</th>
-                  <th className="py-3 px-space-md text-right">Score</th>
-                  <th className="py-3 px-space-md text-center">Certification Status</th>
+                  <th className="py-3 px-space-md w-16 text-center">Rank</th>
+                  <th className="py-3 px-space-md">Candidate</th>
+                  <th className="py-3 px-space-md">Institution</th>
+                  <th className="py-3 px-space-md text-right">Raw Score</th>
+                  <th className="py-3 px-space-md text-right">Penalties</th>
+                  <th className="py-3 px-space-md text-right">Final Score</th>
+                  <th className="py-3 px-space-md text-center">Status</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#f1f5f9] font-body-sm text-on-surface">
@@ -209,12 +255,23 @@ function ParticipantLeaderboardContent() {
                         )}
                       </div>
                     </td>
-                    <td className="py-3.5 px-space-md text-right font-mono font-bold">
-                      {data.isPublished || row.isCurrentUser ? (
-                        <span className="text-primary-container">{row.finalScore} pts</span>
+                    <td className="py-3.5 px-space-md text-secondary text-xs">
+                      {row.institution}
+                    </td>
+                    <td className="py-3.5 px-space-md text-right font-mono text-xs font-medium">
+                      {row.rawScore} pts
+                    </td>
+                    <td className="py-3.5 px-space-md text-right font-mono text-xs">
+                      {row.penalties > 0 ? (
+                        <span className="text-rose-600 font-semibold bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200">
+                          -{row.penalties} pts
+                        </span>
                       ) : (
-                        <span className="text-secondary text-xs italic">Shielded until publish</span>
+                        <span className="text-secondary">0 pts</span>
                       )}
+                    </td>
+                    <td className="py-3.5 px-space-md text-right font-mono font-bold text-primary-container">
+                      {row.finalScore} pts
                     </td>
                     <td className="py-3.5 px-space-md text-center">
                       {row.selectionStatus ? (
